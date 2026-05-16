@@ -5,6 +5,11 @@ findings/*
 claims/*
 !claims/.gitkeep
 
+# Runtime phase state — operator initializes .mission-events on deploy
+.mission-events
+.phase-flip-locks/*
+!.phase-flip-locks/.gitkeep
+
 # Local Claude Code config (user-specific absolute paths)
 .claude/settings.json
 .claude/settings.local.json

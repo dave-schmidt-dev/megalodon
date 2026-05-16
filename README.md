@@ -36,14 +36,18 @@ The orchestrator (you, or a dedicated Claude session) sets Mission status, pushe
 
 ## Mission status
 
-**Current: IDLE (no active mission)**
+**Current: PHASE-PLAN (mission active — see `.mission-events` for authoritative phase)**
 
-Edit this to one of:
-- **ACTIVE** — claim and work on tasks normally
+For phase-gated missions (see MISSION.md §"Phase mechanics"), the source of truth is the append-only `.mission-events` log. This section is a best-effort visual rendering of the latest event — workers read `.mission-events` directly per RULE 11.
+
+Possible status values:
+- **IDLE** — no active mission (template state)
+- **ACTIVE** — claim and work on tasks normally (single-phase missions)
+- **PHASE-PLAN / PHASE-CHALLENGE / PHASE-BUILD / PHASE-VERIFY** — phase-gated mission; stance per phase defined in MISSION.md
 - **DRAINING** — finish current task, write CAPSTONE if your lane drained, then idle. Do NOT claim new tasks.
-- **COMPLETE** — write final HISTORY entry with session totals; heartbeat last time; halt loop (cron workers can't self-halt — they'll continue heartbeating but claim no work; delete crons to fully stop)
+- **COMPLETE** — write final HISTORY entry with session totals; heartbeat last time; halt loop
 
-Workers re-read this section on every tick BEFORE claiming.
+Workers re-read this section AND `.mission-events` on every tick BEFORE claiming.
 
 ---
 
