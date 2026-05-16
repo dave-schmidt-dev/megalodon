@@ -1,0 +1,22 @@
+# Mission state — actual work, not orchestration protocol
+.archive/
+findings/*
+!findings/.gitkeep
+claims/*
+!claims/.gitkeep
+
+# Local Claude Code config (user-specific absolute paths)
+.claude/settings.json
+.claude/settings.local.json
+
+# Brainstorm / scratch session state
+.superpowers/
+.session-state/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

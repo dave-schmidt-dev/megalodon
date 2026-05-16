@@ -1,0 +1,52 @@
+{
+  "_comment": "Copy this file to .claude/settings.json and replace <PROJECT_ROOT> with your absolute path to this project. Claude Code permission rules require absolute paths.",
+  "permissions": {
+    "allow": [
+      "Read(<PROJECT_ROOT>/**)",
+      "Edit(<PROJECT_ROOT>/**)",
+      "Write(<PROJECT_ROOT>/**)",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(echo:*)",
+      "Bash(date:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(diff:*)",
+      "Bash(python -c:*)",
+      "Bash(python3 -c:*)",
+      "Bash(duckdb -readonly:*)",
+      "Bash(uv run pytest:*)",
+      "Agent(*)",
+      "Skill(*)"
+    ],
+    "deny": [
+      "Edit(<PROJECT_ROOT>/.archive/**)",
+      "Write(<PROJECT_ROOT>/.archive/**)",
+      "Bash(git:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(npm:*)",
+      "Bash(pip:*)",
+      "Bash(pip3:*)",
+      "Bash(brew:*)",
+      "Bash(sudo:*)",
+      "Bash(chmod:*)",
+      "Bash(chown:*)",
+      "Bash(rm -rf <PROJECT_ROOT>/findings)",
+      "Bash(rm -rf <PROJECT_ROOT>/claims)",
+      "Bash(rm -rf <PROJECT_ROOT>/.archive)",
+      "Bash(rm -rf <PROJECT_ROOT>)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)"
+    ]
+  }
+}
