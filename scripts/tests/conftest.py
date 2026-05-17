@@ -5,6 +5,13 @@ from pathlib import Path
 
 import pytest
 
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "smoke_harness: spawn a real harness CLI with --help; skipped if CLI absent or CI=1",
+    )
+
 FIXTURE_SRC = Path(__file__).parent / "fixtures" / "minimal_mission"
 QUEUE_FIXTURE_SRC = Path(__file__).parent / "fixtures" / "queue_mission"
 
