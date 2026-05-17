@@ -1,0 +1,18 @@
+schema_version: 1
+mission:
+  id: minimal-custom-phases
+  utc_started: "2026-01-01T00:00:00Z"
+  type: software-engineering
+  description: minimal fixture for P3.3 phase navigator custom-phases e2e test
+lanes:
+  - name: ALPHA
+    role: builder
+    harness:
+      cli: claude
+      model: sonnet
+    cadence_seconds: 300
+    tick_offset_seconds: 0
+phases:
+  - DRAFT
+  - REVIEW
+  - PUBLISH

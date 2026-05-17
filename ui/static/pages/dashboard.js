@@ -435,6 +435,58 @@ function renderStalePanel(container) {
   container.appendChild(confirmBtn);
 }
 
+// ---- phase navigator reconciliation (OW-4 + CR-10) -----------------------
+//
+// Reconciles the back-compat HTML fallback <li data-testid="phase-segment-*">
+// elements against the live config.phases array:
+//   - Default phases not in config.phases → hidden (display:none) so existing
+//     e2e selectors still find them in the DOM.
+//   - config.phases entries absent from the default 10 → new <li> appended in
+//     config order, each with data-testid="phase-segment-<PHASE>" and
+//     data-phase="<PHASE>".
+//
+// The navigator is the <ol class="phase-strip"> element in index.html.
+// Default phase keys are derived from each <li>'s data-testid attribute by
+// stripping the "phase-segment-" prefix; text content is NOT used as the key
+// because some labels differ (e.g., "OP-ACK" vs "PHASE-OPERATOR-ACCEPTANCE").
+
+function reconcilePhaseNavigator(configPhases) {
+  if (!Array.isArray(configPhases) || configPhases.length === 0) return;
+
+  const navigator = document.querySelector("ol.phase-strip") ||
+                    document.querySelector('[data-role="phase-navigator"]') ||
+                    document.querySelector("#phase-navigator");
+  if (!navigator) return;
+
+  const defaultLis = Array.from(
+    navigator.querySelectorAll('li[data-testid^="phase-segment-"]')
+  );
+
+  // Build a map from phase key → li for existing default elements.
+  // Phase key = data-testid stripped of "phase-segment-" prefix.
+  const PREFIX = "phase-segment-";
+  const defaultPhaseKeys = new Set();
+  for (const li of defaultLis) {
+    const testid = li.dataset.testid || li.getAttribute("data-testid") || "";
+    const key = testid.startsWith(PREFIX) ? testid.slice(PREFIX.length) : "";
+    if (key) {
+      defaultPhaseKeys.add(key);
+      li.style.display = configPhases.includes(key) ? "" : "none";
+    }
+  }
+
+  // Append config phases that have no matching default element.
+  for (const phase of configPhases) {
+    if (defaultPhaseKeys.has(phase)) continue;
+    const li = document.createElement("li");
+    li.className = "phase-segment";
+    li.setAttribute("data-testid", `${PREFIX}${phase}`);
+    li.dataset.phase = phase;
+    li.textContent = phase;
+    navigator.appendChild(li);
+  }
+}
+
 // ---- top-level render -----------------------------------------------------
 
 export async function render(root) {
@@ -446,13 +498,18 @@ export async function render(root) {
   skeletonDiv.textContent = "Loading mission config…";
   root.appendChild(skeletonDiv);
 
-  // Load lane order from config; fall back to defaults on error.
+  // Load lane order and phase list from config; fall back to defaults on error.
   let laneOrder = LANE_ORDER_FALLBACK;
   try {
     const config = await loadConfig();
     if (Array.isArray(config.lanes) && config.lanes.length > 0) {
       laneOrder = config.lanes.map((l) => (typeof l === "string" ? l : String(l.name || l)));
     }
+    // OW-4 + CR-10: reconcile phase navigator against config.phases.
+    const configPhases = (config.phases || []).map((p) =>
+      typeof p === "string" ? p : String(p.name || p)
+    );
+    reconcilePhaseNavigator(configPhases);
   } catch (err) {
     console.warn("[dashboard] config load failed, using fallback lanes:", err);
   }
