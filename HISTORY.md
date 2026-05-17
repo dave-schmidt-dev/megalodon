@@ -404,3 +404,17 @@ bash scripts/launch_fleet.sh --spawn
 Identical — gates on applier heartbeat. Pre-test without an active mission: append `--skip-applier-check --no-launch`.
 
 **Variety spawn verified live:** AUDIT=codex, ARCHITECT=gemini, BACKEND=cursor-agent, FRONTEND=vibe, TEST=copilot, META=claude. All 5 non-claude REPLs booted; claude on META surfaced the model-string bug above.
+
+## 2026-05-17T~19:30Z — V9 LIVE SMOKE + V9.1 PLAN COMPLETE (planning only)
+
+V9.0 (commit `cd6200f`) verified live via Playwright browser smoke against `scripts/tests/fixtures/queue_mission` — dashboard renders 6 lanes, SSE streams cleanly, 0 console errors, all 11 routes register via `/api/v1/__contract_introspect__`. Applier daemon heartbeat fresh; M1.5 202-async mutation endpoints return `{"status":"applied"}` within 3s via `GET /api/v1/queue/{rid}` polling.
+
+**Architectural gap surfaced by operator:** v9.0 bakes in `AUDIT/ARCHITECT/BACKEND/FRONTEND/TEST/META` lanes + 8 software-engineering phases across ~30 production callsites + 4 dict copies + 6 regex sites with `[A-F]`/`[A-H]`/`[A-Z]` drift. Lane names are not configurable; phases are not configurable; harness is Claude-only. Real-world missions need: variable lane count, lane names per mission, multi-harness binding (Claude/Codex/Gemini/Copilot/Cursor/Mistral-Vibe), and orchestrator-driven pre-flight protocol.
+
+**V9.1 warp-tier plan complete** at `~/Documents/Projects/.plans/megalodon/v9-1-mission-config-driven-2026-05-17.md` after full review cycle: 16 self-contrarian findings (15 fixed inline + 1 documented limitation), 25 external reviewer findings via Codex GPT-5.5 + Gemini 3.1-pro-preview + Claude Opus (22 ACCEPT + 2 ACKNOWLEDGE + 1 REJECT), 10 Kimi K2.5 pre-mortem failure modes (5 MITIGATE + 5 ACKNOWLEDGE). Net: 41 of 51 findings folded into refined plan. 27 tasks across 7 phases at `…-2026-05-17-tasks.md`. V9.1 strategy: tag current main as `v9.0-archive`; feature branch with per-batch checkpoints; squash-merge final v9.1 to main. Honest limitations: non-Claude lanes ship as manual-tick in v9.1 (autonomous-loop wrappers deferred to v9.2); watchdog S3 tracks Claude lanes only.
+
+**Implementation pending — new session required** (operator instruction). No code changes this turn. Next session: read the plan, start at Task 0.1.
+
+**Operator allowlist additions needed before v9.1 implementation:**
+- `python -m megalodon_ui.mission_config *`
+- `python -m megalodon_ui.preflight *`

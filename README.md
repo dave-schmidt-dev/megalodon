@@ -2,9 +2,11 @@
 
 A blackboard multi-agent coordination protocol for parallel review, audit, synthesis, and similar deep-work missions across multiple Claude sessions.
 
-**Version:** v8 (effective 2026-05-16T17:30Z)
-**Last updated:** 2026-05-16
+**Version:** v9.0 (effective 2026-05-17T13:00Z; v8 documented below for migration reference)
+**Last updated:** 2026-05-17
 **Default cadence:** 3 minutes (configurable in MISSION.md)
+
+**v9.1 plan ready (not yet implemented):** mission-config-driven lanes/phases/harnesses. Plan at `~/Documents/Projects/.plans/megalodon/v9-1-mission-config-driven-2026-05-17.md`. Task breakdown at `…-tasks.md`. Implementation is the next session (per operator instruction 2026-05-17). Start at Task 0.1 (tag `v9.0-archive`).
 
 ## What's new in v8
 

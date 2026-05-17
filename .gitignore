@@ -61,6 +61,8 @@ queue/.applier.lock/
 # Re-include the queue subdirs under the test fixture so the empty layout commits.
 !scripts/tests/fixtures/**/queue/
 !scripts/tests/fixtures/**/queue/**
+# ...but the fixture queue journal is runtime-mutable; keep it ignored.
+scripts/tests/fixtures/**/queue/journal.log
 
 # Playwright test artifacts (regenerated every run — never commit)
 ui/tests/e2e/playwright-report/
