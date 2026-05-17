@@ -20,10 +20,13 @@
 
 import { store } from "../js/store.js";
 import { STALE_THRESHOLD_SECONDS, API_RECLAIM } from "../js/constants.js";
+import { loadConfig } from "../js/config.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-const LANE_ORDER = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
+// LANE_ORDER is loaded from config at render time. This fallback is only used
+// if config resolution fails unexpectedly before render proceeds.
+const LANE_ORDER_FALLBACK = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
 
 // Staleness thresholds in seconds.
 const FRESH_MAX = 5 * 60;       // < 5 min → fresh
@@ -228,10 +231,10 @@ function laneRowByLane(lanes, lane) {
   };
 }
 
-function renderLaneGrid(container, expanded, onToggle) {
+function renderLaneGrid(container, expanded, onToggle, laneOrder) {
   clearNode(container);
   const lanes = store.get("status.lanes") || [];
-  for (const lane of LANE_ORDER) {
+  for (const lane of (laneOrder || LANE_ORDER_FALLBACK)) {
     const row = laneRowByLane(lanes, lane);
     container.appendChild(renderLaneCard(row, expanded.has(lane), onToggle));
   }
@@ -434,8 +437,28 @@ function renderStalePanel(container) {
 
 // ---- top-level render -----------------------------------------------------
 
-export function render(root) {
+export async function render(root) {
   const expanded = new Set(); // lanes whose drawer is open
+
+  // PM-2 mitigation: show a loading skeleton until config resolves.
+  const skeletonDiv = document.createElement("div");
+  skeletonDiv.className = "loading-skeleton";
+  skeletonDiv.textContent = "Loading mission config…";
+  root.appendChild(skeletonDiv);
+
+  // Load lane order from config; fall back to defaults on error.
+  let laneOrder = LANE_ORDER_FALLBACK;
+  try {
+    const config = await loadConfig();
+    if (Array.isArray(config.lanes) && config.lanes.length > 0) {
+      laneOrder = config.lanes.map((l) => (typeof l === "string" ? l : String(l.name || l)));
+    }
+  } catch (err) {
+    console.warn("[dashboard] config load failed, using fallback lanes:", err);
+  }
+
+  // Clear skeleton before building real page structure.
+  clearNode(root);
 
   // Page skeleton (static structure only — store data goes through textContent).
   const laneGrid = el("section", {
@@ -475,11 +498,11 @@ export function render(root) {
   const onToggle = (lane) => {
     if (expanded.has(lane)) expanded.delete(lane);
     else expanded.add(lane);
-    renderLaneGrid(laneGrid, expanded, onToggle);
+    renderLaneGrid(laneGrid, expanded, onToggle, laneOrder);
   };
 
   // Initial paint.
-  renderLaneGrid(laneGrid, expanded, onToggle);
+  renderLaneGrid(laneGrid, expanded, onToggle, laneOrder);
   renderSparkline(sparkBody);
   renderHistoryTail(historyBody);
   renderStalePanel(stalePanel);
@@ -487,7 +510,7 @@ export function render(root) {
   // Subscriptions. Each call returns an unsubscribe; collect for cleanup.
   const unsubs = [];
   unsubs.push(store.subscribe("status.lanes", () => {
-    renderLaneGrid(laneGrid, expanded, onToggle);
+    renderLaneGrid(laneGrid, expanded, onToggle, laneOrder);
     renderStalePanel(stalePanel);
   }));
   unsubs.push(store.subscribe("mission.events", () => {
@@ -496,7 +519,7 @@ export function render(root) {
   }));
   unsubs.push(store.subscribe("mission.phase", () => {
     // Phase changes can affect lane "state" framing; cheap to re-render.
-    renderLaneGrid(laneGrid, expanded, onToggle);
+    renderLaneGrid(laneGrid, expanded, onToggle, laneOrder);
   }));
   unsubs.push(store.subscribe("ui.controlMode", () => {
     renderStalePanel(stalePanel);

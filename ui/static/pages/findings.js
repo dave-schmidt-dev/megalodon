@@ -20,10 +20,12 @@
 
 import { store } from "../js/store.js";
 import { API_FINDINGS } from "../js/constants.js";
+import { loadConfig } from "../js/config.js";
 
 // ---- constants --------------------------------------------------------------
 
-const LANES = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
+// Fallback lane list used until config resolves (v9.0 back-compat).
+const LANES_FALLBACK = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
 const SEVERITIES = ["BLOCKING", "MAJOR", "MINOR", "NIT", "DELTA"];
 
 // Element whitelist for sanitizer. Anything else is dropped, but its safe
@@ -214,9 +216,27 @@ function sortByUtcDesc(list) {
 
 /**
  * @param {HTMLElement} root
- * @returns {() => void} cleanup
+ * @returns {Promise<() => void>} cleanup
  */
-export function render(root) {
+export async function render(root) {
+  // PM-2 mitigation: show a loading skeleton until config resolves.
+  const skeletonDiv = document.createElement("div");
+  skeletonDiv.className = "loading-skeleton";
+  skeletonDiv.textContent = "Loading mission config…";
+  root.appendChild(skeletonDiv);
+
+  // Load lane list from config; fall back to defaults on error.
+  let lanes = LANES_FALLBACK;
+  try {
+    const config = await loadConfig();
+    if (Array.isArray(config.lanes) && config.lanes.length > 0) {
+      lanes = config.lanes.map((l) => (typeof l === "string" ? l : String(l.name || l)));
+    }
+  } catch (err) {
+    console.warn("[findings] config load failed, using fallback lanes:", err);
+  }
+
+  // Clear skeleton before building real page structure.
   clearChildren(root);
   const page = el("div", { cls: "findings-page", testid: "findings-page" });
   root.appendChild(page);
@@ -230,7 +250,7 @@ export function render(root) {
   const laneRow = el("div", { cls: "row findings-filter-row" });
   laneRow.appendChild(el("span", { cls: "text-muted mono", text: "lane:" }));
   const laneChips = {};
-  for (const lane of LANES) {
+  for (const lane of lanes) {
     const chip = el("button", {
       cls: `lane-chip ${lane} findings-filter-chip`,
       testid: `lane-filter-${lane}`,
@@ -316,7 +336,7 @@ export function render(root) {
     filters.task = "";
     agentInput.value = "";
     taskInput.value = "";
-    for (const lane of LANES) {
+    for (const lane of lanes) {
       laneChips[lane].setAttribute("aria-pressed", "false");
       laneChips[lane].classList.remove("is-active");
     }

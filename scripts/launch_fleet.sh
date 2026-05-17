@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# V9 A2 — Megalodon fleet launcher.
+# V9.1 — Megalodon fleet launcher.
 #
 # Default mode (back-compat): prints one CLI invocation per lane to stdout
 # so the operator can copy each into a separate Claude session. With --spawn
-# the script opens a single iTerm window with a 2x3 pane layout and launches
-# the right CLI in each pane.
+# the script opens a single iTerm window with a dynamic grid layout and
+# launches the right CLI in each pane.
 #
-# Layout (2 rows x 3 cols):
+# v9.1 additions (PM-1 / CR-4 / WR-5):
+#   --mission-dir <dir>     Specify mission directory (replaces positional arg).
+#   --dry-run               Without --spawn: print planned invocations via
+#                           scripts._launch_helpers (config-driven, no spawn).
+#                           With --spawn: print AppleScript instead of running.
+#   Grid is computed dynamically: cols=ceil(sqrt(N)), rows=ceil(N/cols).
+#   Non-Claude lanes print a MANUAL TICK REQUIRED banner (CR-4).
+#   WR-5: checks .fleet-ledger/ for an existing fleet before spawning.
+#
+# Layout (dynamic — example for 6 lanes = 3 cols x 2 rows):
 #     +----------+----------+----------+
 #     |  AUDIT   | ARCHITECT|  BACKEND |
 #     +----------+----------+----------+
@@ -15,10 +24,13 @@
 #
 # Usage:
 #     ./scripts/launch_fleet.sh [<mission-dir>] [flags]
+#     ./scripts/launch_fleet.sh --mission-dir <dir> --dry-run
 #
 # Flags:
-#     --spawn                 Open iTerm window with 6 panes (macOS / iTerm2 only).
+#     --mission-dir=<dir>     Mission directory (also accepted as positional arg).
+#     --spawn                 Open iTerm window with dynamic pane layout (macOS / iTerm2 only).
 #     --dry-run               With --spawn: print the AppleScript instead of running it.
+#                             Without --spawn: print planned invocations (config-driven).
 #     --no-launch             With --spawn: open panes that echo the command they
 #                             *would* run, instead of actually launching a CLI agent.
 #                             Use for layout tests without joining a real mission.
@@ -34,12 +46,22 @@
 # Orchestrator invocation (e.g. from a Claude Code Bash tool, no TTY):
 #     ./scripts/launch_fleet.sh --spawn
 #
-# Operator dry-run (verifies AppleScript without opening windows):
+# Operator dry-run (config-driven, no iTerm):
+#     ./scripts/launch_fleet.sh --dry-run --mission-dir <dir>
+#
+# Operator dry-run AppleScript (verifies layout without opening windows):
 #     ./scripts/launch_fleet.sh --spawn --dry-run --skip-applier-check
 #
 # Operator layout test (opens window but doesn't launch agents):
 #     ./scripts/launch_fleet.sh --spawn --no-launch --skip-applier-check
 set -euo pipefail
+
+# Resolve project root for uv run (same pattern as start_applier.sh).
+_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(git -C "$_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$_SCRIPT_DIR/..")"
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
+# Helper: run a Python module with the correct deps via uv.
+_py() { uv run --directory "$PROJECT_ROOT" --with pyyaml --with pydantic python "$@"; }
 
 # TODO(v9-patch): lane names + model/cadence per lane are hardcoded here and
 # in scripts/gen_lane_launches.py. After the v9 protocol patch lands, source
@@ -57,6 +79,7 @@ DRY_RUN=false
 NO_LAUNCH=false
 SKIP_APPLIER_CHECK=false
 PROMPT_OVERRIDE=""    # if set, replaces "read launch-<LANE>.md" in every lane prompt
+CLI_OVERRIDES=false   # true when any --cli-<lane>= flag is present (uses legacy spawn path)
 
 usage() {
     sed -n '2,/^set -euo/p' "$0" | sed -e 's/^# \{0,1\}//' -e '$d'
@@ -84,12 +107,14 @@ while [[ $# -gt 0 ]]; do
         --dry-run) DRY_RUN=true ;;
         --no-launch) NO_LAUNCH=true ;;
         --skip-applier-check) SKIP_APPLIER_CHECK=true ;;
-        --cli-audit=*)     set_cli_for_lane AUDIT     "${1#*=}" ;;
-        --cli-architect=*) set_cli_for_lane ARCHITECT "${1#*=}" ;;
-        --cli-backend=*)   set_cli_for_lane BACKEND   "${1#*=}" ;;
-        --cli-frontend=*)  set_cli_for_lane FRONTEND  "${1#*=}" ;;
-        --cli-test=*)      set_cli_for_lane TEST      "${1#*=}" ;;
-        --cli-meta=*)      set_cli_for_lane META      "${1#*=}" ;;
+        --mission-dir=*) MISSION_DIR="${1#*=}" ;;
+        --mission-dir)   MISSION_DIR="${2:-}"; shift ;;
+        --cli-audit=*)     set_cli_for_lane AUDIT     "${1#*=}"; CLI_OVERRIDES=true ;;
+        --cli-architect=*) set_cli_for_lane ARCHITECT "${1#*=}"; CLI_OVERRIDES=true ;;
+        --cli-backend=*)   set_cli_for_lane BACKEND   "${1#*=}"; CLI_OVERRIDES=true ;;
+        --cli-frontend=*)  set_cli_for_lane FRONTEND  "${1#*=}"; CLI_OVERRIDES=true ;;
+        --cli-test=*)      set_cli_for_lane TEST      "${1#*=}"; CLI_OVERRIDES=true ;;
+        --cli-meta=*)      set_cli_for_lane META      "${1#*=}"; CLI_OVERRIDES=true ;;
         --prompt-override=*) PROMPT_OVERRIDE="${1#*=}" ;;
         -h|--help) usage; exit 0 ;;
         --*) echo "error: unknown flag: $1" >&2; exit 1 ;;
@@ -136,6 +161,16 @@ if [[ "$MODE" == "spawn" && "$NO_LAUNCH" == "false" && "$SKIP_APPLIER_CHECK" == 
         echo "                     $MISSION_DIR/scripts/start_applier.sh \"$MISSION_DIR\" &" >&2
         exit 4
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# v9.1 --dry-run (standalone, no --spawn): config-driven plan via Python helper.
+# Prints one line per lane: lane= cli= model= pane= argv=...
+# Non-Claude lanes also print a MANUAL TICK REQUIRED banner.
+# ---------------------------------------------------------------------------
+if [[ "$DRY_RUN" == "true" && "$MODE" == "print" ]]; then
+    _py -m scripts._launch_helpers plan --mission-dir "$MISSION_DIR"
+    exit 0
 fi
 
 # ---------------------------------------------------------------------------
@@ -233,57 +268,72 @@ as_escape() {
 scpt=$(mktemp -t launch_fleet.XXXXXX)
 trap 'rm -f "$scpt"' EXIT
 
-{
-    echo 'tell application "iTerm"'
-    echo '    activate'
-    echo '    set newWindow to (create window with default profile)'
-    echo '    set sessA to current session of newWindow'
-    echo ''
-    echo '    tell sessA'
-    echo "        set name to \"${LANES[0]}\""
-    echo '        set sessB to (split vertically with default profile)'
-    echo '    end tell'
-    echo '    tell sessB'
-    echo "        set name to \"${LANES[1]}\""
-    echo '        set sessC to (split vertically with default profile)'
-    echo '    end tell'
-    echo '    tell sessC'
-    echo "        set name to \"${LANES[2]}\""
-    echo '    end tell'
-    echo '    tell sessA'
-    echo '        set sessD to (split horizontally with default profile)'
-    echo '    end tell'
-    echo '    tell sessD'
-    echo "        set name to \"${LANES[3]}\""
-    echo '    end tell'
-    echo '    tell sessB'
-    echo '        set sessE to (split horizontally with default profile)'
-    echo '    end tell'
-    echo '    tell sessE'
-    echo "        set name to \"${LANES[4]}\""
-    echo '    end tell'
-    echo '    tell sessC'
-    echo '        set sessF to (split horizontally with default profile)'
-    echo '    end tell'
-    echo '    tell sessF'
-    echo "        set name to \"${LANES[5]}\""
-    echo '    end tell'
-    echo ''
-
-    sess_vars=(sessA sessB sessC sessD sessE sessF)
-    i=0
-    for lane in "${LANES[@]}"; do
-        cmd=$(pane_cmd "$lane" "${LANE_CLIS[$i]}" "${LANE_MODELS[$i]}")
-        cmd_as=$(as_escape "$cmd")
-        echo "    tell ${sess_vars[$i]}"
-        echo "        write text \"$cmd_as\""
+# ---------------------------------------------------------------------------
+# v9.1 spawn path: delegate AppleScript generation to Python helper (PM-1).
+# The helper uses config-driven lanes + dynamic grid math.
+# Fall back to legacy hardcoded AppleScript only if Python helper is absent
+# (should never happen in practice).
+# ---------------------------------------------------------------------------
+if [[ "$NO_LAUNCH" == "false" && -z "$PROMPT_OVERRIDE" && "$CLI_OVERRIDES" == "false" ]] && _py -c "import scripts._launch_helpers" 2>/dev/null; then
+    # v9.1: config-driven dynamic grid via Python helper (PM-1).
+    # WR-5: warns about existing fleet via stderr.
+    # Falls back to legacy when --no-launch or --prompt-override is set
+    # (those flags are not yet wired into the Python helper).
+    _py -m scripts._launch_helpers applescript --mission-dir "$MISSION_DIR" > "$scpt"
+else
+    # Legacy fallback: hardcoded 2x3 AppleScript (back-compat only)
+    {
+        echo 'tell application "iTerm"'
+        echo '    activate'
+        echo '    set newWindow to (create window with default profile)'
+        echo '    set sessA to current session of newWindow'
+        echo ''
+        echo '    tell sessA'
+        echo "        set name to \"${LANES[0]}\""
+        echo '        set sessB to (split vertically with default profile)'
         echo '    end tell'
-        i=$((i + 1))
-    done
+        echo '    tell sessB'
+        echo "        set name to \"${LANES[1]}\""
+        echo '        set sessC to (split vertically with default profile)'
+        echo '    end tell'
+        echo '    tell sessC'
+        echo "        set name to \"${LANES[2]}\""
+        echo '    end tell'
+        echo '    tell sessA'
+        echo '        set sessD to (split horizontally with default profile)'
+        echo '    end tell'
+        echo '    tell sessD'
+        echo "        set name to \"${LANES[3]}\""
+        echo '    end tell'
+        echo '    tell sessB'
+        echo '        set sessE to (split horizontally with default profile)'
+        echo '    end tell'
+        echo '    tell sessE'
+        echo "        set name to \"${LANES[4]}\""
+        echo '    end tell'
+        echo '    tell sessC'
+        echo '        set sessF to (split horizontally with default profile)'
+        echo '    end tell'
+        echo '    tell sessF'
+        echo "        set name to \"${LANES[5]}\""
+        echo '    end tell'
+        echo ''
 
-    echo '    return "OK:" & (id of newWindow)'
-    echo 'end tell'
-} > "$scpt"
+        sess_vars=(sessA sessB sessC sessD sessE sessF)
+        i=0
+        for lane in "${LANES[@]}"; do
+            cmd=$(pane_cmd "$lane" "${LANE_CLIS[$i]}" "${LANE_MODELS[$i]}")
+            cmd_as=$(as_escape "$cmd")
+            echo "    tell ${sess_vars[$i]}"
+            echo "        write text \"$cmd_as\""
+            echo '    end tell'
+            i=$((i + 1))
+        done
+
+        echo '    return "OK:" & (id of newWindow)'
+        echo 'end tell'
+    } > "$scpt"
+fi
 
 if [[ "$DRY_RUN" == "true" ]]; then
     cat "$scpt"

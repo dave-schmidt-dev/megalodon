@@ -22,6 +22,7 @@
 //     finding_filename?, phase? }
 
 import { store } from "../js/store.js";
+import { loadConfig } from "../js/config.js";
 
 const PHASE_TABS = [
   { id: "PHASE-PLAN", label: "Plan" },
@@ -30,7 +31,8 @@ const PHASE_TABS = [
   { id: "PHASE-VERIFY", label: "Verify" },
 ];
 
-const LANES = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
+// Fallback lane list used until config resolves (v9.0 back-compat).
+const LANES_FALLBACK = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
 
 /** Return the canonical id for a task (spec says task_id; store may use id). */
 function taskKey(t) {
@@ -247,20 +249,21 @@ function renderPhaseTabs(selectedPhase, onSelect) {
 }
 
 /** Build the kanban for a phase. */
-function renderKanban(tasksForPhase, claimsSet, openDrawerId, onCardClick) {
+function renderKanban(tasksForPhase, claimsSet, openDrawerId, onCardClick, lanes) {
+  const laneList = lanes || LANES_FALLBACK;
   const wrap = el("section", { attrs: { "aria-label": "Kanban" } });
   const grid = el("div", {
     attrs: {
-      style: "display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:var(--sp-3)",
+      style: `display:grid; grid-template-columns:repeat(${laneList.length}, minmax(0,1fr)); gap:var(--sp-3)`,
     },
   });
   const byLane = {};
-  for (const lane of LANES) byLane[lane] = [];
+  for (const lane of laneList) byLane[lane] = [];
   for (const t of (tasksForPhase || [])) {
     const lane = (t.lane || "").toUpperCase();
     if (byLane[lane]) byLane[lane].push(t);
   }
-  for (const lane of LANES) {
+  for (const lane of laneList) {
     const col = el("div", { class: "stack-2", attrs: { "data-lane": lane } });
     const header = el("h3", {
       class: `lane-chip ${lane}`,
@@ -388,9 +391,29 @@ function renderCrossPool(crossTasks, claimsSet, openDrawerId, onCardClick) {
 /**
  * Mount the /tasks page into the given root.
  * @param {HTMLElement} root
- * @returns {() => void} cleanup
+ * @returns {Promise<() => void>} cleanup
  */
-export function render(root) {
+export async function render(root) {
+  // PM-2 mitigation: show a loading skeleton until config resolves.
+  const skeletonDiv = document.createElement("div");
+  skeletonDiv.className = "loading-skeleton";
+  skeletonDiv.textContent = "Loading mission config…";
+  root.appendChild(skeletonDiv);
+
+  // Load lane order from config; fall back to defaults on error.
+  let lanes = LANES_FALLBACK;
+  try {
+    const config = await loadConfig();
+    if (Array.isArray(config.lanes) && config.lanes.length > 0) {
+      lanes = config.lanes.map((l) => (typeof l === "string" ? l : String(l.name || l)));
+    }
+  } catch (err) {
+    console.warn("[tasks] config load failed, using fallback lanes:", err);
+  }
+
+  // Clear skeleton before building real page structure.
+  while (root.firstChild) root.removeChild(root.firstChild);
+
   // View-local UI state. Persists across re-renders within this mount.
   const ui = {
     selectedPhase: store.get("mission.phase") || PHASE_TABS[1].id, // default to CHALLENGE if unset
@@ -462,8 +485,8 @@ export function render(root) {
     hdr.appendChild(renderPhaseTabs(ui.selectedPhase, onSelectPhase));
     root.appendChild(hdr);
 
-    // Kanban
-    root.appendChild(renderKanban(tasksForPhase, claimsSet, ui.openDrawerId, onCardClick));
+    // Kanban — pass config-driven lane list so columns match the loaded config.
+    root.appendChild(renderKanban(tasksForPhase, claimsSet, ui.openDrawerId, onCardClick, lanes));
 
     // Non-canonical panel
     const ncRows = computeNonCanonical(rawClaimsList(), allTaskIdsForCrosscheck());

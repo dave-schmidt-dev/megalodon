@@ -21,14 +21,20 @@
  */
 
 import { store } from "../js/store.js";
+import { loadConfig } from "../js/config.js";
 
 // ---- constants --------------------------------------------------------------
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-// Lane stack, top to bottom. ORCH first per spec; "ORCH" is the orchestrator
-// virtual lane (no dedicated CSS color var, falls back to neutral text color).
-const LANES = ["ORCH", "AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
+// Lane stack fallback (v9.0 back-compat). ORCH first per spec; "ORCH" is the
+// orchestrator virtual lane (no dedicated CSS color var, falls back to neutral).
+// At render time this is overridden with config lanes, with ORCH always prepended.
+const LANES_FALLBACK = ["ORCH", "AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
+
+// Runtime lane list — set at the start of render() from config. Module-level so
+// laneClass() (which is not inside render) can reference the current set.
+let LANES = LANES_FALLBACK.slice();
 const KINDS = ["SIGNAL", "ACK-VERIFIED", "DISSENT", "DEFER"];
 
 // SVG geometry.
@@ -181,9 +187,29 @@ function composeAriaLabel(sig) {
 
 /**
  * @param {HTMLElement} root
- * @returns {() => void} cleanup
+ * @returns {Promise<() => void>} cleanup
  */
-export function render(root) {
+export async function render(root) {
+  // PM-2 mitigation: show a loading skeleton until config resolves.
+  const skeletonDiv = document.createElement("div");
+  skeletonDiv.className = "loading-skeleton";
+  skeletonDiv.textContent = "Loading mission config…";
+  root.appendChild(skeletonDiv);
+
+  // Populate module-level LANES from config, always prepending ORCH.
+  try {
+    const config = await loadConfig();
+    if (Array.isArray(config.lanes) && config.lanes.length > 0) {
+      const configLaneNames = config.lanes.map((l) => (typeof l === "string" ? l : String(l.name || l)));
+      // ORCH is the orchestrator virtual lane — always first, never in config.
+      LANES = ["ORCH", ...configLaneNames];
+    }
+  } catch (err) {
+    console.warn("[signals] config load failed, using fallback lanes:", err);
+    LANES = LANES_FALLBACK.slice();
+  }
+
+  // Clear skeleton before building real page structure.
   clearChildren(root);
 
   const page = el("div", { cls: "signals-page", testid: "signals-page" });

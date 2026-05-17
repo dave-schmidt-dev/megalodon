@@ -22,29 +22,29 @@ import {
   API_CHALLENGE, API_FINDINGS, API_INJECT_TASK, API_MISSION_STATUS,
   API_PHASE_FLIP, API_RECLAIM, API_SIGNAL,
 } from "../js/constants.js";
+import { loadConfig } from "../js/config.js";
 
-// Canonical lane order — mirrors dashboard.js.
-const LANE_ORDER = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
+// Fallback lane order used until config resolves (v9.0 back-compat).
+const LANE_ORDER_FALLBACK = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
 
 // Canonical v8 phases per MISSION.md:69-77.
 // MANUAL_FLIPPABLE = operator can drive via phase-flip form.
 // AUTO_OR_ORCHESTRATOR_ONLY = auto-flipped or orchestrator-gated; UI shows but does not offer in `to` select.
 // Split per P2.5-D plan-v2 (TEST C6 + FE N1 refinement: COMPLETE excluded from manual because DRAINING→COMPLETE is gated on lane-drain + META capstone + HISTORY quiet >10min per MISSION.md:142).
-const MANUAL_FLIPPABLE_PHASES = [
+const MANUAL_FLIPPABLE_PHASES_FALLBACK = [
   "PHASE-PLAN",
   "PHASE-CHALLENGE",
   "PHASE-BUILD",
   "PHASE-VERIFY",
   "DRAINING",
 ];
-const AUTO_OR_ORCHESTRATOR_ONLY_PHASES = [
+const AUTO_OR_ORCHESTRATOR_ONLY_PHASES_FALLBACK = [
   "INIT",
   "PHASE-RUN",
   "PHASE-HEAL",
   "PHASE-OPERATOR-ACCEPTANCE",
   "COMPLETE",
 ];
-const ALL_PHASES = [...MANUAL_FLIPPABLE_PHASES, ...AUTO_OR_ORCHESTRATOR_ONLY_PHASES];
 
 // Canonical v8 mission statuses per README.md:58-63.
 const MISSION_STATUSES = [
@@ -58,8 +58,8 @@ const MISSION_STATUSES = [
   "COMPLETE",
 ];
 
-// inject-task: section options match TASKS.md `##`/`###` headers (server fuzzy-matches).
-const TASK_SECTIONS = [
+// inject-task: section options fallback (CR-7: overridden from config.task_sections at render time).
+const TASK_SECTIONS_FALLBACK = [
   "PHASE 1 — PLAN",
   "PHASE 2 — CHALLENGE",
   "PHASE 2.5 — Plan-v2 reconciliation",
@@ -70,6 +70,16 @@ const TASK_SECTIONS = [
   "CHALLENGE TASKS",
   "CROSS-LANE / SECONDARY TASK POOL",
 ];
+
+// Runtime-populated lane/phase/section lists (set from config in render()).
+// Each page call to render() updates these before building any DOM that uses them.
+// Multiple page mounts share this module scope, which is fine because each mount
+// calls render() fresh and overwrites these before first use.
+let LANE_ORDER = LANE_ORDER_FALLBACK.slice();
+let MANUAL_FLIPPABLE_PHASES = MANUAL_FLIPPABLE_PHASES_FALLBACK.slice();
+let AUTO_OR_ORCHESTRATOR_ONLY_PHASES = AUTO_OR_ORCHESTRATOR_ONLY_PHASES_FALLBACK.slice();
+let ALL_PHASES = [...MANUAL_FLIPPABLE_PHASES, ...AUTO_OR_ORCHESTRATOR_ONLY_PHASES];
+let TASK_SECTIONS = TASK_SECTIONS_FALLBACK.slice();
 
 // inject-task client-side validation: API contract regex MINUS Unicode arrow (v8 Edit 3 ASCII-only).
 // Server still accepts `→` via the v7 compat shim; UI blocks per TEST C7 (P2-E-to-D §C7).
@@ -853,7 +863,38 @@ function renderHistoryTail(container) {
 
 // ---- top-level render -----------------------------------------------------
 
-export function render(root) {
+export async function render(root) {
+  // PM-2 mitigation: show a loading skeleton until config resolves.
+  const skeletonDiv = document.createElement("div");
+  skeletonDiv.className = "loading-skeleton";
+  skeletonDiv.textContent = "Loading mission config…";
+  root.appendChild(skeletonDiv);
+
+  // Populate config-driven runtime variables (CR-7: TASK_SECTIONS from config).
+  try {
+    const config = await loadConfig();
+    if (Array.isArray(config.lanes) && config.lanes.length > 0) {
+      LANE_ORDER = config.lanes.map((l) => (typeof l === "string" ? l : String(l.name || l)));
+    }
+    if (Array.isArray(config.phases) && config.phases.length > 0) {
+      const phaseNames = config.phases.map((p) => (typeof p === "string" ? p : String(p.name || p)));
+      // Rebuild manual-flippable vs auto sets: auto phases are those not in the manual set,
+      // and we preserve the fallback split logic for known phases.
+      const manualSet = new Set(MANUAL_FLIPPABLE_PHASES_FALLBACK);
+      MANUAL_FLIPPABLE_PHASES = phaseNames.filter((p) => manualSet.has(p));
+      AUTO_OR_ORCHESTRATOR_ONLY_PHASES = phaseNames.filter((p) => !manualSet.has(p));
+      ALL_PHASES = [...MANUAL_FLIPPABLE_PHASES, ...AUTO_OR_ORCHESTRATOR_ONLY_PHASES];
+    }
+    if (Array.isArray(config.task_sections) && config.task_sections.length > 0) {
+      TASK_SECTIONS = config.task_sections.map((s) => (typeof s === "string" ? s : String(s.label || s.name || s)));
+    }
+  } catch (err) {
+    console.warn("[mission] config load failed, using fallback values:", err);
+  }
+
+  // Clear skeleton before building real page structure.
+  clearNode(root);
+
   // Page skeleton (static structure only — store data goes through textContent).
   const summaryCard = el("section", {
     class: "card stack-2",
