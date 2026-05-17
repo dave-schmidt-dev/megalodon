@@ -35,3 +35,16 @@ def queue_mission(tmp_path: Path) -> Path:
 @pytest.fixture
 def agent() -> str:
     return "agent-abcd"
+
+
+@pytest.fixture
+def default_config():
+    """v9.0 back-compat MissionConfig synthesized from a tmp path.
+
+    Provides a stable, valid MissionConfig for tests that need to inject
+    a config (P2.x and later phases). mission.id and utc_started are
+    arbitrary; only lane/phase/pattern data is relied upon.
+    """
+    from megalodon_ui.mission_config.default_v9_0_shape import synthesize
+    from pathlib import Path
+    return synthesize(Path("/tmp"))

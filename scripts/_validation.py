@@ -1,16 +1,24 @@
-"""Argument validation for v9 helper scripts (Codex CR-4 regex inventory)."""
+"""Argument validation for v9 helper scripts (Codex CR-4 regex inventory).
+
+Lane/task-id constants are built from the default v9.0 MissionConfig shape at
+import time. CWD is used only to satisfy the synthesize() signature — only
+lane/phase/pattern data is consumed; mission.id and utc_started are irrelevant
+to the validators.
+"""
+
+from __future__ import annotations
 
 import re
+from pathlib import Path
 
-TASK_ID_RE = re.compile(
-    r"^(P\d+(\.\d+)?(-[A-F](-to-[A-F])?)?"
-    r"|P\d+-RUN-[A-Z0-9_-]+"
-    r"|REPAIR-[A-Z0-9_-]+"
-    r"|OPERATOR-[A-Z_-]+"
-    r"|S-\d+"
-    r"|TEST-\d+)$"
-)
-LANE_RE = re.compile(r"^(AUDIT|ARCHITECT|BACKEND|FRONTEND|TEST|META)$")
+from megalodon_ui.mission_config.default_v9_0_shape import synthesize
+from megalodon_ui.mission_config.regex_builder import build_lane_re, build_task_id_re
+from megalodon_ui.mission_config.schema import MissionConfig
+
+_default_config = synthesize(Path.cwd())
+
+TASK_ID_RE: re.Pattern = build_task_id_re(_default_config)
+LANE_RE: re.Pattern = build_lane_re(_default_config)
 AGENT_RE = re.compile(r"^agent-[0-9a-f]{4}$")
 SEVERITY_RE = re.compile(
     r"^(DELTA|NIT|MAJOR|BLOCKING|TIER-1|TIER-2|MEDIUM|MINOR"
@@ -21,14 +29,7 @@ NOTES_CHARSET_RE = re.compile(r"^[\w\s.,:/()\-_\[\]'\"=@#+*?!&]*$")
 # The forbidden-list in _check_notes_like enforces these explicitly with better
 # error messages; regex provides defense-in-depth catchall for anything else.
 
-LANE_LONG_TO_SHORT = {
-    "AUDIT":     "A",
-    "ARCHITECT": "B",
-    "BACKEND":   "C",
-    "FRONTEND":  "D",
-    "TEST":      "E",
-    "META":      "F",
-}
+LANE_LONG_TO_SHORT: dict[str, str] = {l.name: l.short for l in _default_config.lanes}
 
 _NOTES_MAX = 2000
 _SUMMARY_MAX = 200
@@ -74,3 +75,16 @@ def validate_notes(value: str) -> None:
 
 def validate_summary(value: str) -> None:
     _check_notes_like(value, "summary", _SUMMARY_MAX)
+
+
+def validators_from_config(config: MissionConfig) -> dict:
+    """Build validator regexes from a specific MissionConfig.
+
+    Returns dict with keys: 'task_id_re', 'lane_re', 'lane_long_to_short'.
+    Used by callers (e.g., server.py) that operate against a non-default mission.
+    """
+    return {
+        "task_id_re": build_task_id_re(config),
+        "lane_re": build_lane_re(config),
+        "lane_long_to_short": {l.name: l.short for l in config.lanes},
+    }
