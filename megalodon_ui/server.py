@@ -27,6 +27,12 @@ from fastapi.staticfiles import StaticFiles
 from .config import AppConfig
 from . import primitives
 from .queue import queue_client as _qc
+from .mission_config.default_v9_0_shape import synthesize as _synthesize_default
+from .mission_config.regex_builder import (
+    build_task_line_re,
+    build_status_row_re,
+    build_phase_header_re,
+)
 from .constants import (
     API_CHALLENGE, API_CONFIG, API_EVENTS, API_FINDINGS, API_INJECT_TASK,
     API_MISSION_STATUS, API_PHASE_FLIP, API_RECLAIM, API_SIGNAL, API_STATE,
@@ -61,14 +67,8 @@ class MissionContext:
 # Parsers
 # ---------------------------------------------------------------------------
 
-_STATUS_ROW_RE = re.compile(
-    r"^\|\s*(?P<lane>[A-Z][A-Z\- ]*?)\s*\|\s*"
-    r"(?P<agent>[^|]+?)\s*\|\s*"
-    r"(?P<state>[^|]+?)\s*\|\s*"
-    r"(?P<last_utc>[^|]+?)\s*\|\s*"
-    r"(?P<notes>.*?)\s*\|\s*$",
-    re.MULTILINE,
-)
+_DEFAULT_CONFIG = _synthesize_default(Path.cwd())
+_STATUS_ROW_RE = build_status_row_re(_DEFAULT_CONFIG)
 
 
 def parse_status(mission_dir: Path) -> list[dict[str, Any]]:
@@ -128,12 +128,8 @@ def _parse_yaml_frontmatter(text: str) -> dict[str, Any]:
     return out
 
 
-_TASK_LINE_RE = re.compile(
-    r"^\s*-\s*\[(?P<state_block>[^\]]*)\]\s*\[LANE-(?P<lane>[A-Z])\]\s*"
-    r"`(?P<task_id>[^`]+)`\s*(?:[—-]\s*(?P<description>.*))?$",
-    re.MULTILINE,
-)
-_PHASE_HEADER_RE = re.compile(r"^##\s+(?P<phase>PHASE[^\n]*)$", re.MULTILINE)
+_TASK_LINE_RE = build_task_line_re(_DEFAULT_CONFIG)
+_PHASE_HEADER_RE = build_phase_header_re(_DEFAULT_CONFIG)
 
 
 def parse_tasks(mission_dir: Path) -> list[dict[str, Any]]:
@@ -372,6 +368,11 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             "poll_interval_seconds": ctx.config.poll_interval_seconds,
             "stale_threshold_seconds": ctx.config.stale_threshold_seconds,
             "allowed_origins": list(ctx.allowed_origins),
+            "lanes": [l.model_dump() for l in _DEFAULT_CONFIG.lanes],
+            "phases": _DEFAULT_CONFIG.phases,
+            "task_id_patterns": _DEFAULT_CONFIG.task_id_patterns.patterns,
+            "harnesses": list({l.harness.cli for l in _DEFAULT_CONFIG.lanes}),
+            "task_sections": _DEFAULT_CONFIG.task_sections,
         }
 
     @app.post("/api/tasks")
@@ -663,7 +664,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         rid = _qc.tasks_inject(
             ctx.mission_dir,
             agent="orchestrator",
-            submitting_lane="META",
+            submitting_lane=_DEFAULT_CONFIG.orchestrator_pseudo_lane,
             task_id=task_id,
             lane="A",
             description=description or f"CHALLENGE on {finding}",
@@ -724,7 +725,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         rid = _qc.tasks_inject(
             ctx.mission_dir,
             agent="orchestrator",
-            submitting_lane="META",
+            submitting_lane=_DEFAULT_CONFIG.orchestrator_pseudo_lane,
             task_id=task_id,
             lane=lane,
             description=desc,

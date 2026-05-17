@@ -122,3 +122,29 @@ def test_schema_version_1_round_trip():
     assert cfg.schema_version == 1
     restored = MissionConfig.model_validate(cfg.model_dump())
     assert restored.schema_version == 1
+
+
+def test_orchestrator_pseudo_lane_default():
+    cfg = _minimal_config()
+    assert cfg.orchestrator_pseudo_lane == "ORCHESTRATOR"
+    # Custom valid value
+    cfg2 = _minimal_config(orchestrator_pseudo_lane="META")
+    assert cfg2.orchestrator_pseudo_lane == "META"
+    # Pattern: must start with uppercase letter, then uppercase alphanumeric/dash/underscore
+    cfg3 = _minimal_config(orchestrator_pseudo_lane="ORCH-PRIMARY")
+    assert cfg3.orchestrator_pseudo_lane == "ORCH-PRIMARY"
+    # Invalid: lowercase rejected
+    with pytest.raises(ValidationError):
+        _minimal_config(orchestrator_pseudo_lane="meta")
+
+
+def test_task_sections_default_and_override():
+    cfg = _minimal_config()
+    assert cfg.task_sections == ["PHASE-PLAN", "OPERATOR-ACCEPTANCE"]
+    # Override with arbitrary list
+    custom = ["SECTION-ONE", "SECTION-TWO", "SECTION-THREE"]
+    cfg2 = _minimal_config(task_sections=custom)
+    assert cfg2.task_sections == custom
+    # Empty string element rejected (min_length=1)
+    with pytest.raises(ValidationError):
+        _minimal_config(task_sections=[""])

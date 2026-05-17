@@ -61,4 +61,6 @@ def synthesize(mission_dir: Path) -> MissionConfig:
         task_id_patterns=TaskIdPattern(patterns=[
             r"^(P\d+(\.\d+)?(-[A-F](-to-[A-F])?)?|P\d+-RUN-[A-Z0-9_-]+|REPAIR-[A-Z0-9_-]+|OPERATOR-[A-Z_-]+|S-\d+|TEST-\d+|CHALLENGE-[A-Z0-9_-]+)$"
         ]),
+        orchestrator_pseudo_lane="META",  # v9.0 back-compat — server.py uses submitting_lane="META"
+        task_sections=["PHASE 1 — PLAN", "OPERATOR-ACCEPTANCE TASKS"],  # match mission.js literal labels (CR-7)
     )

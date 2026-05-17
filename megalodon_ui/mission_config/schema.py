@@ -65,6 +65,14 @@ class MissionConfig(BaseModel):
     task_id_patterns: TaskIdPattern = Field(default_factory=lambda: TaskIdPattern(patterns=[r"^[A-Z][A-Za-z0-9\-\.]*$"]))
     harness_rebinding_reserved: dict[str, Any] = Field(default_factory=dict)
 
+    orchestrator_pseudo_lane: Annotated[
+        str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_-]*$", max_length=20)
+    ] = "ORCHESTRATOR"
+
+    task_sections: list[Annotated[str, StringConstraints(min_length=1, max_length=80)]] = Field(
+        default_factory=lambda: ["PHASE-PLAN", "OPERATOR-ACCEPTANCE"]
+    )
+
     @field_validator("lanes")
     @classmethod
     def lane_names_unique(cls, v):

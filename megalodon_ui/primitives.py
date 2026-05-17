@@ -13,13 +13,29 @@ import os
 import re
 import shutil
 
+from .mission_config.default_v9_0_shape import synthesize as _synthesize_default_config
+from .mission_config.regex_builder import build_lane_short_charclass
+from .mission_config.schema import MissionConfig
+
+# Build default config once at module load from the v9.0 back-compat shape.
+# This is always filesystem-safe: synthesize() falls back to datetime.now()
+# when neither MISSION.md nor .mission-events is present.
+_DEFAULT_CONFIG = _synthesize_default_config(Path.cwd())
+
+# LANE_LONG_TO_SHORT maps long lane names to their single/double-letter short
+# codes as defined by the v9.0 back-compat config (e.g. AUDIT→A, ARCHITECT→B).
+# Using the dict resolves the v8 first-letter ambiguity (AUDIT[0]==ARCHITECT[0]=='A').
+LANE_LONG_TO_SHORT: dict[str, str] = {l.name: l.short for l in _DEFAULT_CONFIG.lanes}
 
 # ---------------------------------------------------------------------------
 # Canonical task-id regex (v8 Edit 3 — ASCII only; see P2.5-C plan-v2 Δ2.2).
 # Exported so FRONTEND can mirror client-side validation per FE P2-D-to-C C4.
+# Single source of truth: the loose shape pattern from MissionConfig's default
+# factory (schema.py line 65) rather than a copy-pasted literal here.
 # ---------------------------------------------------------------------------
 
-CANONICAL_TASK_ID_RE = re.compile(r"^[A-Z][A-Za-z0-9\-\.]*$")
+_DEFAULT_LOOSE_PATTERN = MissionConfig.model_fields["task_id_patterns"].default_factory().patterns[0]
+CANONICAL_TASK_ID_RE = re.compile(_DEFAULT_LOOSE_PATTERN)
 """Server-side canonical task-id pattern. ASCII-only per v8 Edit 3."""
 
 
@@ -255,9 +271,17 @@ def mark_complete(
     if tasks_path.exists():
         text = tasks_path.read_text()
         # Match either `[ ] [LANE-X] \`<task>\`` or `[claimed: ...] [LANE-X] \`<task>\``
+        # _LANE_SHORT_CLASS is config-driven (e.g. "[A-F]" for the 6-lane default).
+        # Wrap alternation form as non-capturing so group indices don't shift.
+        _LANE_SHORT_CLASS = build_lane_short_charclass(_DEFAULT_CONFIG)
+        _lane_match = (
+            _LANE_SHORT_CLASS
+            if _LANE_SHORT_CLASS.startswith("[")
+            else f"(?:{_LANE_SHORT_CLASS.strip('()')})"
+        )
         pattern = re.compile(
             r"\[(?:\s|claimed:[^\]]*)\]"
-            r"(\s\[LANE-[A-H]\]\s`" + re.escape(canonical) + r"`)"
+            r"(\s\[LANE-" + _lane_match + r"\]\s`" + re.escape(canonical) + r"`)"
         )
         new_text, n = pattern.subn(
             f"[done: {agent} @ {utc}]\\1", text, count=1
@@ -268,10 +292,9 @@ def mark_complete(
         tasks_path.write_text(new_text)
 
     # Step 3: HISTORY append (canonical line per test_protocol_primitives.py:198).
-    # Note: README v8 §HISTORY.md "single-letter LANE codes" conflicts with the
-    # test's canonical regex which expects "LANE-A". The test is authoritative
-    # for primitives correctness; flag for v8.1.
-    lane_canonical = lane if lane.startswith("LANE-") else f"LANE-{lane[0].upper()}"
+    # LANE_LONG_TO_SHORT comes from the v9.0 back-compat config and resolves the
+    # v8 ambiguity where first-letter derivation collided (AUDIT[0]==ARCHITECT[0]).
+    lane_canonical = lane if lane.startswith("LANE-") else f"LANE-{LANE_LONG_TO_SHORT[lane]}"
     history_line = (
         f"{utc} | {agent} | {lane_canonical} | {canonical} | {finding} | {severity}\n"
     )

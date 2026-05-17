@@ -41,7 +41,12 @@ from typing import Any
 
 from .journal import Journal
 from .schemas import validate_payload
+from megalodon_ui.mission_config.schema import validate_task_id_with_config
+from megalodon_ui.mission_config.default_v9_0_shape import synthesize as _synthesize_default
+from megalodon_ui.mission_config.regex_builder import build_lane_short_charclass
 
+_DEFAULT_CONFIG = _synthesize_default(Path("/tmp"))
+_LANE_SHORT_CHARCLASS = build_lane_short_charclass(_DEFAULT_CONFIG)
 
 SCHEMA_VERSION = 1
 DEFAULT_POLL_SECONDS = 2.0
@@ -415,7 +420,7 @@ class Applier:
         with AtomicFile(target) as f:
             content = f.read()
             # Format: `- [bracket] [LANE-X] `task` — desc`
-            pattern = rf"^(-\s+)\[[^\]]+\]\s+(\[LANE-[A-Z]\]\s+`{re.escape(task_id)}`.*)$"
+            pattern = rf"^(-\s+)\[[^\]]+\]\s+(\[LANE-{_LANE_SHORT_CHARCLASS}\]\s+`{re.escape(task_id)}`.*)$"
             matches = re.findall(pattern, content, re.MULTILINE)
             if len(matches) != 1:
                 raise ValueError(
