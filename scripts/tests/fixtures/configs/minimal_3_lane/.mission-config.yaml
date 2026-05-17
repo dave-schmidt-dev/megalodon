@@ -1,0 +1,32 @@
+schema_version: 1
+mission:
+  id: minimal-3-lane
+  utc_started: "2026-01-01T00:00:00Z"
+  type: software-engineering
+  description: minimal 3-lane fixture for gen_lane_launches tests
+lanes:
+  - name: ALPHA
+    role: audit
+    harness:
+      cli: claude
+      model: sonnet
+    cadence_seconds: 300
+    tick_offset_seconds: 0
+  - name: BETA
+    role: builder
+    harness:
+      cli: codex
+      model: gpt-4o
+    cadence_seconds: 180
+    tick_offset_seconds: 45
+  - name: GAMMA
+    role: observer
+    harness:
+      cli: gemini
+      model: gemini-2.0-flash
+    cadence_seconds: 420
+    tick_offset_seconds: 90
+phases:
+  - INIT
+  - PHASE-PLAN
+  - COMPLETE

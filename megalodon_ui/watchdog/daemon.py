@@ -1,15 +1,29 @@
-"""V9 A1 — watchdog main loop."""
+"""V9 A1 — watchdog main loop.
+
+WR-3 Known Limitation (v9.1)
+-----------------------------
+The S3 JSONL-stale detector relies on ``~/.claude/projects/**/*.jsonl`` which
+only Claude Code writes.  Non-Claude harnesses (codex, gemini, copilot, cursor,
+vibe) do not write to that path, so S3 is unconditionally skipped for lanes
+whose ``harness.cli != "claude"``.  A startup warning is emitted for each such
+lane.  S1 (process-alive) and S2 (STATUS-row stale) continue to apply to ALL
+lanes regardless of harness.  A SIGHUP-driven config reload is deferred; see
+CV-8.
+"""
 from __future__ import annotations
 
 import signal
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .alerts import AlertManager
 from .detectors import detect_jsonl_stale, detect_process, detect_status_stale
 
-DEFAULT_LANES = ("AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META")
+if TYPE_CHECKING:
+    from megalodon_ui.mission_config import LaneConfig, MissionConfig
+
 PID_DIR = Path.home() / ".megalodon-pids"
 
 
@@ -35,50 +49,87 @@ def _find_jsonl(pid: int) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+def _load_lanes(mission_dir: Path) -> list[LaneConfig]:
+    """Load lane list from mission config, falling back to default v9.0 shape."""
+    from megalodon_ui.mission_config import load_mission_config
+    config = load_mission_config(mission_dir)
+    return list(config.lanes)
+
+
+def _emit_wr3_warnings(lanes: list[LaneConfig]) -> None:
+    """WR-3: emit startup warnings for non-Claude lanes where S3 is skipped."""
+    for lane in lanes:
+        if lane.harness.cli != "claude":
+            print(
+                f"S3 detector skipped for lane {lane.name}"
+                f" (cli={lane.harness.cli}); WR-3 known limitation in v9.1",
+                file=sys.stderr,
+            )
+
+
 def poll_once(
     mission_dir: Path,
     alerts: AlertManager,
     cadence_seconds: int = 300,
+    lanes: list[LaneConfig] | None = None,
 ) -> None:
-    """One pass over all lanes."""
+    """One pass over all lanes.
+
+    Parameters
+    ----------
+    mission_dir:
+        Root of the mission directory (used for STATUS.md lookup).
+    alerts:
+        Alert manager instance.
+    cadence_seconds:
+        Polling cadence; used to compute the S2 staleness threshold.
+    lanes:
+        Pre-loaded list of LaneConfig objects.  When *None* (default) the
+        config is loaded from *mission_dir* at each call — callers that want
+        to avoid repeated disk I/O should load once and pass the list in.
+    """
+    if lanes is None:
+        lanes = _load_lanes(mission_dir)
+
     status_md = mission_dir / "STATUS.md"
     status_threshold = max(900, cadence_seconds * 3)
     jsonl_threshold = 300
 
-    for lane in DEFAULT_LANES:
-        pid = _read_pid(lane)
+    for lane in lanes:
+        name = lane.name
+        pid = _read_pid(name)
 
-        # S1
+        # S1 — process alive check (all lanes)
         if pid is not None:
             if detect_process(pid) == "crashed":
-                alerts.alert(lane, "CRASHED", evidence=[f"pid {pid} not alive"])
+                alerts.alert(name, "CRASHED", evidence=[f"pid {pid} not alive"])
                 continue
 
-        # S2
-        s2 = detect_status_stale(status_md, lane, status_threshold)
+        # S2 — STATUS row freshness (all lanes)
+        s2 = detect_status_stale(status_md, name, status_threshold)
         if s2 == "stale":
             alerts.alert(
-                lane,
+                name,
                 "STATUS-STALE",
                 evidence=[f"STATUS row > {status_threshold}s old"],
             )
             continue
 
-        # S3
-        if pid is not None:
+        # S3 — JSONL log freshness (Claude lanes only; WR-3)
+        if lane.harness.cli == "claude" and pid is not None:
             jsonl = _find_jsonl(pid)
             if jsonl is not None:
                 s3 = detect_jsonl_stale(jsonl, jsonl_threshold)
                 if s3 == "hung":
                     alerts.alert(
-                        lane,
+                        name,
                         "HUNG",
                         evidence=[f"JSONL {jsonl.name} > {jsonl_threshold}s old"],
                     )
                     continue
 
         # Recovered
-        alerts.recover(lane)
+        alerts.recover(name)
 
 
 def run(
@@ -88,6 +139,7 @@ def run(
     debug: bool = False,
 ) -> int:
     alerts = AlertManager(mission_dir)
+    lanes = _load_lanes(mission_dir)
     stop = False
 
     def _stop(*_):
@@ -98,9 +150,11 @@ def run(
     signal.signal(signal.SIGINT, _stop)
 
     print(f"watchdog started for {mission_dir}", file=sys.stderr)
+    _emit_wr3_warnings(lanes)
+
     while not stop:
         try:
-            poll_once(mission_dir, alerts, cadence_seconds)
+            poll_once(mission_dir, alerts, cadence_seconds, lanes=lanes)
         except Exception as e:
             print(f"watchdog poll error: {e}", file=sys.stderr)
         for _ in range(poll_seconds * 10):
