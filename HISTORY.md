@@ -367,3 +367,40 @@ V9-ROADMAP Migration plan §3f-§3k shipped in single bundle.
 - (d) `_intent_expired.is_expired` parses UTC with `%Y-%m-%dT%H:%M:%SZ` — no fractional seconds, no timezone offsets. STATUS rows currently use this format consistently.
 - (e) SIGNAL parser tolerates malformed YAML by returning `None`, so a bad finding doesn't crash a scanning loop. The `signal-type` key gate is the only positive-identification requirement.
 - (f) launch.md additions intentionally appended (rather than line-edited) where possible to compose cleanly with parallel A1 watchdog (RULE 16) and A9 fleet-ledger (§5.A) edits.
+
+---
+
+## 2026-05-17T18:41Z — A2 fleet launcher: iTerm spawn mode + two model/lane bugs
+
+**Session goal:** extend `scripts/launch_fleet.sh` (previously echo-only stub) so the orchestrator (or operator) can open a single iTerm window with a 2×3 pane layout and launch each lane's CLI in its assigned pane. Cleared by the doc-bundle agent for direct extension (their spec deliberately deferred osascript wiring).
+
+**Added:**
+- `scripts/launch_fleet.sh` — fixed bash-3.2 incompat (parallel arrays instead of `declare -A`); new flags `--spawn`, `--dry-run`, `--no-launch`, `--skip-applier-check`, `--cli-<lane>=<bin>`, `--prompt-override=<txt>`. Layout uses 5 iTerm splits (sessA…sessF); iTerm auto-equalizes to 6 identical panes. Each pane prepends an `OSC 1337 ; SetBadgeFormat` escape so the lane label is sticky regardless of shell prompt overrides. Pre-flight gates: lane-launch-file presence, applier heartbeat <30s freshness.
+- `scripts/tests/test_launch_fleet.py` — 17 tests covering help, print mode, model mapping, CLI overrides, dry-run AppleScript structure, badge prefix, no-launch shape, missing lane files, missing/stale applier heartbeat, prompt override, unknown CLI errors.
+- `scripts/tests/test_lane_launch_codegen.py::test_model_hint_uses_claude_alias` — regression guard for the model-string bug below.
+
+**Bugs found during live variety spawn (claude+codex+gemini+cursor-agent+vibe+copilot):**
+
+1. **Invalid `claude --model` strings.** `LANE_MODELS` in both `gen_lane_launches.py` and (newly added) `launch_fleet.sh` used `sonnet-4.6` / `opus-4.7`. The CLI rejects those — per `claude --help`, valid forms are aliases (`sonnet`/`opus`/`haiku`) or canonical IDs (`claude-sonnet-4-6`). The print-mode default never executed these strings, so the bug went silent until automation made the invocation. **Fixed** in this session: `sonnet-4.6` → `sonnet`, `opus-4.7` → `opus` in both files. Regression test added.
+
+2. **Hardcoded lane names** (already known V9-protocol bug, deferred). `LANES=(AUDIT ARCHITECT BACKEND FRONTEND TEST META)` is duplicated across `launch_fleet.sh`, `gen_lane_launches.py`, and likely other places. TODO marker added in `launch_fleet.sh` line ~38. **Deferred** until V9 protocol patch lands.
+
+**Tests:** 22 pass (17 spawn + 5 codegen, including 1 new regression guard). All earlier codegen behavior preserved.
+
+**Deferred operator actions:**
+- `chmod +x scripts/launch_fleet.sh` (sandbox denied — invoke with `bash scripts/launch_fleet.sh` until then).
+- Regenerate `launch-<LANE>.md` via `python3 scripts/gen_lane_launches.py` **after** the doc-bundle agent confirms `launch.md` edits are complete (avoiding a write race on the source file). Regen will pick up the corrected MODEL_HINT (`sonnet`/`opus`) and any doc-bundle changes to `launch.md`.
+
+**Operator invocation (production):**
+```
+./scripts/start_applier.sh "$MISSION_DIR" &
+bash scripts/launch_fleet.sh --spawn
+```
+
+**Orchestrator-Claude invocation (via Bash tool):**
+```
+bash scripts/launch_fleet.sh --spawn
+```
+Identical — gates on applier heartbeat. Pre-test without an active mission: append `--skip-applier-check --no-launch`.
+
+**Variety spawn verified live:** AUDIT=codex, ARCHITECT=gemini, BACKEND=cursor-agent, FRONTEND=vibe, TEST=copilot, META=claude. All 5 non-claude REPLs booted; claude on META surfaced the model-string bug above.

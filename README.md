@@ -121,11 +121,21 @@ workers.
 
 Instead of running `claude --model X "read launch.md"` six times manually:
 
-    ./scripts/launch_fleet.sh /path/to/mission
+    bash scripts/launch_fleet.sh --spawn
+
+Requires `.claude/CLAUDE.md` allow rules for `bash scripts/launch_fleet.sh *`.
+Flags:
+- `--spawn` — open iTerm with 2×3 pane layout; launch each lane's CLI in its assigned pane (macOS only).
+- `--dry-run` — print the AppleScript that would be run (no iTerm open).
+- `--no-launch` — verify structure + print commands, but don't execute.
+- `--skip-applier-check` — skip the applier heartbeat gate (useful for testing without an active mission).
+- `--cli-<lane>=<bin>` — override the CLI for a lane (lowercase: `--cli-audit=codex`).
+- `--prompt-override=<txt>` — replace each lane's `"read launch-<LANE>.md"` prompt
+  (useful for variety/smoke tests that must not join a live mission).
 
 Each lane gets a pre-bound launch file (`launch-AUDIT.md`, `launch-ARCHITECT.md`,
 `launch-BACKEND.md`, `launch-FRONTEND.md`, `launch-TEST.md`, `launch-META.md`)
-with model, cadence, and stagger offset baked in. Regenerate after launch.md
+with model, cadence, and stagger offset baked in. Regenerate after `launch.md`
 changes:
 
     python3 scripts/gen_lane_launches.py

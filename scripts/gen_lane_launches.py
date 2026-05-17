@@ -11,12 +11,16 @@ import sys
 from pathlib import Path
 
 DEFAULT_LANES = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"]
-DEFAULT_MODEL = "opus-4.7"
+# Claude CLI accepts "sonnet"/"opus"/"haiku" aliases (latest of each family) or
+# canonical IDs like "claude-sonnet-4-6". The version-numbered shorthand we
+# used previously ("opus-4.7", "sonnet-4.6") is NOT a valid --model arg and
+# breaks `claude --model <X>` at the shell. Use aliases.
+DEFAULT_MODEL = "opus"
 
 # Sonnet for observer lanes (cheaper, sufficient for synthesis/audit work).
 LANE_MODELS = {
-    "AUDIT": "sonnet-4.6",
-    "META": "sonnet-4.6",
+    "AUDIT": "sonnet",
+    "META": "sonnet",
 }
 # Faster cadence for builder lanes; slower for META observer.
 LANE_CADENCE = {
