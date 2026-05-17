@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ._backends.direct_fcntl import STATUS_ROW_RE
+from ._validation import LANE_LONG_TO_SHORT
 
 _PHASE_FLIP_RE = re.compile(
     r"^(?P<utc>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) "
@@ -52,10 +53,7 @@ def read_lanes(mission_dir: Path) -> list[dict[str, Any]]:
         lane = m["lane"].strip()
         rows.append({
             "lane": lane,
-            "lane_short": {
-                "AUDIT": "A", "ARCHITECT": "B", "BACKEND": "C",
-                "FRONTEND": "D", "TEST": "E", "META": "F",
-            }[lane],
+            "lane_short": LANE_LONG_TO_SHORT[lane],
             "agent": m["agent"].strip(),
             "state": m["state"].strip(),
             "last_utc": last_utc_str,
