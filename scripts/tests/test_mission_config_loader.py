@@ -117,3 +117,27 @@ def test_validate_cli_fails_on_malformed_yaml(tmp_path: Path, capsys) -> None:
 
     captured = capsys.readouterr()
     assert captured.err.strip() != ""
+
+
+def test_scripts_loader_returns_default_shape_for_empty_dir(tmp_path: Path) -> None:
+    """load_for_scripts falls back to default_v9_0_shape for an empty directory."""
+    from scripts._config_loader import load_for_scripts
+
+    cfg = load_for_scripts(tmp_path)
+
+    assert isinstance(cfg, MissionConfig)
+    assert cfg.lanes[0].name == "AUDIT"
+
+
+def test_scripts_loader_resolves_relative_path(tmp_path: Path, monkeypatch) -> None:
+    """load_for_scripts resolves a relative string path via .resolve()."""
+    from scripts._config_loader import load_for_scripts
+
+    config_file = tmp_path / ".mission-config.yaml"
+    config_file.write_text(_MINIMAL_YAML, encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    cfg = load_for_scripts(".")
+
+    assert isinstance(cfg, MissionConfig)
+    assert cfg.mission.id == "test-mission"
