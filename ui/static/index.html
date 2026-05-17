@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="csrf-token" content="" />
+  <title>Megalodon</title>
+  <link rel="stylesheet" href="/static/css/base.css" />
+</head>
+<body data-control-mode="false" data-last-event-id="">
+  <noscript>This UI requires JavaScript.</noscript>
+
+  <header role="banner" class="app-header">
+    <div class="app-header__left">
+      <span class="app-title">Megalodon</span>
+      <span class="mission-status" data-testid="mission-status"></span>
+    </div>
+
+    <div class="app-header__center">
+      <ol class="phase-strip" aria-label="Mission phase">
+        <li class="phase-segment" data-testid="phase-segment-INIT">INIT</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-PLAN">PLAN</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-CHALLENGE">CHALLENGE</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-BUILD">BUILD</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-VERIFY">VERIFY</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-RUN">RUN</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-HEAL">HEAL</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-OPERATOR-ACCEPTANCE">OP-ACK</li>
+        <li class="phase-segment" data-testid="phase-segment-DRAINING">DRAINING</li>
+        <li class="phase-segment" data-testid="phase-segment-COMPLETE">COMPLETE</li>
+      </ol>
+    </div>
+
+    <div class="app-header__right">
+      <button
+        type="button"
+        class="control-mode-toggle"
+        data-testid="action-toggle-control-mode"
+        role="switch"
+        aria-checked="false"
+      >
+        <span class="control-mode-toggle__label" data-state="off">🔒 Read-only</span>
+        <span class="control-mode-toggle__label" data-state="on">🔓 Control</span>
+      </button>
+    </div>
+  </header>
+
+  <nav role="navigation" aria-label="Pages" class="app-nav">
+    <a href="/" data-testid="nav-dashboard">Dashboard</a>
+    <a href="/tasks" data-testid="nav-tasks">Tasks</a>
+    <a href="/findings" data-testid="nav-findings">Findings</a>
+    <a href="/signals" data-testid="nav-signals">Signals</a>
+    <a href="/mission" data-testid="nav-mission">Mission</a>
+  </nav>
+
+  <main id="app-root" role="main"></main>
+
+  <div id="toast-region" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/static/js/store.js"></script>
+  <script type="module" src="/static/js/sse.js"></script>
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

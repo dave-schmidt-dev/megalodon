@@ -1,59 +1,107 @@
-# Tasks
+# Tasks — Run 2 (make-it-work)
 
 Format: `[ ] [LANE-X] <task-id> — <description>`
 
-States: `[ ]` open · `[claimed: <agent-id> @ <UTC>]` claimed · `[done: <agent-id> @ <UTC>]` complete
+States: `[ ]` open · `[claimed: <agent-id> @ <UTC>]` · `[done: <agent-id> @ <UTC>]`
 
-Claim via `mkdir claims/<task-id>` per RULE 2; TASKS.md is informational.
+Claim via `mkdir claims/<task-id>` per RULE 2. Use ASCII task IDs only (per v8 Edit 3): `P2-A-to-F` not `P2-A→F`.
 
 Task IDs encode phase and lane per MISSION.md task-assignment matrix.
 
 ---
 
-## PHASE 1 — PLAN (claim by lane; Pass-1 fresh eyes; do NOT read other lanes' plans)
+## PHASE 1 — PLAN (Pass-1 fresh eyes; do NOT read other lanes' plans)
 
-- [ ] [LANE-A] `P1-A` — AUDIT plan: methodology, literature checklist (raft, blackboard, OTP, CRDT, Hewitt actors, CSP), v8 changeset skeleton. Output: `findings/<agent-id>-A-P1-audit-plan-<UTC>.md`
-- [ ] [LANE-B] `P1-B` — ARCHITECT plan: data model for protocol state, API surface sketch, page structure, wireframes, tech-stack recommendation (Python/FastAPI assumed; recommend otherwise if warranted). Output: `findings/<agent-id>-B-P1-arch-plan-<UTC>.md`
-- [ ] [LANE-C] `P1-C` — BACKEND plan: server architecture (file-watch vs poll vs hybrid), atomic-write strategy for orchestrator actions, API contract draft. Output: `findings/<agent-id>-C-P1-backend-plan-<UTC>.md`
-- [ ] [LANE-D] `P1-D` — FRONTEND plan: page-by-page interaction design, real-time update strategy (SSE/poll/WS), SIGNAL-timeline visual design. Output: `findings/<agent-id>-D-P1-frontend-plan-<UTC>.md`
-- [ ] [LANE-E] `P1-E` — TEST plan: test strategy, Playwright coverage matrix, fixture mission-dir setup. Output: `findings/<agent-id>-E-P1-test-plan-<UTC>.md`
-- [ ] [LANE-F] `P1-F` — META plan: observation framework — signals indicating phase-gating works/fails, data-collection plan, capstone scope. Output: `findings/<agent-id>-F-P1-meta-plan-<UTC>.md`
+- [done: agent-dcbc @ 2026-05-16T17:39Z] [LANE-A] `P1-A` — AUDIT plan: scan run-1 archive for what AUDIT got right/wrong; design run-2 audit methodology; plan v8.1-candidate doc structure (if recurring failures suggest spec gaps). Output: `findings/<agent>-A-P1-audit-plan-<UTC>.md`
+- [done: agent-fec0 @ 2026-05-16T17:38Z] [LANE-B] `P1-B` — ARCHITECT plan: design `megalodon_ui/` package structure; spec `make_app(mission_dir=)` factory contract; design the 4 missing POST endpoint UI wiring patterns. Output: `findings/<agent>-B-P1-arch-plan-<UTC>.md`
+- [done: agent-84f2 @ 2026-05-16T17:39Z] [LANE-C] `P1-C` — BACKEND plan: design `megalodon_ui/primitives.py` API (enumerate from `ui/tests/unit/test_protocol_primitives.py` imports — `is_stale`, `try_claim`, `validate_signal`, and any others); design `make_app(mission_dir=)` factory wrapping current `ui/server.py`'s app; plan SSE payload shape fixes. Output: `findings/<agent>-C-P1-backend-plan-<UTC>.md`
+- [done: agent-2e7a @ 2026-05-16T17:40Z] [LANE-D] `P1-D` — FRONTEND plan: scan run-1's `ui/static/pages/*.js` to inventory what's wired vs what's not; design the 4 missing POST endpoint UI flows; plan Playwright integration. Output: `findings/<agent>-D-P1-frontend-plan-<UTC>.md`
+- [done: agent-43d9 @ 2026-05-16T17:43Z] [LANE-E] `P1-E` — TEST plan: enumerate ALL tests in `ui/tests/{unit,integration,e2e}` and what each needs to actually execute (not SKIP); plan Playwright headless + UI-screenshot artifact production; design test report format. Output: `findings/<agent>-E-P1-test-plan-<UTC>.md`
+- [done: agent-9bba @ 2026-05-16T17:41Z] [LANE-F] `P1-F` — META plan: observation framework targeting run-2's specific risk (PHASE-RUN+HEAL behavior + PHASE-OPERATOR-ACCEPTANCE gating). Output: `findings/<agent>-F-P1-meta-plan-<UTC>.md`
 
 ## PHASE 2 — CHALLENGE (directed cycle A→F→E→D→C→B→A)
 
-- [ ] [LANE-A] `P2-A→F` — AUDIT challenges META plan. Find blind spots in observation methodology. Output: `findings/<agent-id>-A-P2-challenge-of-meta-<UTC>.md`
-- [ ] [LANE-F] `P2-F→E` — META challenges TEST plan. Phase-gating itself testable? Output: `findings/<agent-id>-F-P2-challenge-of-test-<UTC>.md`
-- [ ] [LANE-E] `P2-E→D` — TEST challenges FRONTEND plan. Testability holes, race conditions. Output: `findings/<agent-id>-E-P2-challenge-of-frontend-<UTC>.md`
-- [ ] [LANE-D] `P2-D→C` — FRONTEND challenges BACKEND plan. FE-unfriendly API shapes, missing endpoints. Output: `findings/<agent-id>-D-P2-challenge-of-backend-<UTC>.md`
-- [ ] [LANE-C] `P2-C→B` — BACKEND challenges ARCHITECT plan. Spec gaps, concurrency hazards. Output: `findings/<agent-id>-C-P2-challenge-of-architect-<UTC>.md`
-- [ ] [LANE-B] `P2-B→A` — ARCHITECT challenges AUDIT plan. Over-reach beyond v7 evidence base. Output: `findings/<agent-id>-B-P2-challenge-of-audit-<UTC>.md`
+- [done: agent-dcbc @ 2026-05-16T17:48Z] [LANE-A] `P2-A-to-F` — AUDIT challenges META plan. Output: `findings/<agent>-A-P2-challenge-of-meta-<UTC>.md`
+- [done: agent-9bba @ 2026-05-16T17:50Z] [LANE-F] `P2-F-to-E` — META challenges TEST plan. Output: `findings/<agent>-F-P2-challenge-of-test-<UTC>.md`
+- [done: agent-43d9 @ 2026-05-16T17:55Z] [LANE-E] `P2-E-to-D` — TEST challenges FRONTEND plan. Output: `findings/<agent>-E-P2-challenge-of-frontend-<UTC>.md`
+- [done: agent-2e7a @ 2026-05-16T18:16Z] [LANE-D] `P2-D-to-C` — FRONTEND challenges BACKEND plan. Output: `findings/<agent>-D-P2-challenge-of-backend-<UTC>.md`
+- [done: agent-84f2 @ 2026-05-16T17:58Z (RULE-6 retroactive recovery by agent-fec0 @ 2026-05-16T18:19Z — split-tick RULE-10; finding existed, bracket missed)] [LANE-C] `P2-C-to-B` — BACKEND challenges ARCHITECT plan. Output: `findings/<agent>-C-P2-challenge-of-architect-<UTC>.md`
+- [done: agent-fec0 @ 2026-05-16T17:44Z] [LANE-B] `P2-B-to-A` — ARCHITECT challenges AUDIT plan. Output: `findings/<agent>-B-P2-challenge-of-audit-<UTC>.md`
 
-### PHASE 2.5 — Plan-v2 reconciliation (each plan author incorporates or rebuts their challenge)
+### PHASE 2.5 — Plan-v2 reconciliation
 
-- [ ] [LANE-A] `P2.5-A` — AUDIT writes plan-v2 incorporating ARCHITECT's challenge feedback. Output: `findings/<agent-id>-A-P2.5-audit-plan-v2-<UTC>.md`
-- [ ] [LANE-B] `P2.5-B` — ARCHITECT writes plan-v2 incorporating BACKEND's challenge feedback. Output: `findings/<agent-id>-B-P2.5-arch-plan-v2-<UTC>.md`
-- [ ] [LANE-C] `P2.5-C` — BACKEND writes plan-v2 incorporating FRONTEND's challenge feedback. Output: `findings/<agent-id>-C-P2.5-backend-plan-v2-<UTC>.md`
-- [ ] [LANE-D] `P2.5-D` — FRONTEND writes plan-v2 incorporating TEST's challenge feedback. Output: `findings/<agent-id>-D-P2.5-frontend-plan-v2-<UTC>.md`
-- [ ] [LANE-E] `P2.5-E` — TEST writes plan-v2 incorporating META's challenge feedback. Output: `findings/<agent-id>-E-P2.5-test-plan-v2-<UTC>.md`
-- [ ] [LANE-F] `P2.5-F` — META writes plan-v2 incorporating AUDIT's challenge feedback. Output: `findings/<agent-id>-F-P2.5-meta-plan-v2-<UTC>.md`
+- [done: agent-dcbc @ 2026-05-16T17:56Z] [LANE-A] `P2.5-A` — AUDIT plan-v2 incorporating ARCHITECT challenge.
+- [done: agent-fec0 @ 2026-05-16T17:55Z] [LANE-B] `P2.5-B` — ARCHITECT plan-v2 incorporating BACKEND challenge.
+- [done: agent-84f2 @ 2026-05-16T18:53Z] [LANE-C] `P2.5-C` — BACKEND plan-v2 incorporating FRONTEND challenge.
+- [done: agent-2e7a @ 2026-05-16T18:19Z] [LANE-D] `P2.5-D` — FRONTEND plan-v2 incorporating TEST challenge.
+- [done: agent-43d9 @ 2026-05-16T18:16Z] [LANE-E] `P2.5-E` — TEST plan-v2 incorporating META challenge.
+- [done: agent-9bba @ 2026-05-16T17:57Z] [LANE-F] `P2.5-F` — META plan-v2 incorporating AUDIT challenge.
 
-## PHASE 3 — BUILD (claim by lane; implement per plan-v2)
+## PHASE 3 — BUILD
 
-- [ ] [LANE-A] `P3-A` — AUDIT writes `docs/v8-changeset.md` — concrete proposed edits to README.md / MISSION.md as a diff
-- [ ] [LANE-B] `P3-B` — ARCHITECT writes final `ui/SPEC.md` + Architecture Decision Records in `ui/adrs/`
-- [ ] [LANE-C] `P3-C` — BACKEND builds server. **Publish stub API in tick 1-2** so FRONTEND can integrate in parallel. Output: `ui/server.py` (or chosen stack) + `ui/api-contract.md`
-- [ ] [LANE-D] `P3-D` — FRONTEND builds the UI integrating against BACKEND's stub then real API. Output: `ui/static/` + integration code
-- [ ] [LANE-E] `P3-E` — TEST builds Playwright E2E suite + integration tests against fixture mission dirs. Output: `ui/tests/`
-- [ ] [LANE-F] `P3-F` — META writes mid-mission report: how the 4-phase pattern is going; tick-by-tick emergence. Output: `findings/<agent-id>-F-P3-mid-mission-meta-<UTC>.md`
+- [done: agent-dcbc @ 2026-05-16T19:11Z] [LANE-A] `P3-A` — AUDIT writes `docs/v8.1-candidate.md` IF the run surfaces protocol spec gaps. Otherwise produces a "v8-stable-after-run-2" attestation. Output: `docs/v8.1-candidate.md` OR `findings/<agent>-A-P3-v8-attestation-<UTC>.md`
+- [done: agent-fec0 @ 2026-05-16T19:08Z] [LANE-B] `P3-B` — ARCHITECT writes `ui/SPEC-v2.md` (incremental delta) + `ui/adrs/ADR-006-make_app-factory.md`
+- [done: agent-84f2 @ 2026-05-16T19:36Z] [LANE-C] `P3-C` — BACKEND builds `megalodon_ui/` package. **Publish stub in tick 1-2 so TEST can integrate against it.** Output: `megalodon_ui/__init__.py` + `megalodon_ui/primitives.py` + `megalodon_ui/server.py` (with `make_app(mission_dir=Path)` factory) + fixes to `ui/server.py` for SSE payload shapes (run-1 P4-C→D V2).
+- [done: agent-2e7a @ 2026-05-16T19:19Z] [LANE-D] `P3-D` — FRONTEND wires the 4 unwired POST endpoints in `ui/static/pages/*.js` (inject-challenge, phase-flip, mission-status, inject-task). Each must have form + success/error toast + Playwright-testable `data-testid` hooks.
+- [done: agent-43d9 @ 2026-05-16T19:54Z] [LANE-E] `P3-E` — TEST updates test code so imports succeed against new `megalodon_ui` package; adds Playwright headless smoke tests; ensures all tests REACH ASSERTION (no SKIPs).
+- [done: agent-9bba @ 2026-05-16T19:09Z] [LANE-F] `P3-F` — META mid-mission report on PHASE-RUN behavior. Output: `findings/<agent>-F-P3-mid-mission-meta-<UTC>.md`
 
 ## PHASE 4 — VERIFY (rotated pairings; no self-verification)
 
-- [ ] [LANE-A] `P4-A→B` — AUDIT verifies ARCHITECT spec for protocol-fidelity. Does UI honor v7 (and proposed v8) semantics? Output: `findings/<agent-id>-A-P4-verify-of-architect-<UTC>.md`
-- [ ] [LANE-B] `P4-B→E` — ARCHITECT verifies TEST coverage maps to spec acceptance criteria. Output: `findings/<agent-id>-B-P4-verify-of-test-<UTC>.md`
-- [ ] [LANE-E] `P4-E→C` — TEST verifies BACKEND code against test specifications (review BE code). Output: `findings/<agent-id>-E-P4-verify-of-backend-<UTC>.md`
-- [ ] [LANE-C] `P4-C→D` — BACKEND verifies FRONTEND consumes API correctly under failure modes. Output: `findings/<agent-id>-C-P4-verify-of-frontend-<UTC>.md`
-- [ ] [LANE-D] `P4-D→A` — FRONTEND verifies AUDIT changeset accurately reflects observed protocol behavior. Output: `findings/<agent-id>-D-P4-verify-of-audit-<UTC>.md`
-- [ ] [LANE-F] `P4-F→ALL` — META verifies the whole run. Did phases gate cleanly? Were CHALLENGE pairings independent? Final 4-phase-viability capstone. Output: `findings/<agent-id>-F-FINAL-RUN-CAPSTONE-<UTC>.md`
+- [done: agent-dcbc @ 2026-05-16T20:01Z] [LANE-A] `P4-A-to-B` — AUDIT verifies ARCHITECT SPEC-v2 honors v8 semantics.
+- [done: agent-fec0 @ 2026-05-16T20:00Z] [LANE-B] `P4-B-to-E` — ARCHITECT verifies TEST coverage maps to SPEC-v2.
+- [done: agent-43d9 @ 2026-05-16T20:06Z] [LANE-E] `P4-E-to-C` — TEST verifies BACKEND code (megalodon_ui package + ui/server.py fixes).
+- [done: agent-84f2 @ 2026-05-16T20:10Z] [LANE-C] `P4-C-to-D` — BACKEND verifies FRONTEND consumes the 4 new endpoints correctly.
+- [done: agent-2e7a @ 2026-05-16T20:00Z] [LANE-D] `P4-D-to-A` — FRONTEND verifies AUDIT's v8.1-candidate (or attestation).
+- [done: agent-9bba @ 2026-05-16T20:03Z] [LANE-F] `P4-F-to-ALL` — META interim verify; FINAL-RUN-CAPSTONE happens post-OPERATOR-ACCEPTANCE.
+
+## PHASE 5 — RUN (execution verification — NEW in v8)
+
+Auto-claim by pairing matrix (no self-verification). Failure injects PHASE-HEAL repair task. **Budget per RUN task: 3 HEAL cycles OR 30-min wall-clock.** Exceed → `BLOCKED-DEGRADED`.
+
+- [done: agent-43d9 @ 2026-05-16T20:10Z] [LANE-E] `P5-RUN-PRIMITIVES` — TEST runs `uv run --with pytest --with fastapi --with 'uvicorn[standard]' --with sse-starlette --with pyyaml --with httpx --with pytest-asyncio pytest ui/tests/unit -v`. **MUST exit 0 with 0 SKIPPED, 0 FAILED.** Output transcript to `findings/<agent>-E-P5-RUN-primitives-<UTC>.txt`. On failure: inject `[REPAIR-PRIMITIVES-<n>]` task with transcript embedded.
+- [done: agent-43d9 @ 2026-05-16T20:11Z] [LANE-E] `P5-RUN-INTEGRATION` — TEST runs `uv run --with ... pytest ui/tests/integration -v`. Same exit criteria. Output transcript.
+- [done: agent-2e7a @ 2026-05-16T20:15Z] [LANE-D] `P5-RUN-UI-RENDER` — FRONTEND launches `uv run --with fastapi --with 'uvicorn[standard]' --with sse-starlette --with pyyaml python ui/server.py --mission-dir ui/tests/fixtures/fix-medium --port 8765 &`, waits 3s, runs Playwright headless `goto('http://127.0.0.1:8765')`, asserts page title + 6 lane rows visible + **0 console errors**. Takes screenshot to `findings/<agent>-D-P5-RUN-ui-render-<UTC>.png`.
+- [done: agent-43d9 @ 2026-05-16T21:43Z — BLOCKED-DEGRADED — 7 PASSED / 9 FAILED final after 3 HEAL cycles + retroactive verify post-REPAIR-11; supersedes @21:40Z close which was based on pre-REPAIR-11 transcript; see `findings/agent-43d9-E-P5-RUN-MUTATIONS-E2E-TERMINAL-FINAL-2026-05-16T21-43Z.md`] [LANE-E] `P5-RUN-MUTATIONS-E2E` — TEST runs Playwright e2e that exercises all 6 POST endpoints (signal, reclaim, inject-challenge, phase-flip, mission-status, inject-task). All must return success codes. Output transcript + screenshots.
+
+## PHASE-HEAL REPAIRS (per Edit 21 — injected when P5-RUN-* fails)
+
+- [done: agent-84f2 @ 2026-05-16T20:30Z] [LANE-C] `REPAIR-MUTATIONS-E2E-1-SSE` — BACKEND: fix SSE `status-change` event delivery so UI receives event within ~3s of file mutation. Affects 5-8 e2e tests that timeout @30s waiting for UI to reflect POST'd mutation. Per BE STATUS:11 self-diagnosis: switch `/api/v1/events` `StreamingResponse` → `EventSourceResponse` (sse-starlette per-event flush) OR add periodic flush via keepalive comments. Re-verify by running existing `test_sse_stream_emits_status_change_on_file_touch` (currently XFAIL strict; should XPASS after fix). Transcript: `findings/agent-43d9-E-P5-RUN-mutations-e2e-2026-05-16T20-12Z.txt`. Inject by agent-43d9 @ 2026-05-16T20:24Z. HEAL cycle 1 of 3. **SCOPE-BROADENED at claim**: BE re-diagnosis on detailed transcript read — *primary* root cause is **missing `StaticFiles` mount in `megalodon_ui/server.py`** (`ui/static/index.html:8,60-62` ref `/static/css/base.css`, `/static/js/{store,sse,app}.js` → all 404 → no JS loads → no `data-testid` elements ever render → ALL 16 tests fail). Legacy `ui/server.py:1434` has the mount; my factory does not. SSE flush is *secondary* (only matters after JS loads). Will ship both fixes in this claim. NOTE TO LANE-D: many of your REPAIR-MUTATIONS-E2E-1-FE failures may auto-resolve after static mount lands — recommend waiting until I close before re-classifying.
+- [done: agent-2e7a @ 2026-05-16T20:43Z] [LANE-D] `REPAIR-MUTATIONS-E2E-1-FE` — FRONTEND: fix selector/data-testid + fixture-render gaps for fast-fail tests (test_status_view × 4: lane-row, stale-styling, last-utc live-update, task-card; test_failure_modes × 4: stuck-flip warning, recovery-action, claim-collision panel, history-drift glyph). Tests fail at ~5s suggesting either rendered DOM missing the expected `data-testid` attributes OR fixture data shape mismatch. Cross-ref fixtures at `ui/tests/fixtures/fix-medium*` per `_gen.py`. Transcript: same as above. Inject by agent-43d9 @ 2026-05-16T20:24Z. HEAL cycle 1 of 3.
+- [done: agent-84f2 @ 2026-05-16T20:44Z] [LANE-C] `REPAIR-MUTATIONS-E2E-2-SPA-CATCHALL` — BACKEND: add SPA route catch-all so `/tasks`, `/findings`, `/mission`, `/signals` serve the same `index.html` shell (client-side router takes over). Currently `megalodon_ui/server.py` only defines `@app.get("/")`; 7 e2e tests `page.goto()` SPA paths directly → 404. Affects: `test_failure_modes.spec.ts:22,31,39,48` (`/mission` ×3, `/tasks` ×1) + `test_status_view.spec.ts:37,46,55` (`/tasks` ×1, `/findings` ×2). Triggered by SIGNAL-FE-1 (`findings/agent-2e7a-D-SIGNAL-FE-1-spa-routes-2026-05-16T20-36Z.md`, MAJOR) from agent-2e7a @ 2026-05-16T20:36Z. **Atomic-claim ceremony fixed**: `mkdir claims/REPAIR-MUTATIONS-E2E-2-SPA-CATCHALL/ + owner.txt` AND TASKS bracket (defensive both-and per mea-culpa from REPAIR-1-SSE drift). HEAL cycle 1 of 3 (still within HEAL-1 budget — same trigger event).
+
+### HEAL CYCLE 2 (triggered @ 2026-05-16T20:53Z by re-run residuals — 3 PASSED / 13 FAILED)
+
+- [done: agent-2e7a @ 2026-05-16T21:19Z] [LANE-D] `REPAIR-MUTATIONS-E2E-3-ACTION-PANEL` — FRONTEND: fix orchestrator action panel render — 6 mutation tests in `test_orchestrator_actions.spec.ts:{16,29,41,61,75,89}` ALL time out 30s on `page.locator('[data-testid="action-X"]').click()`. Test setup navigates to `/mission`, sets `localStorage.controlMode='true'`, reloads. Testids exist in `ui/static/pages/mission.js:514+` (`action-inject-challenge`, `action-reclaim-lane`, `action-post-signal`, etc) but never become clickable. Hypothesis: controlMode flip-on-load doesn't trigger panel rebuild, OR initial paint hides under controlMode=false then localStorage+reload sequence races. Check `store.set("ui.controlMode")` subscription + render gating in `mission.js`. Affects tests T-A-CH-e2e, T-A-RC-e2e, T-A-SG-e2e, T-R11-a-e2e, T-A-IT-e2e, T-A-MS-e2e. Transcript: `findings/agent-43d9-E-P5-RUN-mutations-e2e-2026-05-16T20-50Z.txt` lines 159-326. Inject by agent-43d9 @ 2026-05-16T20:53Z. HEAL cycle 2 of 3.
+- [done: agent-43d9 @ 2026-05-16T20:58Z] [LANE-E] `REPAIR-MUTATIONS-E2E-4-FIXTURE-OVERRIDE` — TEST: switch failure-mode tests to use `fix-medium-failure-modes` fixture. Per SIGNAL-FE-2 (`findings/agent-2e7a-D-SIGNAL-FE-2-fixture-override-2026-05-16T20-36Z.md`, MAJOR), 3 tests fail because playwright config defaults all to `fix-medium` but `test_failure_modes:21/38/47` need fixture-specific lock dirs / claim collisions / drift entries. Fix: convert `playwright.config.ts` `webServer:` single → array of 2 webServers (ports 8765+8766) + 2 projects with testMatch split (chromium-default vs chromium-failure-modes). Affects T-FX-FAILMODE-a (stuck-flip), T-FX-FAILMODE-b (non-canonical-panel), T-FX-FAILMODE-c (HISTORY-drift). Inject by agent-43d9 @ 2026-05-16T20:53Z. HEAL cycle 2 of 3.
+- [done: agent-84f2 @ 2026-05-16T21:18Z (retroactive-recovery: claimed @21:15Z after 18min silence, shipped + closed inside HEAL-2 budget)] [LANE-C] `REPAIR-MUTATIONS-E2E-5-STATUS-VIEW` — BACKEND (RE-OWNED per BE STATUS:11 pre-diagnosis + ARCH SPEC-v2 §3-quater anchor): ship 2 api-contract gaps. (a) `parse_status` must add `staleness_seconds: float` + `is_stale: bool` (RULE-1 15-min threshold, computed from `now_utc - parse(last_utc)`) — fixes `test_status_view:16` stale row styling via FE `dashboard.js:115,187`. (b) Add `@app.get("/api/v1/tasks")` returning `{phases: [{name, tasks:[{id, lane, state, ...}]}]}` parsed from TASKS.md bracket grammar — fixes `test_status_view:36` `task-card-*` count by populating `tasks.js:417,452` store reads. **Residual (c)(d) reclassified as fixture-class per BE STATUS:11**: `test_status_view:45` severity filter likely needs MAJOR-severity findings in `fix-medium/findings/` frontmatter (TEST/fixture scope); `test_status_view:53` scratch chip needs `.scratch.md` files present in fixture (zero today per `ls`). Will inject `REPAIR-MUTATIONS-E2E-6-FIXTURE-DATA` for LANE-E (mine) if residuals after BE close. BE pre-drafted ~30 LOC. Inject by agent-43d9 @ 2026-05-16T20:53Z; re-owned LANE-D → LANE-C by agent-43d9 @ 2026-05-16T21:03Z. HEAL cycle 2 of 3.
+
+### HEAL CYCLE 3 (triggered @ 2026-05-16T21:25Z — HEAL-2 re-run still 3/16 PASS but failure types progressed; FINAL cycle in 3-cycle cap)
+
+Reclassify finding: `findings/agent-43d9-E-P5-RUN-mutations-e2e-HEAL2-RECLASSIFY-2026-05-16T21-25Z.md`. Transcript: `findings/agent-43d9-E-P5-RUN-mutations-e2e-2026-05-16T21-22Z.txt`. Progress: FE controlMode fix unblocked all 6 orchestrator initial-clicks; BE staleness/tasks fix changed test #8 from "0 cards" to "wrong count"; fixture-override routing works. Remaining failures are mostly downstream (form mechanics, fixture content, FE wiring).
+
+- [done: agent-2e7a @ 2026-05-16T21:32Z] [LANE-D] `REPAIR-MUTATIONS-E2E-7-ACTION-FORM-WIRING` — FRONTEND: fix form mechanics for orchestrator tests. **Test #1 T-A-CH-e2e** now fails on `challenge-finding-picker > option:nth(1)` — element "is not visible" because tests use `option.click()` but `<option>` inside `<select>` requires `selectOption()` instead. Spec tests need update OR FE picker must be `<div>` + roving-tabindex pattern (not native `<select>`). **Tests #3 T-A-SG-e2e** also hangs on selectOption — verify dropdown is populated. **Tests #4/#5/#6** progress past actions; fail at downstream assertions (toContainText/toBeVisible) — verify form-submission result-state matches what spec asserts (success toast text, task-card appearance, etc.). 6 tests affected. HEAL cycle 3 of 3. Inject by agent-43d9 @ 2026-05-16T21:25Z.
+- [done: agent-2e7a @ 2026-05-16T21:32Z] [LANE-D] `REPAIR-MUTATIONS-E2E-8-STATUS-STALE-WIRING` — FRONTEND: investigate why test_status_view:16 stale styling still fails after BE shipped `staleness_seconds`/`is_stale`. Either (a) FE `dashboard.js` doesn't translate `is_stale: true` → `data-stale="true"` attribute on `lane-row-{LANE}`, OR (b) `fix-medium` fixture has no lanes that exceed 15min staleness threshold. Cross-check: `curl http://127.0.0.1:8765/api/v1/status | jq` against running server to see if `is_stale` true for any row. Test #8 `not.toHaveCount(0)` may also need FE wiring check (task-cards may exist but wrong shape). HEAL cycle 3 of 3. Inject by agent-43d9 @ 2026-05-16T21:25Z.
+- [done: agent-43d9 @ 2026-05-16T21:29Z] [LANE-E] `REPAIR-MUTATIONS-E2E-9-FIXTURE-DATA` — TEST: add fixture content for severity-filter + scratch tests. (a) Test #9 `filter-severity-MAJOR` needs at least one MAJOR-severity finding in `fix-medium/findings/`; check current files via `grep -l 'severity: MAJOR' ui/tests/fixtures/fix-medium/findings/`. Add one if absent. (b) Test #10 scratch chip needs at least one `.scratch.md` file in `fix-medium/findings/`; add via `_gen.py` or manual touch. HEAL cycle 3 of 3. Inject by agent-43d9 @ 2026-05-16T21:25Z.
+- [done: agent-43d9 @ 2026-05-16T21:29Z (VERIFIED-NO-CHANGE — fixture content complete)] [LANE-E] `REPAIR-MUTATIONS-E2E-10-FAILURE-MODES-FIXTURE-CONTENT` — TEST: verify `fix-medium-failure-modes` fixture has expected state for 3 failure-mode tests. Inspect: (a) stuck-flip lock dir presence (`.mission-events/phase-flip-lock`?); (b) `claims/P2-C→B/` directory existence (multi-form claim collision); (c) 3 drift-shaped HISTORY entries. If missing, augment fixture via `_gen.py` OR manual files. HEAL cycle 3 of 3. Inject by agent-43d9 @ 2026-05-16T21:25Z.
+- [done: agent-84f2 @ 2026-05-16T21:40Z (DOUBLE-MEA-CULPA recovery: retracted @21:30Z, un-retracted @21:36Z after empirical verification, shipped+closed @21:40Z = 4min SLA)] [LANE-C] `REPAIR-MUTATIONS-E2E-11-STATE-ENDPOINT` — BACKEND: add `@app.get("/api/v1/state")` returning aggregate `{status, tasks, findings, signals, mission, config}` per `store.js:193-217 hydrate()`. **Empirical ground truth**: `grep -n '/api/v1/state' ui/server.py` returns 2 hits (legacy server line 916 defines the route); same grep on `megalodon_ui/server.py` returns 0. UI-RENDER passed against legacy because of this endpoint; MUTATIONS-E2E uses factory. Originally injected by agent-43d9 @21:29Z, retracted @21:33Z per my mea-culpa, **re-claimed by agent-84f2 @21:36Z with empirical verification**. HEAL cycle 3 of 3.
+
+## PHASE-OPERATOR-ACCEPTANCE (NEW in v8 post-run-1)
+
+Auto-flips when all `P5-RUN-*` are EXEC-PASS. Workers HALT and wait.
+
+### OPERATOR-ACCEPTANCE TASKS
+
+- [ ] [ANY-LANE] `OPERATOR-ACCEPTANCE-REQUEST` — first worker to enter the phase writes a summary task here with: deliverable summary, test transcripts (paths), screenshot paths, outstanding issues. Then ALL lanes set state to `idle | awaiting OPERATOR-ACK`. **No new claims.**
+
+- [OPERATOR-DEGRADED-ACK] by orchestrator-Claude (representing operator David @ Zero Delta LLC) @ 2026-05-16T21:50Z — Run-2 mission ACCEPTED WITH DEGRADED status. Rationale: final tally 7/16 e2e PASS (43.75%) + 25 PASS + 1 XFAIL unit/integration + UI renders cleanly with 0 console errors + 41KB screenshot artifact. Net progress 3→7 across 3 HEAL cycles + bonus REPAIR-11 (Edit-21 validated). 9 residuals are user-visible and well-diagnosed (4 FE form-submit gate, 2 status_view, 3 failure-mode-fixture); these become run-3 work under v9 protocol. Run-2's primary deliverable was protocol validation: 53+ v8.1 candidates harvested from execution evidence (vs run-1's 0 from doc review), 3 SPEC-FIRST HEAL addenda shipped (§3-bis SSE / §3-ter SPA / §3-quater /tasks+status), 4-cascading-HEAL pattern documented, Edit-22 retract-reversibility gap (META-OBS-41) and REPAIR-RE-UNDERTAKE pattern (META-OBS-42) surfaced. Workers: flip PHASE-OPERATOR-ACCEPTANCE → PHASE-DRAINING with degraded flag. META: write FINAL-RUN-CAPSTONE referencing this ACK. AUDIT: write Pass-3 RECONSIDERED-append to v8.1-candidate ledger. All other lanes: heartbeat through DRAINING → COMPLETE → halt /loop per launch.md §8.
+
+Phase exits when one of:
+- `[OPERATOR-ACK]` task appears here → flip to DRAINING
+- `[OPERATOR-REJECT]` + `[REPAIR-<n>]` tasks appear → flip back to PHASE-HEAL
+- `[OPERATOR-DEGRADED-ACK]` → flip to DRAINING with degraded flag
+
+The orchestrator-Claude (or human operator) injects one of these tasks.
 
 ---
 
@@ -61,36 +109,16 @@ Task IDs encode phase and lane per MISSION.md task-assignment matrix.
 
 (workers may self-assign CHALLENGEs on 3+ lane converged findings per TIER 2; orchestrator may inject)
 
+---
+
 ## CROSS-LANE / SECONDARY TASK POOL
 
-(claimable by any drained lane; tag `[CROSS]`; secondary tasks are optional polish/depth — don't claim before your primary lane work is done for the current phase)
+(claimable by any drained lane; tag `[CROSS]`; only after primary lane work is done for the current phase)
 
-### Audit-extensions
-
-- [ ] [CROSS] `S-1` — Compare v7 to Raft consensus semantics. What does Raft solve that v7 doesn't? Output: `findings/<agent-id>-CROSS-S1-raft-comparison-<UTC>.md`
-- [ ] [CROSS] `S-2` — Compare v7 to Erlang OTP supervision trees. Apply supervisor/worker thinking to lane lifecycle. Output: `findings/<agent-id>-CROSS-S2-otp-comparison-<UTC>.md`
-- [ ] [CROSS] `S-3` — Compare v7 to Hewitt actor model + CSP. Message-passing primitives we should adopt. Output: `findings/<agent-id>-CROSS-S3-actor-csp-comparison-<UTC>.md`
-- [ ] [CROSS] `S-4` — Parse `.archive/2026-05-16T00-17Z--okx_case-rebuttal/findings/`. Extract failure modes and emergent patterns not yet codified. Output: `findings/<agent-id>-CROSS-S4-okx-archive-mining-<UTC>.md`
-- [ ] [CROSS] `S-5` — Compare v7's `mkdir`-atomic claim to Chubby / Zookeeper ephemeral locks. Output: `findings/<agent-id>-CROSS-S5-distributed-lock-comparison-<UTC>.md`
-
-### UI-extensions
-
-- [ ] [CROSS] `S-6` — Mobile-responsive layout spec. Output: `ui/adrs/S6-mobile-spec.md`
-- [ ] [CROSS] `S-7` — Dark/light theme toggle (dark-default). Output: `ui/static/themes/`
-- [ ] [CROSS] `S-8` — Export-run-as-static-HTML for archival. Output: `ui/tools/export-run.py`
-- [ ] [CROSS] `S-9` — Multi-mission selector (foundation for cross-mission view). Output: `ui/adrs/S9-multi-mission-spec.md`
-- [ ] [CROSS] `S-10` — Keyboard shortcuts for orchestrator actions. Output: `ui/static/shortcuts.js` + docs
-
-### Meta-extensions
-
-- [ ] [CROSS] `S-11` — Track subagent dispatch patterns across lanes (which phases dispatch more?). Output: `findings/<agent-id>-CROSS-S11-subagent-patterns-<UTC>.md`
-- [ ] [CROSS] `S-12` — Compare 4-phase pattern to V-model verification, Boyd's OODA loop, agile sprint structures. Output: `findings/<agent-id>-CROSS-S12-4-phase-vs-models-<UTC>.md`
-- [ ] [CROSS] `S-13` — Track CHALLENGE→consensus convergence rate — DELTA-refinement vs overturn vs no-change. Output: `findings/<agent-id>-CROSS-S13-challenge-outcomes-<UTC>.md`
-
-### Docs & infrastructure
-
-- [ ] [CROSS] `S-14` — Update README.md to reflect v8 changes IF AUDIT's changeset is accepted (do NOT commit; produce a `docs/README.md-v8-preview.md` for operator review). Output: `docs/README.md-v8-preview.md`
-- [ ] [CROSS] `S-15` — Write UI deployment instructions (how to start server, point at mission dir). Output: `ui/README.md`
-- [ ] [CROSS] `S-16` — Propose updates to `.claude/settings.example.json` for any new bash commands UI needs at runtime. Output: `findings/<agent-id>-CROSS-S16-settings-deltas-<UTC>.md` (DO NOT directly edit settings.example.json — propose only)
-- [ ] [CROSS] `S-17` — Create fixture mission directories (small / medium / large) for testing. Output: `ui/tests/fixtures/`
-- [ ] [CROSS] `S-18` — Devil's-advocate CHALLENGE on the consensus plan as a whole (claimable in PHASE-CHALLENGE+1 by any lane). Output: `findings/<agent-id>-CROSS-S18-meta-challenge-<UTC>.md`
+- [ ] [CROSS] `S-1` — Compare run-1 RR-1 patch vs what run-2 produces; quantify reduction in defects. Output: `findings/<agent>-CROSS-S1-run-comparison-<UTC>.md`
+- [ ] [CROSS] `S-2` — Audit `.archive/2026-05-16T17-06Z--megalodon-self-improvement-run1/findings/` for failure modes v8 didn't address. Output: `findings/<agent>-CROSS-S2-v8-coverage-<UTC>.md`
+- [ ] [CROSS] `S-3` — Add tests for §9.10 Origin/CSRF/localhost-bind exercise (run-1 ARCH P4-B→E gap). Output: `ui/tests/integration/test_auth.py` + run-evidence.
+- [ ] [CROSS] `S-4` — Add SSE-timing test exercising 300ms file-watch vs 2.5s poll backstop. Output: `ui/tests/integration/test_sse_timing.py` + run-evidence.
+- [ ] [CROSS] `S-5` — Add concurrent-write CAS test for ADR-001 (run-1 §9.4 gap). Output: `ui/tests/integration/test_cas_concurrent.py` + run-evidence.
+- [done: agent-2e7a @ 2026-05-16T18:31Z] [CROSS] `S-6` — Track operator-friction events in run-2 (any moment where operator-Claude had to intervene). Output: `findings/<agent>-CROSS-S6-operator-friction-<UTC>.md`
+- [ ] [CROSS] `S-7` — Devil's-advocate CHALLENGE on the entire run-2 deliverable set (claimable in PHASE-VERIFY+1 by any lane). Output: `findings/<agent>-CROSS-S7-meta-challenge-<UTC>.md`

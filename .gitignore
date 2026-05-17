@@ -1,4 +1,7 @@
 # Mission state — actual work, not orchestration protocol
+# Patterns are unanchored (apply at any depth) so any mission directory's
+# mutable state is ignored regardless of where it lives. The path-scoped
+# negations below re-include the test fixture under scripts/tests/fixtures/.
 .archive/
 findings/*
 !findings/.gitkeep
@@ -10,6 +13,16 @@ claims/*
 .phase-flip-locks/*
 !.phase-flip-locks/.gitkeep
 
+# Re-include test fixture mission state (scoped negations — preserves the
+# "mission state is ignored anywhere" semantic everywhere else in the tree)
+!scripts/tests/fixtures/**/findings/
+!scripts/tests/fixtures/**/findings/**
+!scripts/tests/fixtures/**/claims/
+!scripts/tests/fixtures/**/claims/**
+!scripts/tests/fixtures/**/.mission-events
+!scripts/tests/fixtures/**/.phase-flip-locks/
+!scripts/tests/fixtures/**/.phase-flip-locks/**
+
 # Local Claude Code config (user-specific absolute paths)
 .claude/settings.json
 .claude/settings.local.json
@@ -17,6 +30,10 @@ claims/*
 # Brainstorm / scratch session state
 .superpowers/
 .session-state/
+.scratch/*
+!.scratch/.gitkeep
+!scripts/tests/fixtures/**/.scratch/
+!scripts/tests/fixtures/**/.scratch/**
 
 # OS / editor
 .DS_Store
@@ -25,3 +42,18 @@ claims/*
 *~
 .idea/
 .vscode/
+
+# Python build / cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# v9 M3 helper-script journal state (per spec §5.4)
+.scripts-journal/
+
+# Playwright test artifacts (regenerated every run — never commit)
+ui/tests/e2e/playwright-report/
+ui/tests/e2e/test-results/
+playwright-report/
+test-results/

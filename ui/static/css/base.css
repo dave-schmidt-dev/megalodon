@@ -1,0 +1,509 @@
+/* ============================================================================
+ * Megalodon Orchestrator Console - base.css
+ * Tier-3 UI foundation. Dark mode only (light theme is CROSS S-7).
+ * Owner: agent-1371 (FRONTEND / LANE-D)
+ * Spec: findings/agent-1371-D-P2.5-frontend-plan-v2-2026-05-16T15-45Z.md
+ * ============================================================================ */
+
+/* ---------- Design tokens --------------------------------------------------- */
+:root {
+  /* Neutral palette */
+  --bg: #0e0f12;
+  --surface: #15171b;
+  --surface-2: #1c1f24;
+  --border: #2a2e35;
+  --text: #e7e9ec;
+  --text-muted: #9aa0a8;
+  --accent: #6db8ff;
+
+  /* Severity palette */
+  --sev-blocking: #d04848;
+  --sev-major: #e08a32;
+  --sev-minor: #d6c34c;
+  --sev-nit: #6b7280;
+  --sev-delta: #6db8ff;
+
+  /* Lane palette (6 distinct, no purple/pink) */
+  --lane-audit: #4ec9b0;
+  --lane-architect: #d7ba7d;
+  --lane-backend: #ce9178;
+  --lane-frontend: #569cd6;
+  --lane-test: #9cdcfe;
+  --lane-meta: #b5cea8;
+
+  /* Phase palette */
+  --phase-active: var(--accent);
+  --phase-done: #4a4d52;
+  --phase-future: #2e3138;
+
+  /* Staleness palette (text indicators) */
+  --stale-fresh: #4ec9b0;
+  --stale-stale: #d6c34c;
+  --stale-dead: #d04848;
+
+  /* Spacing scale (4/8/12/16/24/32 px) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* Type scale */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+
+  /* Radii */
+  --r-1: 4px;
+  --r-2: 8px;
+
+  /* Viewport tokens (plan-v2 §C6 - documentary; no enforced MQ in v1) */
+  --viewport-min: 1280px;
+  --viewport-target: 1440px;
+  --viewport-max: 1920px;
+
+  /* Misc */
+  --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ---------- Reset / normalize ---------------------------------------------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-stack);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4, h5, h6, p, ul, ol, dl, figure {
+  margin: 0;
+  padding: 0;
+}
+
+ul, ol {
+  list-style: none;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code, pre, kbd, samp {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+img, svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* ---------- App layout ------------------------------------------------------ */
+body {
+  display: grid;
+  grid-template-rows: 56px 40px 1fr auto;
+  grid-template-areas:
+    "header"
+    "nav"
+    "main"
+    "footer";
+}
+
+.app-header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: 56px;
+  padding: 0 var(--sp-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-header__title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.app-header__phases {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app-header__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.app-nav {
+  grid-area: nav;
+  display: flex;
+  align-items: stretch;
+  height: 40px;
+  padding: 0 var(--sp-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  gap: var(--sp-1);
+}
+
+.app-nav a {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  border-bottom: 2px solid transparent;
+  text-decoration: none;
+}
+
+.app-nav a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.app-nav a[aria-current="page"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.app-main {
+  grid-area: main;
+  padding: var(--sp-4);
+  min-width: 0;
+}
+
+.app-footer {
+  grid-area: footer;
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/* ---------- Component: card ------------------------------------------------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  padding: var(--sp-3);
+}
+
+.card__title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  margin-bottom: var(--sp-2);
+}
+
+/* ---------- Component: badge ----------------------------------------------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* ---------- Severity badges ------------------------------------------------- */
+.severity-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-1);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--bg);
+}
+
+.severity-badge.BLOCKING { background: var(--sev-blocking); }
+.severity-badge.MAJOR    { background: var(--sev-major); }
+.severity-badge.MINOR    { background: var(--sev-minor); color: #1a1a1a; }
+.severity-badge.NIT      { background: var(--sev-nit); color: var(--text); }
+.severity-badge.DELTA    { background: var(--sev-delta); }
+
+/* ---------- Lane chips ------------------------------------------------------ */
+.lane-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-1);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+}
+
+.lane-chip.AUDIT     { border-left-color: var(--lane-audit);     color: var(--lane-audit); }
+.lane-chip.ARCHITECT { border-left-color: var(--lane-architect); color: var(--lane-architect); }
+.lane-chip.BACKEND   { border-left-color: var(--lane-backend);   color: var(--lane-backend); }
+.lane-chip.FRONTEND  { border-left-color: var(--lane-frontend);  color: var(--lane-frontend); }
+.lane-chip.TEST      { border-left-color: var(--lane-test);      color: var(--lane-test); }
+.lane-chip.META      { border-left-color: var(--lane-meta);      color: var(--lane-meta); }
+
+/* ---------- Staleness indicators -------------------------------------------- */
+.staleness {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.staleness::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.staleness.fresh { color: var(--stale-fresh); }
+.staleness.stale { color: var(--stale-stale); }
+.staleness.dead  { color: var(--stale-dead); }
+
+/* ---------- Phase strip / segments ------------------------------------------ */
+.phase-strip {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-1);
+  width: 100%;
+  min-width: 0;
+}
+
+.phase-segment {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-1);
+  background: var(--phase-future);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid transparent;
+}
+
+.phase-segment.done {
+  background: var(--phase-done);
+  color: var(--text);
+}
+
+.phase-segment.active {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--phase-active);
+}
+
+.phase-segment[aria-current="step"] {
+  font-weight: 700;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---------- Button ---------------------------------------------------------- */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: 32px;
+  padding: 0 var(--sp-3);
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.button:hover {
+  background: var(--surface);
+  border-color: var(--accent);
+}
+
+.button.button--primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
+.button.button--primary:hover {
+  filter: brightness(1.08);
+}
+
+.button[disabled],
+.button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ---------- Toggle (control-mode switch) ----------------------------------- */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.toggle__track {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.toggle__thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+
+.toggle[aria-pressed="true"] .toggle__track {
+  background: color-mix(in srgb, var(--accent) 30%, var(--surface-2));
+  border-color: var(--accent);
+}
+
+.toggle[aria-pressed="true"] .toggle__thumb {
+  transform: translateX(16px);
+  background: var(--accent);
+}
+
+.toggle[aria-pressed="true"] {
+  color: var(--text);
+}
+
+/* ---------- Empty state ----------------------------------------------------- */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6) var(--sp-4);
+  color: var(--text-muted);
+  text-align: center;
+  font-size: var(--fs-sm);
+}
+
+/* ---------- Accessibility --------------------------------------------------- */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-1);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- Utilities ------------------------------------------------------- */
+.text-muted { color: var(--text-muted); }
+.mono { font-family: var(--font-mono); }
+.nowrap { white-space: nowrap; }
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stack-1 > * + * { margin-top: var(--sp-1); }
+.stack-2 > * + * { margin-top: var(--sp-2); }
+.stack-3 > * + * { margin-top: var(--sp-3); }
+.stack-4 > * + * { margin-top: var(--sp-4); }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+/* ---------- Reduced motion -------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

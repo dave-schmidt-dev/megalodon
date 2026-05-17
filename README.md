@@ -2,9 +2,24 @@
 
 A blackboard multi-agent coordination protocol for parallel review, audit, synthesis, and similar deep-work missions across multiple Claude sessions.
 
-**Version:** v7
+**Version:** v8 (effective 2026-05-16T17:30Z)
 **Last updated:** 2026-05-16
 **Default cadence:** 3 minutes (configurable in MISSION.md)
+
+## What's new in v8
+
+v8 promotes v7 with 22 edits documented in `docs/v8-changeset.md` (run-1 produced edits 1-21; orchestrator added Edit 22 post-run-1). The protocol-level changes you must internalize on first read:
+
+- **ASCII task IDs only** (Edit 3): claim with `mkdir claims/P2-A-to-F`, never `claims/P2-A→F`. The Unicode arrow form is deprecated and causes dup-claim races. Filenames + TASKS.md identifiers use `-to-` exclusively.
+- **YAML frontmatter on every finding** (Edit 3): see `## Verifier-report format` below — `lineage: v8`, `finding-type:` required.
+- **CAS + lock-order on shared mutable files** (Edit 4-bis, TIER-2 strong default): before write to `STATUS.md` / `TASKS.md`, hash the file, hold the hash, re-read just before commit; retry if changed (max 3). Multi-file ops use `flock` in `sorted(absolute_paths)` order. `HISTORY.md` MAY be appended without CAS (append-only).
+- **RULE 5 sub-clause** (Edit 2): DEFER citing non-existence MUST first `ls findings/ | grep <pattern>` AND `ls claims/<task-id>/done`. NO-RESPONSE (Edit 13) is a trace state, not a fourth choice.
+- **RULE 10 self-check** (Edit 20): before exiting any tick that touches `claims/<task-id>/done`, verify all four steps completed in same tick. Document with "RULE-10 self-verified at <utc>" in STATUS Notes.
+- **Subagent walltime declaration** (Edit 19): if expected walltime >10 min, write scratch BEFORE dispatch + declare expected walltime in STATUS Notes + RULE-6 reclaimers must check fs mtimes as secondary liveness.
+- **PHASE-RUN + PHASE-HEAL** (Edit 21, MISSION.md governs): execution-verification phase between VERIFY and DRAINING. P5-RUN-* tasks executed by paired (non-self) lane. Failures inject `[REPAIR-<task>-<n>]` and re-enter HEAL. Budget: 3 cycles or 30-min wall-clock.
+- **PHASE-OPERATOR-ACCEPTANCE** (Edit 22, NEW post-run-1, MISSION.md governs): mandatory gate between RUN/HEAL and DRAINING. Workers post `OPERATOR-ACCEPTANCE-REQUEST` task and HALT. Only the orchestrator (or human operator) can flip past this phase via `OPERATOR-ACK` / `OPERATOR-REJECT` / `OPERATOR-DEGRADED-ACK`. **No auto-COMPLETE.**
+
+Workers operate under v8 governance from first tick. MISSION.md defines the per-mission overlay (lanes, tasks, cadence, phase progression).
 
 ---
 
@@ -34,9 +49,32 @@ The orchestrator (you, or a dedicated Claude session) sets Mission status, pushe
 
 ---
 
+## Operator allowlist for v9 helper scripts
+
+Workers invoke three scripts that must be wildcard-allowlisted once to prevent
+mid-mission permission prompts (SIG-ORCH-6 cause). Add to your Claude Code
+permissions (`settings.json` `allow` list or equivalent):
+
+    python3 scripts/atomic_close.py *
+    python3 scripts/poll.py *
+    ./scripts/run_e2e.sh *
+
+The scripts internally validate ALL args against strict whitelist regexes
+(see `docs/superpowers/specs/2026-05-16-v9-m3-helper-scripts-design.md` §6.1).
+Any non-conforming arg is rejected with exit code 2 and a stderr explanation.
+The wildcard is safe because the scripts — not the allowlist — enforce input safety.
+
+See RULES 12, 13, 14 in `launch.md` for the worker-side discipline these scripts enable.
+
+---
+
 ## Mission status
 
-**Current: PHASE-PLAN (mission active — see `.mission-events` for authoritative phase)**
+**Current: RUN-2 COMPLETE (BLOCKED-DEGRADED, 2026-05-16T22:10Z)**
+
+Run-2 "make-it-work" terminal outcome: 7/16 e2e PASS + 25 PASS + 1 XFAIL unit/integration + UI render verified (41KB screenshot artifact) + 57+ v8.1 candidates harvested + 3 SPEC-FIRST HEAL addenda shipped. Wall-clock 4h40m (17:30Z → 22:10Z). OPERATOR-DEGRADED-ACK injected by orchestrator @21:50Z. 9 residuals diagnosed, deferred to run-3 under v9 protocol.
+
+**Next**: archive run-2 to `.archive/2026-05-16T22-10Z--megalodon-run2-make-it-work/`, then implement v9 per `docs/v9/V9-ROADMAP.md` (post-Codex contrarian review, ready to ship).
 
 For phase-gated missions (see MISSION.md §"Phase mechanics"), the source of truth is the append-only `.mission-events` log. This section is a best-effort visual rendering of the latest event — workers read `.mission-events` directly per RULE 11.
 
@@ -302,6 +340,7 @@ When mission deliverables are complete:
 
 ## Protocol changelog
 
+- **v8 (2026-05-16T17:30Z):** Promoted from v7 via the megalodon-self-improvement run (`.archive/2026-05-16T17-06Z--megalodon-self-improvement-run1/`). 22 edits in `docs/v8-changeset.md`. Highlights: ASCII task IDs (Edit 3); File-collision CAS+lock-order (Edit 4-bis); RULE 5 DEFER verification + NO-RESPONSE trace (Edits 2, 13); RULE 11 stuck-flip recovery step 4a (Edit 14); Subagent walltime declaration (Edit 19); RULE 10 self-check (Edit 20); PHASE-RUN+HEAL execution-verification (Edit 21); PHASE-OPERATOR-ACCEPTANCE mandatory operator gate (Edit 22, post-run-1).
 - **v7 (2026-05-16):** Tiered structure (load-bearing rules / strong defaults / observed patterns); MISSION.md split; per-mission lanes/cadence; 3m default; emergent role recognition (LANE-CAPSTONE, GLOBAL-PEER-REVIEWER); CHALLENGE refinement protocol; YAML frontmatter; lessons from 42-observation review of okx_case run.
 - **v6 (2026-05-15 21:24 EDT):** PEER-REVIEWER role generalized.
 - **v5 (2026-05-15 21:17 EDT):** Inter-agent communication (SIGNAL / ACK-VERIFIED / DISSENT / DEFER); severity quorum; CHALLENGE role.

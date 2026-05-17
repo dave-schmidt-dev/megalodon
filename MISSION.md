@@ -1,156 +1,196 @@
 # Mission
 
-**Mission ID:** `2026-05-16--megalodon-self-improvement`
+**Mission ID:** `2026-05-16T17-30Z--megalodon-run2-make-it-work`
 **Started:** *(set on first PHASE-FLIP event)*
-**Status:** **ACTIVE** — auto-managed via `.mission-events` (see §"Phase mechanics" below)
-**Deliverable date:** ~3–7 hours after worker start
+**Status:** **ACTIVE** — auto-managed via `.mission-events`
+**Deliverable date:** ~1-3 hours after worker start
+**Protocol version:** **v8** (this mission is the first to run under v8 governance — `README.md` is the live v8 spec; `docs/v8-changeset.md` documents the v7→v8 deltas including Edit 22 PHASE-OPERATOR-ACCEPTANCE added post-run-1)
 
 ---
 
-## Source project
+## What this run must produce
 
-- **Path:** This Megalodon project itself (self-referential mission)
-- **Description:** Audit and improve the Megalodon v7 protocol, AND build a Tier 3 orchestrator-console UI (read-only dashboard + interactive orchestrator actions). Workers reference this same project's `.archive/` for past-run lessons, but `.archive/` is READ-ONLY.
+**Run-1 (the v8-generating run) shipped 6500 LOC of code but it doesn't work.** Run-2's job is **make it work, prove it works, get operator sign-off.** No more documented-broken deliverables.
 
-## Scope
+### Concrete exit criteria
 
-**In scope:**
-- Audit v7 protocol vs. multi-agent coordination literature (raft, blackboard systems, OTP supervision, CRDT, Hewitt actors). Produce concrete `docs/v8-changeset.md` (proposed README.md edits).
-- Design and build a working Tier 3 orchestrator-console UI: live STATUS view, task queue, SIGNAL/ACK/DISSENT timeline, finding explorer with severity/lane filtering, orchestrator actions (inject CHALLENGE, reclaim stale rows, post SIGNALs, flip Mission status).
-- Meta-deliverable: META lane's report on whether the 4-phase auto-flip pattern itself is worth codifying in v8.
+A worker MUST NOT claim COMPLETE until ALL of the following hold:
 
-**Out of scope:**
-- Multi-mission UI (single-mission MVP only).
-- Auth / multi-user (localhost-only; trust model = whoever can reach the port).
-- DB persistence (filesystem is source of truth; UI is a renderer/controller).
-- Major refactor of v7 (changeset only — no rewrites without lane consensus).
+1. **Tests execute and pass.** `uv run --with pytest --with fastapi --with 'uvicorn[standard]' --with sse-starlette --with pyyaml --with httpx --with pytest-asyncio pytest ui/tests/unit ui/tests/integration -v` reports **0 SKIPPED, 0 FAILED**. Every test in `ui/tests/unit/test_protocol_primitives.py` and `ui/tests/integration/test_api_endpoints.py` actually runs assertions.
+2. **UI renders cleanly in a real browser.** `python ui/server.py --mission-dir ui/tests/fixtures/fix-medium --port 8765` launches; navigation to `http://127.0.0.1:8765` returns the dashboard with **zero console errors**, all CSS+JS loaded (200 not 404), and renders 6 lane rows from fix-medium STATUS.md. **Playwright headless screenshot artifact** is committed to `findings/<agent>-RUN-ui-render-<UTC>.png` as proof.
+3. **All 6 POST mutation endpoints are wired in UI.** Currently 2 of 6 (signal, reclaim) have UI buttons. The other 4 (inject-challenge, phase-flip, mission-status, inject-task) must have working forms with success+error states. Verified by Playwright e2e.
+4. **SSE stream verified end-to-end.** A connected client receives at least one `status-change` event when an STATUS.md heartbeat fires in the mission dir. E2E test must demonstrate.
+5. **Operator (orchestrator-Claude, then human-operator David) explicitly ACKs.** No auto-COMPLETE. See `## PHASE-OPERATOR-ACCEPTANCE` below.
 
-## Lanes (this mission overrides README.md defaults)
+### Out of scope for run-2
 
-| Code | Lane | Stance | Primary output |
+- Mobile viewport tiers (deferred — operator may inject as run-3)
+- axe-core a11y (deferred)
+- Auth/Origin/CSRF live exercise tests (deferred — middleware exists, code-review verified)
+- New v8.x protocol changes beyond what's already in `README.md`
+
+---
+
+## Known starting state (pre-applied fixes by orchestrator)
+
+The orchestrator pre-applied the following to save run-2 cycles:
+
+- **`ui/server.py:1434` static-mount fix:** `app.mount("/static", ...)` (was `"/"` — caused all 404s on CSS/JS in run-1)
+- **Run-1 archived** to `.archive/2026-05-16T17-06Z--megalodon-self-improvement-run1/` (1.05 MB, full snapshot including findings/claims/STATUS/TASKS/HISTORY/docs/ui)
+- **Run-2 mission state reset:** fresh `findings/`, `claims/`, `.phase-flip-locks/`, `.scratch/`; `.mission-events` cleared (worker writes the INIT entry on first claim)
+
+Workers should **NOT redo** the static-mount fix. Verify it's already correct, then move on.
+
+---
+
+## Lanes (same 6 as run-1, but tasks differ)
+
+| Code | Lane | Run-2 stance | Primary output |
 |---|---|---|---|
-| A | **PROTOCOL-AUDIT** | Compare v7 to coordination literature; identify defects, gaps | `docs/v8-changeset.md` (concrete README.md edits as a diff) |
-| B | **UI-ARCHITECT** | Data model, API surface, page structure, wireframes, tech-stack decision | `ui/SPEC.md` + ADRs |
-| C | **UI-BACKEND** | Server impl: file-watch, atomic writes for orchestrator actions, API | `ui/server.py` (or equivalent) + API contract |
-| D | **UI-FRONTEND** | Pages, real-time updates, SIGNAL timeline visualization | `ui/static/` + interaction code |
-| E | **UI-TEST** | Playwright E2E + integration tests against fixture mission dirs | `ui/tests/` |
-| F | **META-OBSERVER** | Watch the run; track 4-phase-pattern viability; emergent role detection | `findings/*-F-FINAL-RUN-CAPSTONE.md` |
+| A | **AUDIT** | Verify the v8 changeset is correctly reflected in README.md; audit run-2's RUN+HEAL behavior; produce v8.1 candidate doc if recurring failures suggest spec gaps | `docs/v8.1-candidate.md` (if needed) + RUN-acceptance review |
+| B | **ARCHITECT** | Define `megalodon_ui` package structure + `make_app(mission_dir=)` factory contract; spec the 4 missing POST endpoint UI wirings | `ui/SPEC-v2.md` (incremental, not full rewrite) + `ui/adrs/ADR-006-make_app-factory.md` |
+| C | **BACKEND** | Build `megalodon_ui/` package with `primitives.py` + `server.py:make_app(mission_dir=)`; fix all SSE payload shape gaps from run-1 P4-C→D V2; wire all 6 mutation endpoints' server-side | `megalodon_ui/__init__.py` + `megalodon_ui/primitives.py` + `megalodon_ui/server.py` + server-side endpoint completeness |
+| D | **FRONTEND** | Wire the 4 unwired POST endpoints in UI (inject-challenge, phase-flip, mission-status, inject-task); verify CSRF + SSE end-to-end work in browser via Playwright headless | `ui/static/pages/*.js` additions + Playwright-verified flows |
+| E | **TEST** | Make ALL tests in `ui/tests/{unit,integration}` execute (no SKIPs) and pass; add e2e Playwright that actually launches headless browser; run+screenshot UI as part of test output; produce green test report | `ui/tests/` updates + `ui/tests/test-report-<UTC>.txt` |
+| F | **META** | Observe run-2 against run-1 baseline; confirm PHASE-RUN+HEAL works as designed; confirm PHASE-OPERATOR-ACCEPTANCE prevents auto-COMPLETE; track HEAL cycles per task | `findings/<agent>-F-RUN2-CAPSTONE-<UTC>.md` |
 
-## Task-assignment matrix
-
-Each lane has a fixed slot in each phase. Claim by lane → task ID is deterministic.
-
-| Lane | PHASE-PLAN | PHASE-CHALLENGE (challenges) | PHASE-CHALLENGE (plan-v2) | PHASE-BUILD | PHASE-VERIFY (verifies) |
-|---|---|---|---|---|---|
-| A | `P1-A` | `P2-A→F` | `P2.5-A` | `P3-A` | `P4-A→B` |
-| B | `P1-B` | `P2-B→A` | `P2.5-B` | `P3-B` | `P4-B→E` |
-| C | `P1-C` | `P2-C→B` | `P2.5-C` | `P3-C` | `P4-C→D` |
-| D | `P1-D` | `P2-D→C` | `P2.5-D` | `P3-D` | `P4-D→A` |
-| E | `P1-E` | `P2-E→D` | `P2.5-E` | `P3-E` | `P4-E→C` |
-| F | `P1-F` | `P2-F→E` | `P2.5-F` | `P3-F` | `P4-F→ALL` |
-
-**CHALLENGE pairings form a directed cycle** (A→F→E→D→C→B→A) — every lane challenges exactly one peer and is challenged by exactly one peer.
-
-**VERIFY pairings deliberately differ from CHALLENGE pairings** so the lane that reviewed your plan is NOT the same lane verifying your build. Two independent sets of eyes per lane.
+---
 
 ## Cadence
 
-3 minutes uniform (`/loop 3m`). BUILD lanes may self-extend to 10-min ticks for deep coding sessions; declare the extension in your STATUS note (e.g., `"deep build — extending to 10m for 3 ticks"`).
+3 minutes (`/loop 3m`). BUILD lanes may self-extend to 10m for deep coding per protocol; declare in STATUS notes.
 
-## Phase mechanics (v8-CANDIDATE — load-bearing for this mission)
+---
 
-These rules **extend** v7 for this mission. If META's FINAL-RUN-CAPSTONE confirms they worked, AUDIT promotes them to v8.
-
-### Source of truth: `.mission-events`
-
-Append-only log file at project root. Each line is one phase event:
-
-```
-<UTC> <FROM>-><TO> by <agent-id> — <reason>
-```
-
-The last line's `<TO>` is the **current phase**. `README.md`'s "Mission status" section is a best-effort visual rendering of the latest event — workers read `.mission-events` directly.
-
-### NEW RULE 11 — distributed atomic phase-flip
-
-At tick start, after re-arm (RULE 0) and heartbeat (RULE 1), every worker:
-
-1. Read current phase from `.mission-events` (last line)
-2. If current phase is `PHASE-<N>`, scan TASKS.md for `P<N>-*` tasks (and `P<N>.5-*` if applicable)
-3. **Completion test:** every `P<N>-*` task is `[done: ...]` AND every `claims/<task-id>/done` marker exists AND no lane has `working: <task>` with Last UTC within the last 60 seconds
-4. If completion test passes, try `mkdir .phase-flip-locks/<from>-to-<to>`:
-   - **Exit 0 (you won the race):** append flip event to `.mission-events`, update README.md "Mission status" section, heartbeat with note `"PHASE-FLIP <from>→<to>"`, continue with the new phase's task pool
-   - **Exit nonzero (peer is flipping):** skip; next tick will read the new phase naturally
+## Phase mechanics (v8 — load-bearing)
 
 ### Phase progression
 
 ```
-INIT → PHASE-PLAN → PHASE-CHALLENGE → PHASE-BUILD → PHASE-VERIFY → DRAINING → COMPLETE
+INIT → PHASE-PLAN → PHASE-CHALLENGE → PHASE-BUILD → PHASE-VERIFY
+                                                            ↓
+                                              PHASE-RUN ↔ PHASE-HEAL
+                                                            ↓
+                                              PHASE-OPERATOR-ACCEPTANCE
+                                                            ↓
+                                                       DRAINING → COMPLETE
 ```
 
-- **DRAINING** flips automatically when all `P4-*` tasks done. Lanes write LANE-CAPSTONEs; META writes `findings/<agent>-F-FINAL-RUN-CAPSTONE-<UTC>.md`.
-- **COMPLETE** flips automatically when: all lanes show `idle`, META's FINAL-RUN-CAPSTONE exists, AND the most recent HISTORY entry is >10 minutes old (quiet-period terminal condition).
-- **Halt:** when current phase = `COMPLETE`, workers tick 3 more times to confirm, then stop calling `ScheduleWakeup`. Run ends.
+### Source of truth: `.mission-events`
 
-### NEW TIER-2 default — watchdog
+Append-only log file at project root. Each line:
+```
+<UTC> <FROM>-><TO> by <agent-id> — <reason>
+```
+Last line's `<TO>` is current phase. Workers read `.mission-events` directly.
 
-If a phase has not flipped for >30 minutes despite *some* `P<N>-*` tasks being marked `done`, the next worker to tick injects `[ ] [STALL-INVESTIGATION] <phase>-stall — diagnose blocking lane` into TASKS.md and writes a SIGNAL to all lanes via STATUS notes. This dead-man's-switch ensures silent stalls become visible.
+### RULE 11 — distributed atomic phase-flip (unchanged from v7-candidate)
 
-### BLOCKED vetoes auto-flip
+At tick start, every worker:
+1. Read current phase from `.mission-events` (last line)
+2. If current phase has named tasks remaining, scan TASKS.md
+3. **Completion test:** every named task `[done: ...]` AND every `claims/<task-id>/done` exists AND no lane has `working: <task>` with Last UTC <60s old
+4. If completion test passes, try `mkdir .phase-flip-locks/<from>-to-<to>`:
+   - **Exit 0:** append flip event to `.mission-events`, heartbeat with `PHASE-FLIP <from>→<to>`, continue
+   - **Exit nonzero:** skip; next tick reads new phase naturally
+5. **NEW Step 4a (v8) — stuck-flip recovery:** if lock exists but `.mission-events` last line is still the OLD phase >60s after lock-acquire, next worker scans, verifies lock-holder STATUS Last UTC >60s, `rm -rf` the lock, re-runs RULE 11. Handles the "lock-held-before-event-appended" race.
 
-Any lane setting state to `BLOCKED` freezes auto-flip. The orchestrator (human) investigates, resolves, the lane clears BLOCKED, normal flow resumes.
+### PHASE-RUN (NEW in v8) — execution verification
 
-## Useful pointers in this project
+PHASE-VERIFY catches defects by reading code; PHASE-RUN catches defects by executing it. Both required.
 
-- **Protocol doc:** `README.md` (the v7 protocol — read once on first tick; rules are TIER-1 load-bearing)
-- **Past-run lessons:** `.archive/2026-05-16T00-17Z--okx_case-rebuttal/` (READ-ONLY; useful for emergent-pattern reference)
-- **Design rationale for this mission:** `docs/superpowers/specs/2026-05-16-megalodon-self-improvement-design.md`
-- **Settings template (for forkers):** `.claude/settings.example.json`
+**Auto-flip from PHASE-VERIFY** when all `P4-*` tasks done.
+
+PHASE-RUN tasks (auto-claimed by pairing matrix, NO self-verification):
+
+- `P5-RUN-PRIMITIVES` — TEST runs `uv run pytest ui/tests/unit` against the new megalodon_ui.primitives. Failure → PHASE-HEAL with `REPAIR-PRIMITIVES-<n>`.
+- `P5-RUN-INTEGRATION` — TEST runs `uv run pytest ui/tests/integration`. Failure → PHASE-HEAL.
+- `P5-RUN-UI-RENDER` — FRONTEND launches server + headless browser via Playwright, screenshots, asserts 0 console errors and 6 lane rows visible. Failure → PHASE-HEAL.
+- `P5-RUN-MUTATIONS-E2E` — TEST drives all 6 POST endpoints via Playwright, verifies success + error states. Failure → PHASE-HEAL.
+
+### PHASE-HEAL (NEW in v8) — iterative repair
+
+Auto-loops when any `P5-RUN-*` fails:
+1. Failing run's owner injects `[REPAIR-<task-id>-<n>]` task in TASKS.md with failure transcript embedded
+2. Relevant BUILD lane re-opens (state: `working: REPAIR-*`), fixes, re-claims `P5-RUN-*` for re-execution
+3. **Budget per task: 3 HEAL cycles OR 30-min wall-clock.** Exceed → set state to `BLOCKED-DEGRADED` for operator triage. No infinite loops.
+
+PHASE-HEAL → PHASE-RUN re-entry until all P5-RUN-* exit with status `EXEC-PASS`.
+
+### PHASE-OPERATOR-ACCEPTANCE (NEW in v8, post-run-1) — mandatory human/orchestrator gate
+
+When all `P5-RUN-*` are `EXEC-PASS`, mission flips to **PHASE-OPERATOR-ACCEPTANCE**. **NO AUTO-FLIP TO DRAINING.**
+
+Phase-entry actions (any worker may execute, idempotent):
+1. Inject task `[OPERATOR-ACCEPTANCE-REQUEST]` into TASKS.md `## OPERATOR-ACCEPTANCE` section with:
+   - Deliverable summary (links to findings + ui/ artifacts)
+   - Test-run transcripts (pytest + Playwright outputs)
+   - UI screenshot artifacts (paths to `.png` files)
+   - Outstanding issues / known gaps
+2. All lanes set state to `idle | awaiting OPERATOR-ACK`
+3. **Halt and wait.** Workers continue heartbeating but claim NO new tasks.
+
+Phase-exit conditions (only one of):
+- **`[OPERATOR-ACK]`** by orchestrator or operator → flip to DRAINING → COMPLETE
+- **`[OPERATOR-REJECT]` + `[REPAIR-<n>]`** task injected → re-enter PHASE-HEAL with operator-specified fix list
+- **`[OPERATOR-DEGRADED-ACK]`** — operator explicitly accepts degraded delivery with documented caveats → flip to DRAINING with `severity-degraded: true` flag
+
+**The orchestrator (orchestrator-Claude session, distinct from worker sessions) is the gate.** Workers do NOT self-flip past PHASE-OPERATOR-ACCEPTANCE.
+
+### DRAINING + COMPLETE
+
+Unchanged from v7. Workers write LANE-CAPSTONEs, META writes RUN2-CAPSTONE. COMPLETE flips when: all lanes idle + META CAPSTONE on disk + HISTORY quiet >10min.
+
+### BLOCKED vetoes auto-flip (unchanged)
+
+Any lane setting state `BLOCKED` freezes auto-flip.
+
+---
+
+## Useful pointers
+
+- **Protocol doc:** `README.md` (now v8 — read once on first tick)
+- **v7→v8 changeset:** `docs/v8-changeset.md` (21 edits + Edit 22 post-run-1)
+- **Run-1 archive:** `.archive/2026-05-16T17-06Z--megalodon-self-improvement-run1/` (READ-ONLY; reference for what was built)
+- **Run-1 capstone:** `.archive/2026-05-16T17-06Z--megalodon-self-improvement-run1/findings/agent-5f87-F-FINAL-RUN-CAPSTONE-2026-05-16T16-31Z.md` (META's v8 evidence)
+- **Run-1 RR-1 finding:** `.archive/2026-05-16T17-06Z--megalodon-self-improvement-run1/findings/agent-8318-CROSS-RR1-runtest-2026-05-16T16-54Z.md` (BACKEND's runtest transcript — the only execution-verified work from run-1)
+
+---
 
 ## Hard constraints
 
-- Workers **cannot `git`**, `curl`, `wget`, `npm`, `pip`, `brew`, `sudo`, `chmod`, `chown`, `ssh`, `scp` — see `.claude/settings.json` deny list. The operator reviews and commits manually after the run.
-- `.archive/` is READ-ONLY (existing deny).
-- BUILD lanes may write to `ui/` and any new subdirectory needed for their deliverable. AUDIT may write `docs/v8-changeset.md`.
-- No `git push`, no merge-to-main, no PRs — the operator decides what is keep-worthy post-run.
-- **No self-verification** in PHASE-VERIFY (encoded in pairing matrix above).
+- Workers **cannot `git`, `curl`, `wget`, `npm`, `pip`, `brew`, `sudo`, `chmod`, `chown`, `ssh`, `scp`**. The operator commits manually after the run.
+- `.archive/` is READ-ONLY (existing deny). Workers reference run-1 but don't write there.
+- BUILD lanes write to `megalodon_ui/`, `ui/`, `docs/`. TEST writes to `ui/tests/`.
+- No `git push`, no merge-to-main, no PRs. Operator decides keep-worthiness post-run.
+- **No self-verification.** PHASE-VERIFY and PHASE-RUN pairings are explicit.
+- **Tests SKIP-due-to-ImportError is a FAILURE, not a pass.** If `from megalodon_ui import primitives` raises ImportError, the run is incomplete.
 
-## Permissions update
-
-No additional Read paths needed — source project IS this project, and `.claude/settings.json` already covers `Read(/Users/dave/**)` (or `<PROJECT_ROOT>` if you bootstrapped from the example).
+---
 
 ## Deliverable
 
-On return (3–7 hours post-deployment), the operator inherits:
+On operator-ACK, you (the operator) will have:
 
-1. **`docs/v8-changeset.md`** — AUDIT's proposed README.md edits. Review and merge into README.md if accepted.
-2. **`ui/`** — working orchestrator-console code. Run it (`uv run python ui/server.py` or whatever stack ARCHITECT chose) and inspect.
-3. **`ui/tests/`** — passing Playwright + integration suite.
-4. **`findings/*-F-FINAL-RUN-CAPSTONE-*.md`** — META's retrospective on the 4-phase + auto-flip pattern. Use this to decide whether v8 should adopt the pattern.
-5. **`.mission-events`** — full phase audit trail.
-6. **`HISTORY.md`** — appended throughout the run.
-
-After review, run the README's "End-of-run process" (archive → reset templates) to clear state for the next mission.
-
-## Mission-specific subagent guidance
-
-- **AUDIT lane:** dispatch literature-review subagents for citation deep-dives (one per paradigm: raft, OTP, blackboard, CRDT). Cap at 3 parallel per finding per TIER 2 §"Subagent budget".
-- **BUILD lanes (B/C/D/E):** dispatch implementation subagents for parallel code chunks (e.g., one per page, one per endpoint, one per test file). Same 3-parallel cap. The lane retains synthesis (RULE 9).
-- **META lane:** dispatch observer subagents to read `findings/` periodically and surface emergence patterns. Do NOT delegate the FINAL-RUN-CAPSTONE.
+1. **`megalodon_ui/`** — proper Python package with `primitives.py` + `server.py:make_app(mission_dir=)`
+2. **`ui/server.py`** — patched (already done by orchestrator: static-mount + run-1 RR-1 patches)
+3. **`ui/static/`** — all 6 POST endpoints wired in UI
+4. **`ui/tests/`** — passing pytest suite (0 SKIPPED, 0 FAILED) + working Playwright e2e
+5. **`findings/<agent>-RUN-ui-render-<UTC>.png`** — Playwright screenshot artifact
+6. **`findings/<agent>-F-RUN2-CAPSTONE-<UTC>.md`** — META's run-2 retrospective
+7. **All artifacts archived** under `.archive/<UTC>--megalodon-run2-make-it-work/` post-COMPLETE
 
 ---
 
 ## Pre-deployment checklist
 
-- [x] Source project path resolved (self-referential)
-- [x] Scope clear (in/out)
-- [x] Lanes defined (6, matching STATUS.md rows)
-- [x] Cadence decided (3 min uniform)
-- [x] Pointers listed
-- [x] Hard constraints stated
-- [x] `.claude/settings.json` exists with `<PROJECT_ROOT>` substituted
-- [x] TASKS.md seeded with all `P1-*`, `P2-*`, `P2.5-*`, `P3-*`, `P4-*` tasks + secondary pool
-- [x] `.mission-events` initialized with `INIT->PHASE-PLAN`
-- [x] `.phase-flip-locks/` exists
-- [x] README.md Mission status set to `Current: PHASE-PLAN (mission active)`
-- [ ] Start 6 Claude sessions with the one-liner (see Deployment section)
+- [x] Run-1 archived (`.archive/2026-05-16T17-06Z--megalodon-self-improvement-run1/`)
+- [x] Run-1 known fixes pre-applied (static-mount in ui/server.py:1434)
+- [x] README.md promoted to v8 (this mission is v8.0)
+- [x] MISSION.md (this file) defines run-2 scope + new phases + OPERATOR-ACCEPTANCE gate
+- [x] TASKS.md seeded with run-2 P1-P4 + P5-RUN-* + secondary CROSS tasks
+- [x] STATUS.md reset to 6 unclaimed rows
+- [x] HISTORY.md reset (new run log)
+- [x] `.mission-events` empty (worker writes first INIT entry on first claim)
+- [x] `.phase-flip-locks/`, `findings/`, `claims/`, `.scratch/` reset
+- [ ] Start 6 Claude sessions with the launch one-liner (see operator-handed prompt)
