@@ -18,6 +18,10 @@
 // the value property. Only static element creation uses createElement.
 
 import { store } from "../js/store.js";
+import {
+  API_CHALLENGE, API_FINDINGS, API_INJECT_TASK, API_MISSION_STATUS,
+  API_PHASE_FLIP, API_RECLAIM, API_SIGNAL,
+} from "../js/constants.js";
 
 // Canonical lane order — mirrors dashboard.js.
 const LANE_ORDER = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
@@ -476,7 +480,7 @@ function buildFindingPickerField() {
   });
   select.appendChild(el("option", { value: "", disabled: true, selected: true }, "Loading findings…"));
 
-  fetch("/api/v1/findings", { headers: { "Accept": "application/json" }, credentials: "same-origin" })
+  fetch(API_FINDINGS, { headers: { "Accept": "application/json" }, credentials: "same-origin" })
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
     .then((data) => {
       const findings = Array.isArray(data && data.findings) ? data.findings : [];
@@ -529,7 +533,7 @@ function buildChallengeForm() {
       const description = String(fd.get("description") || "").trim();
       if (!finding_filename) throw new Error("finding_filename is required");
       const body = description ? { finding_filename, description } : { finding_filename };
-      const out = await postAction("/api/v1/challenge", body);
+      const out = await postAction(API_CHALLENGE, body);
       showToast(`CHALLENGE injected: task ${out.task_id || "?"}`, "success");
     },
     { submitTestId: "submit-challenge" },
@@ -550,7 +554,7 @@ function buildReclaimForm() {
       const lane = String(fd.get("lane") || "");
       const force = fd.get("force") === "on" || fd.get("force") === "true";
       if (!lane) throw new Error("lane is required");
-      const out = await postAction("/api/v1/reclaim", { lane, force });
+      const out = await postAction(API_RECLAIM, { lane, force });
       showToast(`Reclaimed ${lane}: ${out.action || "ok"}`, "success");
     },
     { confirmTestId: "confirm-reclaim", confirmLabel: "Confirm reclaim" },
@@ -583,7 +587,7 @@ function buildSignalForm() {
       if (!/^[^:\s]+:\d+/.test(evidence)) {
         throw new Error("evidence must be path:line format");
       }
-      await postAction("/api/v1/signal", { from_lane, to_lane, claim, evidence });
+      await postAction(API_SIGNAL, { from_lane, to_lane, claim, evidence });
       showToast(`SIGNAL posted ${from_lane} → ${to_lane}`, "success");
     },
     { submitTestId: "submit-signal", errorTestId: "signal-error" },
@@ -639,7 +643,7 @@ function buildPhaseFlipForm() {
       if (!from || !to) throw new Error("from and to are required (pick a target phase)");
       if (from === to) throw new Error("from and to must differ");
       if (!reason) throw new Error("reason is required");
-      await postAction("/api/v1/phase-flip", { from, to, reason });
+      await postAction(API_PHASE_FLIP, { from, to, reason });
       showToast(`Phase flipped ${from} → ${to}`, "success");
       // REPAIR-7: optimistic store update — SSE may lag; test asserts immediately.
       store.set("mission.phase", to);
@@ -658,7 +662,7 @@ function buildMissionStatusForm() {
       const fd = new FormData(form);
       const status = String(fd.get("status") || "");
       if (!status) throw new Error("status is required");
-      await postAction("/api/v1/mission-status", { status });
+      await postAction(API_MISSION_STATUS, { status });
       showToast(`Mission status: ${status}`, "success");
       // REPAIR-7: optimistic store update — SSE may lag; badge re-renders on subscribe.
       store.set("mission.missionStatus", status);
@@ -696,7 +700,7 @@ function buildInjectTaskForm() {
           'task_text must match: [ ] [LANE-X] `task-id` — description (ASCII task-id only; em-dash separator required)',
         );
       }
-      await postAction("/api/v1/inject-task", { task_text, section });
+      await postAction(API_INJECT_TASK, { task_text, section });
       showToast(`Task injected into ${section}`, "success");
     },
     { submitTestId: "submit-inject-task" },
@@ -750,7 +754,7 @@ async function completeStuckFlip() {
   const lock = detectStuckFlip();
   if (!lock) { showToast("No stuck flip detected", "info"); return; }
   try {
-    await postAction("/api/v1/phase-flip", { to_phase: lock.to, reason: "operator: complete-stuck-flip" });
+    await postAction(API_PHASE_FLIP, { to_phase: lock.to, reason: "operator: complete-stuck-flip" });
     showToast(`Completed stuck flip ${lock.from} → ${lock.to}`, "info");
   } catch (err) {
     showToast(`Complete-flip failed: ${err.message || err}`, "error");

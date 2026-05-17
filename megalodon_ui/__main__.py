@@ -11,6 +11,8 @@ import argparse
 import os
 from pathlib import Path
 
+from .constants import DEFAULT_PORT
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -23,7 +25,7 @@ def main() -> None:
         help="Path to mission directory (default: $MEGALODON_MISSION_DIR or repo root).",
     )
     parser.add_argument(
-        "--port", type=int, default=int(os.environ.get("MEGALODON_PORT", "8080"))
+        "--port", type=int, default=int(os.environ.get("MEGALODON_PORT", str(DEFAULT_PORT)))
     )
     parser.add_argument(
         "--host", default=os.environ.get("MEGALODON_HOST", "127.0.0.1")

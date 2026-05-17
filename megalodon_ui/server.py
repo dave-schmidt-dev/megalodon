@@ -26,6 +26,15 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import AppConfig
 from . import primitives
+from .queue import queue_client as _qc
+from .constants import (
+    API_CHALLENGE, API_CONFIG, API_EVENTS, API_FINDINGS, API_INJECT_TASK,
+    API_MISSION_STATUS, API_PHASE_FLIP, API_RECLAIM, API_SIGNAL, API_STATE,
+    SSE_CLAIM_CREATE, SSE_CLAIM_DONE, SSE_FINDING_NEW, SSE_HEARTBEAT,
+    SSE_HISTORY_APPEND, SSE_LAGGING, SSE_MISSION_STATUS, SSE_PHASE_FLIP,
+    SSE_SIGNAL_NEW, SSE_STATUS_CHANGE, SSE_SYNC, SSE_TASK_CHANGE,
+    STALE_THRESHOLD_SECONDS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +97,7 @@ def parse_status(mission_dir: Path) -> list[dict[str, Any]]:
         try:
             ts = datetime.fromisoformat(last_utc.replace("Z", "+00:00"))
             staleness_seconds = (now - ts).total_seconds()
-            is_stale = staleness_seconds > 900.0  # RULE-1: 15 min
+            is_stale = staleness_seconds > STALE_THRESHOLD_SECONDS  # RULE-1: 15 min
         except (ValueError, AttributeError):
             pass
         rows.append({
@@ -205,6 +214,53 @@ def parse_findings(mission_dir: Path, *, include_scratch: bool = False) -> list[
 
 
 # ---------------------------------------------------------------------------
+# V9 M2 — contract validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_contract(app: FastAPI, contract_path: Path) -> None:
+    """V9 M2 — assert declared routes match registered routes.
+
+    Raises RuntimeError if a contract-declared route isn't registered.
+    Warns (non-fatal) if a registered route isn't declared. The introspect
+    endpoint is excluded from both sides.
+    """
+    import warnings
+
+    from .contract_loader import load_contract
+
+    if not contract_path.exists():
+        warnings.warn(f"api-contract.md not found at {contract_path} — skipping validation")
+        return
+
+    contract = load_contract(contract_path)
+    registered: set[tuple[str, str]] = set()
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if path and methods and path.startswith("/api/v1/"):
+            for method in methods:
+                # HEAD is auto-added for GET; ignore.
+                if method == "HEAD":
+                    continue
+                registered.add((method, path))
+
+    declared = {(e["method"], e["path"]) for e in contract["endpoints"]}
+    registered_filtered = {
+        r for r in registered if not r[1].endswith("__contract_introspect__")
+    }
+
+    missing = declared - registered_filtered
+    if missing:
+        raise RuntimeError(
+            f"BE contract violation: declared routes not registered: {missing}"
+        )
+    extras = registered_filtered - declared
+    if extras:
+        warnings.warn(f"Routes registered but not in contract: {extras}")
+
+
+# ---------------------------------------------------------------------------
 # make_app factory
 # ---------------------------------------------------------------------------
 
@@ -270,6 +326,15 @@ def make_app(
         )
 
     _register_routes(app, ctx)
+
+    # V9 M2 — contract validation. Opt-in via env var until contract.md is
+    # fully cross-checked across all factory callers; flip to default-on once
+    # we're confident no surprise drift exists.
+    import os
+    if os.environ.get("M9_VALIDATE_CONTRACT") == "1":
+        contract_path = Path(__file__).resolve().parents[1] / "docs" / "v9" / "api-contract.md"
+        _validate_contract(app, contract_path)
+
     return app
 
 
@@ -298,7 +363,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             ]
         return JSONResponse(content=findings)
 
-    @app.get("/api/v1/config")
+    @app.get(API_CONFIG)
     async def get_config():
         # FE C5: documented response shape.
         return {
@@ -438,7 +503,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         # phase/task tree consumed by FE `tasks.js:417,452`.
         return {"phases": parse_tasks(ctx.mission_dir)}
 
-    @app.get("/api/v1/state")
+    @app.get(API_STATE)
     async def get_v1_state():
         # REPAIR-MUTATIONS-E2E-11-STATE-ENDPOINT: aggregate bootstrap
         # consumed by FE `sse.js:67 hydrateInitialState()` →
@@ -469,7 +534,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             },
         }
 
-    @app.get("/api/v1/findings")
+    @app.get(API_FINDINGS)
     async def get_v1_findings(
         lane: str | None = None,
         severity: str | None = None,
@@ -487,8 +552,38 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             findings = [f for f in findings if task in str(f.get("task", "")) or task in str(f.get("task-id", ""))]
         return {"findings": findings}
 
-    @app.post("/api/v1/signal")
+    @app.get(API_FINDINGS + "/{filename}")
+    async def get_v1_finding_detail(filename: str):
+        """V9 M2 — fetch single finding body + frontmatter by filename.
+
+        FE consumer: ui/static/pages/findings.js:528. Lazily loads body for
+        the findings drawer; cached client-side under
+        `findings.byFilename.<filename>`.
+        """
+        # Sanitize: reject path traversal.
+        if "/" in filename or "\\" in filename or ".." in filename:
+            raise HTTPException(status_code=400, detail="invalid filename")
+        path = ctx.mission_dir / "findings" / filename
+        if not path.exists() or not path.is_file():
+            raise HTTPException(status_code=404, detail="finding not found")
+        text = path.read_text()
+        frontmatter = _parse_yaml_frontmatter(text)
+        # Body is everything after the closing `---` line; fall back to whole
+        # text if there's no frontmatter.
+        body = text
+        if text.startswith("---"):
+            end = text.find("\n---", 3)
+            if end >= 0:
+                body = text[end + 4 :].lstrip("\n")
+        return {"filename": filename, "body": body, "frontmatter": frontmatter}
+
+    @app.post(API_SIGNAL)
     async def post_v1_signal(req: Request):
+        """V9 M1.5: now 202-async via queue.
+
+        Routes the signal into the target lane's STATUS row notes via
+        STATUS_UPDATE intent. FE may poll /api/v1/queue/{rid}.
+        """
         body = await req.json()
         # api-contract.md: {to_lane, claim, evidence}
         to_lane = str(body.get("to_lane", "")).strip()
@@ -500,34 +595,91 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             primitives.validate_signal({"evidence": evidence, "cite": evidence})
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
-        # Delegate to /api/lanes/{lane}/signal logic
-        return await post_signal(to_lane, _make_req_with_body(req, {"text": claim, "cite": evidence}))
 
-    @app.post("/api/v1/reclaim")
+        # Read current row for this lane to preserve agent/state.
+        rows = parse_status(ctx.mission_dir)
+        target = next((r for r in rows if r["lane"].upper() == to_lane.upper()), None)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"lane {to_lane!r} not found")
+
+        sig_token = f"[SIG from=orchestrator to={to_lane} text=\"{claim}\" cite={evidence}]"
+        new_notes = f"{target['notes']} {sig_token}".strip()
+        rid = _qc.status_update(
+            ctx.mission_dir,
+            agent=target["agent"],
+            lane=to_lane.upper(),
+            new_state=target["state"],
+            new_notes=new_notes,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={"request_id": rid, "intent": "STATUS_UPDATE", "status": "pending"},
+            headers={"Location": f"/api/v1/queue/{rid}"},
+        )
+
+    @app.post(API_RECLAIM)
     async def post_v1_reclaim(req: Request):
+        """V9 M1.5: now 202-async via queue when there's a task to reclaim.
+
+        If lane is already idle (no `working: <task>`), returns 204 as
+        before — nothing to do.
+        """
         body = await req.json()
         lane = str(body.get("lane", "")).strip()
         if not lane:
             raise HTTPException(status_code=422, detail="lane required")
-        return await post_reclaim(lane)
 
-    @app.post("/api/v1/challenge")
+        rows = parse_status(ctx.mission_dir)
+        target = next((r for r in rows if r["lane"].upper() == lane.upper()), None)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"lane {lane!r} not found")
+        m = re.match(r"working:\s*(\S+)", target.get("state", ""))
+        if not m:
+            return Response(status_code=204)
+        # Submit status_update to flip lane back to idle via queue.
+        rid = _qc.status_update(
+            ctx.mission_dir,
+            agent=target["agent"],
+            lane=lane.upper(),
+            new_state="idle",
+            new_notes=f"reclaimed by orchestrator",
+        )
+        return JSONResponse(
+            status_code=202,
+            content={"request_id": rid, "intent": "STATUS_UPDATE", "status": "pending"},
+            headers={"Location": f"/api/v1/queue/{rid}"},
+        )
+
+    @app.post(API_CHALLENGE)
     async def post_v1_challenge(req: Request):
+        """V9 M1.5: now 202-async via queue (TASKS_INJECT)."""
         body = await req.json()
         finding = str(body.get("finding_filename", "")).strip()
         description = str(body.get("description", "")).strip()
         if not finding:
             raise HTTPException(status_code=422, detail="finding_filename required")
-        return await post_task(
-            _make_req_with_body(req, {"kind": "CHALLENGE", "target_finding": finding, "description": description})
+        short_target = Path(finding).stem
+        task_id = f"CHALLENGE-{short_target}"
+        rid = _qc.tasks_inject(
+            ctx.mission_dir,
+            agent="orchestrator",
+            submitting_lane="META",
+            task_id=task_id,
+            lane="A",
+            description=description or f"CHALLENGE on {finding}",
+        )
+        return JSONResponse(
+            status_code=202,
+            content={"request_id": rid, "intent": "TASKS_INJECT", "status": "pending"},
+            headers={"Location": f"/api/v1/queue/{rid}"},
         )
 
-    @app.post("/api/v1/phase-flip")
+    @app.post(API_PHASE_FLIP)
     async def post_v1_phase_flip(req: Request):
         body = await req.json()
         return await post_flip(_make_req_with_body(req, body))
 
-    @app.post("/api/v1/mission-status")
+    @app.post(API_MISSION_STATUS)
     async def post_v1_mission_status(req: Request):
         body = await req.json()
         status = str(body.get("status", "")).strip().upper()
@@ -546,28 +698,97 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             readme.write_text(new_text)
         return {"ok": True, "status": status}
 
-    @app.post("/api/v1/inject-task")
+    @app.post(API_INJECT_TASK)
     async def post_v1_inject_task(req: Request):
+        """V9 M1.5: now 202-async via queue (TASKS_INJECT).
+
+        Body: {task_text, section?}. We parse a canonical
+        ``- [bracket] [LANE-X] `task-id` — description`` line; if it
+        parses, route through queue. Free-form text is rejected (FE
+        should use the canonical shape).
+        """
         body = await req.json()
         task_text = str(body.get("task_text", "")).strip()
-        section = str(body.get("section", "CHALLENGE TASKS")).strip()
         if not task_text:
             raise HTTPException(status_code=422, detail="task_text required")
-        # Validate canonical task-id syntax if line starts with "- [ ] [LANE-...]"
-        tasks_path = ctx.mission_dir / "TASKS.md"
-        text = tasks_path.read_text() if tasks_path.exists() else "# Tasks\n"
-        injected = f"\n- {task_text}\n" if not task_text.startswith("-") else f"\n{task_text}\n"
-        section_header = f"## {section}" if not section.startswith("##") else section
-        if section_header in text:
-            text = text.replace(section_header, section_header + injected, 1)
-        else:
-            text = text.rstrip("\n") + "\n" + injected
-        tasks_path.write_text(text)
-        return {"ok": True, "task_text": task_text}
+        m = re.match(
+            r"^-?\s*(\[[^\]]+\])\s*\[LANE-([A-Z])\]\s*`([^`]+)`\s*(?:[—-]\s*(.*))?$",
+            task_text,
+        )
+        if not m:
+            raise HTTPException(
+                status_code=422,
+                detail="task_text must match `- [bracket] [LANE-X] `id` — desc`",
+            )
+        bracket, lane, task_id, desc = m.group(1), m.group(2), m.group(3), (m.group(4) or "")
+        rid = _qc.tasks_inject(
+            ctx.mission_dir,
+            agent="orchestrator",
+            submitting_lane="META",
+            task_id=task_id,
+            lane=lane,
+            description=desc,
+            bracket=bracket,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={"request_id": rid, "intent": "TASKS_INJECT", "status": "pending"},
+            headers={"Location": f"/api/v1/queue/{rid}"},
+        )
+
+    # V9 M1.5 — queue request introspection endpoint.
+    @app.get("/api/v1/queue/{request_id}")
+    async def get_v1_queue_status(request_id: str):
+        """Return current state of a queue request submitted via M1.5
+        202-async endpoints.
+
+        Response shape: `{request_id, status, rejection_reason}` where
+        status ∈ {pending, applied, rejected}.
+        """
+        mission = ctx.mission_dir
+        if (mission / "queue" / "applied" / f"{request_id}.json").exists():
+            return {"request_id": request_id, "status": "applied",
+                    "rejection_reason": None}
+        rejected = mission / "queue" / "rejected" / f"{request_id}.json"
+        if rejected.exists():
+            reason_file = mission / "queue" / "rejected" / f"{request_id}-reason.txt"
+            reason = reason_file.read_text() if reason_file.exists() else None
+            return {"request_id": request_id, "status": "rejected",
+                    "rejection_reason": reason}
+        if (mission / "queue" / "pending" / f"{request_id}.json").exists():
+            return {"request_id": request_id, "status": "pending",
+                    "rejection_reason": None}
+        raise HTTPException(404, "request_id not found")
+
+    # ----- V9 M2: introspection endpoint for contract scan -----
+
+    @app.get("/api/v1/__contract_introspect__")
+    async def contract_introspect():
+        """V9 M2 — list registered routes for contract scan cross-check.
+
+        Returns only /api/v1/* routes. Not part of public contract (declared
+        with leading double-underscore by convention; contract_scan.py
+        special-cases it).
+        """
+        seen: set[tuple[str, str]] = set()
+        for r in app.routes:
+            path = getattr(r, "path", None)
+            methods = getattr(r, "methods", None)
+            if not path or not methods:
+                continue
+            if not path.startswith("/api/v1/"):
+                continue
+            if path.endswith("__contract_introspect__"):
+                continue
+            for method in methods:
+                if method == "HEAD":
+                    continue
+                seen.add((method, path))
+        return {"registered": sorted([[m, p] for (m, p) in seen])}
 
     # ----- SSE stream (MISSION exit-criterion #4 / TEST signal @19:41Z) -----
 
-    @app.get("/api/v1/events")
+    @app.get(API_EVENTS)
     async def sse_events(request: Request):
         """Server-Sent Events stream via sse-starlette EventSourceResponse.
 
@@ -594,7 +815,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                 "utc": _now_iso(),
                 "mission_dir": str(ctx.mission_dir),
             })
-            yield {"event": "sync", "data": sync_payload}
+            yield {"event": SSE_SYNC, "data": sync_payload}
 
             try:
                 last_mtime = status_path.stat().st_mtime
@@ -620,7 +841,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                         "utc": _now_iso(),
                         "lanes": parse_status(ctx.mission_dir),
                     })
-                    yield {"event": "status-change", "data": payload}
+                    yield {"event": SSE_STATUS_CHANGE, "data": payload}
 
         return EventSourceResponse(event_generator())
 

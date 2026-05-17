@@ -19,6 +19,7 @@
 // (and we avoid even that — we use createElementNS exclusively for SVG).
 
 import { store } from "../js/store.js";
+import { STALE_THRESHOLD_SECONDS, API_RECLAIM } from "../js/constants.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -26,7 +27,7 @@ const LANE_ORDER = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"]
 
 // Staleness thresholds in seconds.
 const FRESH_MAX = 5 * 60;       // < 5 min → fresh
-const STALE_MAX = 15 * 60;      // 5–15 min → stale; >15 → dead
+const STALE_MAX = STALE_THRESHOLD_SECONDS;      // 5–15 min → stale; >15 → dead
 
 // Sparkline geometry.
 const SPARK_W = 200;
@@ -340,7 +341,7 @@ async function reclaimLane(lane) {
   const toast = document.getElementById("toast-region");
   try {
     const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") || "";
-    const res = await fetch("/api/v1/reclaim", {
+    const res = await fetch(API_RECLAIM, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

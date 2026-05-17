@@ -1,0 +1,27 @@
+{
+  "name": "megalodon",
+  "version": "1.0.0",
+  "description": "A blackboard multi-agent coordination protocol for parallel review, audit, synthesis, and similar deep-work missions across multiple Claude sessions.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dave-schmidt-dev/megalodon.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/dave-schmidt-dev/megalodon/issues"
+  },
+  "homepage": "https://github.com/dave-schmidt-dev/megalodon#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
+  }
+}

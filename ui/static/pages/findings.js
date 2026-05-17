@@ -19,6 +19,7 @@
  */
 
 import { store } from "../js/store.js";
+import { API_FINDINGS } from "../js/constants.js";
 
 // ---- constants --------------------------------------------------------------
 
@@ -524,7 +525,7 @@ export function render(root) {
     }
     pendingFetch = new AbortController();
     const signal = pendingFetch.signal;
-    fetch(`/api/v1/findings/${encodeURIComponent(filename)}`, {
+    fetch(`${API_FINDINGS}/${encodeURIComponent(filename)}`, {
       headers: { Accept: "application/json" },
       signal,
     })

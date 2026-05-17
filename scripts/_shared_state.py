@@ -1,16 +1,16 @@
 """M3/M1 abstraction boundary for shared-state writes.
 
-execute_close() runs the 4 RULE-10 steps in order under per-file fcntl locks
-(M3 backend) or via queue_client submit + wait_until_applied (M1 backend).
+execute_close() runs the 4 RULE-10 steps in order. As of V9 M1, the
+backend routes through the queue applier (`_backends.queue_client`)
+instead of doing direct fcntl writes. The legacy direct backend
+remains importable for callers that need bypass (and is exercised by
+its own test module).
+
 On any step failure, writes a PARTIAL journal entry under
 mission/.scripts-journal/<request-id>.json and returns with resume_hint.
 
 resume_close() reads a PARTIAL journal and continues from the first failed step.
 Each step is independently idempotent, so resume is safe to invoke repeatedly.
-
-Backend swap at M1: change the line below to
-    from ._backends import queue_delegate as _backend
-and remove this comment.
 """
 
 from __future__ import annotations
@@ -20,7 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ._backends import direct_fcntl as _backend
+# V9 M1 backend swap (spec D5): single-line change. Old:
+#   from ._backends import direct_fcntl as _backend
+from ._backends import queue_client as _backend
 from ._validation import LANE_LONG_TO_SHORT
 
 SCHEMA_VERSION = 1

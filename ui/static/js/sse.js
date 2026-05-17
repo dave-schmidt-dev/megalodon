@@ -14,24 +14,13 @@
 // See findings/agent-8318-C-P1-backend-plan-2026-05-16T15-33Z.md §3 + P2.5-C Δ1-Δ7.
 
 import { store } from "./store.js";
+import { API_STATE, API_CONFIG, API_EVENTS, SSE_EVENT_TYPES } from "./constants.js";
 
 const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
 const HEARTBEAT_GRACE_MULTIPLIER = 2.5;
 
-const EVENT_TYPES = [
-  "status-change",
-  "task-change",
-  "phase-flip",
-  "finding-new",
-  "history-append",
-  "claim-create",
-  "claim-done",
-  "signal-new",
-  "lagging",
-  "heartbeat",
-  "mission-status",
-];
+const EVENT_TYPES = SSE_EVENT_TYPES;
 
 let es = null;
 let reconnectDelay = RECONNECT_INITIAL_MS;
@@ -64,8 +53,8 @@ function armHeartbeatWatchdog() {
 async function hydrateInitialState() {
   try {
     const [stateRes, configRes] = await Promise.all([
-      fetch("/api/v1/state", { credentials: "same-origin" }),
-      fetch("/api/v1/config", { credentials: "same-origin" }),
+      fetch(API_STATE, { credentials: "same-origin" }),
+      fetch(API_CONFIG, { credentials: "same-origin" }),
     ]);
     if (!stateRes.ok) throw new Error(`state: HTTP ${stateRes.status}`);
     if (!configRes.ok) throw new Error(`config: HTTP ${configRes.status}`);
@@ -160,7 +149,7 @@ async function connect() {
   setConnectionStatus("connecting");
   try {
     await hydrateInitialState();
-    es = new EventSource("/api/v1/events");
+    es = new EventSource(API_EVENTS);
     attachEventHandlers(es);
     es.onopen = () => {
       reconnectDelay = RECONNECT_INITIAL_MS;

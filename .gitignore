@@ -52,8 +52,27 @@ __pycache__/
 # v9 M3 helper-script journal state (per spec §5.4)
 .scripts-journal/
 
+# v9 M1 queue applier mission state (per spec §3.2; fixtures re-included below)
+queue/pending/
+queue/applied/
+queue/rejected/
+queue/journal.log
+queue/.applier.lock/
+# Re-include the queue subdirs under the test fixture so the empty layout commits.
+!scripts/tests/fixtures/**/queue/
+!scripts/tests/fixtures/**/queue/**
+
 # Playwright test artifacts (regenerated every run — never commit)
 ui/tests/e2e/playwright-report/
 ui/tests/e2e/test-results/
 playwright-report/
 test-results/
+
+# Node deps (V9 M2 introduced @playwright/test as devDependency)
+node_modules/
+
+# v9 A9 fleet ledger (mission state)
+.fleet-ledger/*
+!.fleet-ledger/.gitkeep
+!scripts/tests/fixtures/**/.fleet-ledger/
+!scripts/tests/fixtures/**/.fleet-ledger/**

@@ -68,6 +68,110 @@ See RULES 12, 13, 14 in `launch.md` for the worker-side discipline these scripts
 
 ---
 
+## V9 startup sequence (M1 queue applier)
+
+V9 serializes all shared-state writes through a singleton applier daemon
+to eliminate CAS contention. The operator MUST start the applier BEFORE
+workers.
+
+1. **Start the applier** (background, one per mission):
+
+       ./scripts/start_applier.sh /path/to/mission &
+
+2. **Start the UI server** (factory canonical, ui/server.py is a thin shim):
+
+       uv run --with fastapi --with "uvicorn[standard]" --with sse-starlette \
+           --with pyyaml --with pydantic \
+           python -m megalodon_ui --mission-dir /path/to/mission --port 8080
+
+   (Or equivalently `python ui/server.py --mission-dir ... --port 8080`
+   per the V9 M1.6 shim.)
+
+3. **Verify applier health**:
+
+       cat /path/to/mission/queue/.applier.lock/heartbeat.txt
+       # Should be a UTC stamp within the last 5 seconds.
+
+4. **(One-time, v8→v9 cutover only)** migrate legacy claims to add
+   owner.txt files (without this step, the applier's strict-mode B4
+   check rejects pre-v9 claim dirs):
+
+       python3 scripts/migrate_claims_to_owner_txt.py --mission-dir /path/to/mission
+
+5. **Workers** (per launch.md RULE 15): all shared-state writes go
+   through `scripts/atomic_close.py` (queue-routed via M1 backend swap)
+   or `python -m megalodon_ui.queue.queue_client`. Direct Edit-tool
+   writes to shared state are NO LONGER permitted.
+
+6. **(Optional, V9 A1) Start the watchdog daemon** for crash/silent/hung
+   worker detection:
+
+       ./scripts/start_watchdog.sh /path/to/mission &
+
+   Polls every 60s and writes SIGNAL findings
+   (`findings/watchdog-ALERT-<lane>-<utc>.md`,
+   `signal-type: WATCHDOG-ALERT`) when a lane appears dead, has a stale
+   STATUS row (>15 min), or has a stale Claude Code session JSONL while
+   STATUS is fresh (hung mid-tool-call). **Never auto-respawns** — the
+   operator decides whether to restart, signal the lane, or dismiss.
+   Per-lane PID discovery reads `~/.megalodon-pids/<lane>.pid`; lanes
+   without a PID file are skipped silently. See launch.md RULE 16.
+
+### Per-lane launch (V9 A2)
+
+Instead of running `claude --model X "read launch.md"` six times manually:
+
+    ./scripts/launch_fleet.sh /path/to/mission
+
+Each lane gets a pre-bound launch file (`launch-AUDIT.md`, `launch-ARCHITECT.md`,
+`launch-BACKEND.md`, `launch-FRONTEND.md`, `launch-TEST.md`, `launch-META.md`)
+with model, cadence, and stagger offset baked in. Regenerate after launch.md
+changes:
+
+    python3 scripts/gen_lane_launches.py
+
+### Fleet matrix (V9 A3)
+
+Lane→model assignments documented in `docs/v9/fleet-matrix.md`. Override per
+mission via `<mission>/.scratch/fleet-matrix-override.json`:
+
+    {"lanes": {"AUDIT": {"model": "haiku-4.5"}}}
+
+The selector `scripts/fleet_select.py:select(lane, mission_dir)` returns the
+override value if present, else the baked-in default, else `opus-4.7` for
+unknown lanes.
+
+### Deterministic agent IDs (V9 A4)
+
+`scripts/_agent_id.py:deterministic_agent_id(mission_id, lane, launch_utc)`
+replaces `secrets.token_hex(2)`. Same (mission, lane, launch_utc) → same ID.
+Useful for crash recovery: re-launch with the same triple reproduces the
+agent's identity.
+
+### SIGNAL grammar (V9 A8)
+
+Cross-agent + operator-facing directives codified at
+`docs/v9/SIGNAL-GRAMMAR.md`. Use this for any new SIGNAL-class finding.
+Parser at `megalodon_ui/signal_parser.py:parse_signal(path)` returns the
+frontmatter dict iff `signal-type` is present.
+
+### INTENT-EXPIRED + cross-lane reclaim (V9 M6)
+
+Workers may stamp their STATUS Notes with
+`intent-declared: <task-id> @ <utc> walltime: <Nm>` to claim a task on the
+next tick. Helper `scripts/_intent_expired.py:is_expired(intent, now)` flags
+declarations that have passed `max(12, walltime+5)` minutes after the
+declared UTC. See launch.md §6.Y.
+
+### PRE-CLASSIFY discipline (V9 M5)
+
+launch.md §6.X codifies the 5-step pre-classification checklist (liveness
+check → completion signal → invariants/uniformity/lane-bias → cause-class
+taxonomy → convergence-can-be-wrong). Applies before any artifact
+classification.
+
+---
+
 ## Mission status
 
 **Current: RUN-2 COMPLETE (BLOCKED-DEGRADED, 2026-05-16T22:10Z)**

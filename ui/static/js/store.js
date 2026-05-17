@@ -14,7 +14,13 @@
  *              connectionStatus: "connected"|"connecting"|"disconnected"|"lagging" }
  */
 
-const CONTROL_MODE_KEY = "controlMode";
+import {
+  CONTROL_MODE_KEY,
+  SSE_STATUS_CHANGE, SSE_TASK_CHANGE, SSE_PHASE_FLIP,
+  SSE_FINDING_NEW, SSE_HISTORY_APPEND, SSE_CLAIM_CREATE,
+  SSE_CLAIM_DONE, SSE_SIGNAL_NEW, SSE_LAGGING,
+  SSE_HEARTBEAT, SSE_MISSION_STATUS,
+} from './constants.js';
 
 /** Deep-freeze any plain value. Mutates input but result is referentially equal. */
 function deepFreeze(value) {
@@ -229,7 +235,7 @@ export class Store {
     if (utc) this._appliedEvents.add(dedupeKey);
 
     switch (eventType) {
-      case "status-change": {
+      case SSE_STATUS_CHANGE: {
         const row = payload.row;
         const lanes = (this.get("status.lanes") || []).slice();
         const idx = lanes.findIndex((l) => l.lane === payload.lane);
@@ -237,7 +243,7 @@ export class Store {
         this.set("status", { lanes, lastUtc: utc || this.get("status.lastUtc") || "" });
         break;
       }
-      case "task-change": {
+      case SSE_TASK_CHANGE: {
         const t = payload.task || payload;
         const phase = t.phase || "_cross";
         if (phase === "_cross") {
@@ -255,7 +261,7 @@ export class Store {
         }
         break;
       }
-      case "phase-flip": {
+      case SSE_PHASE_FLIP: {
         // Fix per BACKEND P4-C→D V3 (MAJOR): SSE envelope uses `to` per
         // ui/api-contract.md; `to_phase` only appears on /api/v1/mission-events.
         const events = (this.get("mission.events") || []).slice();
@@ -267,7 +273,7 @@ export class Store {
         });
         break;
       }
-      case "finding-new": {
+      case SSE_FINDING_NEW: {
         const meta = payload.meta || payload;
         const list = (this.get("findings.list") || []).slice();
         list.unshift(meta);
@@ -279,15 +285,15 @@ export class Store {
         }
         break;
       }
-      case "history-append": {
+      case SSE_HISTORY_APPEND: {
         // History entries are surfaced through mission timeline.
         const events = (this.get("mission.events") || []).slice();
         events.push({ kind: "history", ...payload });
         this.update("mission", (m) => ({ ...(m || {}), events }));
         break;
       }
-      case "claim-create":
-      case "claim-done": {
+      case SSE_CLAIM_CREATE:
+      case SSE_CLAIM_DONE: {
         // Repurpose task-change path: payload carries {task_id, lane, ...}
         const taskId = payload.task_id || payload.taskId;
         if (!taskId) break;
@@ -296,7 +302,7 @@ export class Store {
           const arr = phases[ph];
           const idx = arr.findIndex((x) => x.id === taskId);
           if (idx >= 0) {
-            arr[idx] = { ...arr[idx], claim_state: eventType === "claim-done" ? "done" : "claimed" };
+            arr[idx] = { ...arr[idx], claim_state: eventType === SSE_CLAIM_DONE ? "done" : "claimed" };
             this.set("tasks.phases", phases);
             return;
           }
@@ -305,26 +311,26 @@ export class Store {
         const cross = (this.get("tasks.cross") || []).slice();
         const idx = cross.findIndex((x) => x.id === taskId);
         if (idx >= 0) {
-          cross[idx] = { ...cross[idx], claim_state: eventType === "claim-done" ? "done" : "claimed" };
+          cross[idx] = { ...cross[idx], claim_state: eventType === SSE_CLAIM_DONE ? "done" : "claimed" };
           this.set("tasks.cross", cross);
         }
         break;
       }
-      case "signal-new": {
+      case SSE_SIGNAL_NEW: {
         const list = (this.get("signals.list") || []).slice();
         list.push(payload);
         this.set("signals.list", list);
         break;
       }
-      case "lagging": {
+      case SSE_LAGGING: {
         this.set("ui.connectionStatus", "lagging");
         break;
       }
-      case "heartbeat": {
+      case SSE_HEARTBEAT: {
         this.set("ui.connectionStatus", "connected");
         break;
       }
-      case "mission-status": {
+      case SSE_MISSION_STATUS: {
         this.set("mission.missionStatus", payload.status || payload.mission_status || "");
         break;
       }
