@@ -145,3 +145,5 @@ All fail with `AssertionError: got 202: ... "status":"pending"` while asserting 
 - Pattern is already used elsewhere in the suite; copy the polling helper rather than re-inventing it.
 
 Tracking here so v9.1 ships with the failure honestly documented rather than silently tolerated.
+
+**Resolved 2026-05-17:** All four tests updated to accept 202, extract `request_id`, and drive the `Applier.drain_once()` directly in a `wait_for_queue_applied` helper (added to `ui/tests/integration/conftest.py`). The helper instantiates `Applier` against the test's `tmp_path` mission dir and calls `drain_once()` before each poll of `GET /api/v1/queue/{request_id}`. Full suite: 354 passed, 1 xfailed, 0 failures.

@@ -11,6 +11,8 @@ import shutil
 
 import pytest
 
+from ui.tests.integration.conftest import wait_for_queue_applied
+
 
 try:
     from megalodon_ui.server import make_app  # type: ignore[import-not-found]
@@ -66,8 +68,9 @@ async def test_A_CH_inject_appends_task_and_creates_claim(client, fix_medium):
     r = await client.post("/api/v1/challenge", json={
         "finding_filename": "agent-x-A-P1-A.md",
     })
-    # BE returns 201 Created for new task; tolerate 200 too.
-    assert r.status_code in (200, 201), f"got {r.status_code}: {r.text}"
+    assert r.status_code == 202, f"got {r.status_code}: {r.text}"
+    request_id = r.json()["request_id"]
+    await wait_for_queue_applied(client, request_id, mission_dir=fix_medium)
     tasks = (fix_medium / "TASKS.md").read_text()
     assert "[CHALLENGE-" in tasks
 
@@ -84,16 +87,10 @@ async def test_A_RC_reclaim_stale_row_retroactive(client, fix_medium):
     """
     # fix-medium ships with two stale lanes (AUDIT, ARCHITECT); verify recovery.
     r = await client.post("/api/v1/reclaim", json={"lane": "AUDIT"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body.get("ok") is True, f"reclaim failed: {body}"
-    # api-contract.md:54 documents `action: "stale-reclaim" | "retroactive-recovery"`
-    # in response; BE @19:35Z ships `{ok, task_id}` instead. Either shape is OK
-    # for this test — recording the gap as v8.1 contract-vs-impl drift.
-    if "action" in body:
-        assert body["action"] in ("retroactive-recovery", "stale-reclaim")
-    elif "task_id" in body:
-        assert body["task_id"], "expected non-empty task_id"
+    assert r.status_code == 202, f"got {r.status_code}: {r.text}"
+    request_id = r.json()["request_id"]
+    final = await wait_for_queue_applied(client, request_id, mission_dir=fix_medium)
+    assert final["status"] == "applied", f"reclaim did not apply: {final}"
 
 
 @pytest.mark.asyncio
@@ -114,13 +111,10 @@ async def test_A_RC_reclaim_stale_row_no_finding(client, fix_medium):
     # Sanity: at least one A-finding existed, so the deletion is meaningful.
     assert deleted >= 1, "fix-medium expected to ship at least one AUDIT finding"
     r = await client.post("/api/v1/reclaim", json={"lane": "AUDIT"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body.get("ok") is True, f"reclaim failed: {body}"
-    # See test_A_RC_reclaim_stale_row_retroactive note — BE ships `task_id` not `action`.
-    # If action field present, must be "stale-reclaim" (no finding = STALE path).
-    if "action" in body:
-        assert body["action"] == "stale-reclaim"
+    assert r.status_code == 202, f"got {r.status_code}: {r.text}"
+    request_id = r.json()["request_id"]
+    final = await wait_for_queue_applied(client, request_id, mission_dir=fix_medium)
+    assert final["status"] == "applied", f"no-finding reclaim did not apply: {final}"
 
 
 # ---------- Orchestrator action: post SIGNAL ----------
@@ -152,8 +146,9 @@ async def test_A_SG_post_signal_appends_to_notes(client, fix_medium):
         "/api/v1/signal",
         json={"to_lane": "META", "claim": "verify finding X", "evidence": "findings/X.md:42"},
     )
-    # BE returns 201 Created for new signal-as-row; tolerate 200 too.
-    assert r.status_code in (200, 201), f"got {r.status_code}: {r.text}"
+    assert r.status_code == 202, f"got {r.status_code}: {r.text}"
+    request_id = r.json()["request_id"]
+    await wait_for_queue_applied(client, request_id, mission_dir=fix_medium)
     status = (fix_medium / "STATUS.md").read_text()
     assert "verify finding X" in status
     assert "findings/X.md:42" in status
