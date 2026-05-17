@@ -18,6 +18,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from megalodon_ui.mission_config.default_v9_0_shape import synthesize as _synthesize
+from megalodon_ui.mission_config.regex_builder import build_status_row_re as _build_status_row_re
+from scripts._backends._history_format import format_history_line
+
 LOCK_TIMEOUT_SECONDS = 5.0
 LOCK_RETRY_INTERVAL = 0.05
 
@@ -207,13 +211,8 @@ def tasks_bracket(
             os.close(fd)
 
 
-STATUS_ROW_RE = re.compile(
-    r"^\| (?P<lane>AUDIT|ARCHITECT|BACKEND|FRONTEND|TEST|META)\s*"
-    r"\| (?P<agent>[^|]+?)\s*"
-    r"\| (?P<state>[^|]+?)\s*"
-    r"\| (?P<last_utc>[^|]+?)\s*"
-    r"\| (?P<notes>.*?)\s*\|\s*$"
-)
+_default_config = _synthesize(Path.cwd())
+STATUS_ROW_RE = _build_status_row_re(_default_config)
 
 
 def _history_row_recent(text: str, agent: str, task_id: str, utc: str) -> bool:
@@ -254,11 +253,15 @@ def history_append(
     start = time.monotonic()
     path = mission / "HISTORY.md"
     target = str(path)
-    notes_first_line = notes.split("\n", 1)[0]
-    line = (
-        f"{utc} | {agent} | {lane_short} | {task_id} | "
-        f"{finding_path} | {severity} ({notes_first_line})\n"
-    )
+    line = format_history_line(
+        utc=utc,
+        lane=lane_short,
+        agent=agent,
+        task_id=task_id,
+        finding_path=finding_path,
+        severity=severity,
+        notes=notes,
+    ) + "\n"
     try:
         text, fd = _read_under_lock(path, LOCK_TIMEOUT_SECONDS)
     except LockTimeoutError as e:

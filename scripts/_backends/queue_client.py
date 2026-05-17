@@ -24,6 +24,7 @@ from typing import Any
 
 from megalodon_ui.queue import queue_client as _qc
 from megalodon_ui.queue.applier import Applier
+from scripts._backends._history_format import format_history_line
 
 # Heartbeat threshold; older than this and we assume no live applier.
 _HEARTBEAT_STALE_SECONDS = 5.0
@@ -261,12 +262,16 @@ def history_append(
                         idempotent=True,
                     )
 
-    notes_first = notes.split("\n", 1)[0]
     # Per `_apply_history_append` regex: lane segment must be `[A-Za-z]+`.
     # The M3 row format includes `(notes)` suffix.
-    line = (
-        f"{utc} | {agent} | {lane_short} | {task_id} | "
-        f"{finding_path} | {severity} ({notes_first})"
+    line = format_history_line(
+        utc=utc,
+        lane=lane_short,
+        agent=agent,
+        task_id=task_id,
+        finding_path=finding_path,
+        severity=severity,
+        notes=notes,
     )
     rid = _qc.history_append(
         mission, agent, lane_short, task_id, finding_path, severity, utc=utc,
