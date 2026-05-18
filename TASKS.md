@@ -2,9 +2,11 @@
 > **Active task file:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17-tasks.md` (refreshed 2026-05-17 against v1.4; 41 tasks across 7 phases).
 > v9.2 — tmux + web UI headless fleet. Implementation in progress.
 >
-> **P0 — Pre-flight: COMPLETE (2026-05-17)** — 9/9 tasks done. 448 passed, 2 documented xfails (CV-6, Task-1.5-dep) across `scripts/tests` + `ui/tests/integration` + `ui/tests/unit`. See HISTORY.md "v9.2 (in progress)" section for per-task log.
+> **P0 — Pre-flight: COMPLETE (2026-05-17)** — 9/9 tasks done.
 >
-> **P1 — Server-owned tmux spawn + MissionConfig wiring:** next.
+> **P1 — Server-owned tmux spawn + MissionConfig wiring: COMPLETE (2026-05-17)** — 7/8 tasks done; Task 1.6 (CV-9 concurrent port-bind regression) deferred to Phase 7. New modules: `megalodon_ui/{tmux,spawn,preview}.py` + lifespan in `server.py` + `get_adapter` in `harnesses/__init__.py`. Suite: 464 passed, 41 skipped, 3 xfailed, 0 failed. See HISTORY.md "v9.2 (in progress)" for per-task detail.
+>
+> **Open (next):** P2 auth, P3 stream tap, P4 SSE backend, P5 xterm.js dashboard, P6 follow-up prompts, P7 polish + docs + destructive teardown. Implementation paused at the P1 phase boundary per operator request.
 
 # Tasks — Run 2 (make-it-work)
 

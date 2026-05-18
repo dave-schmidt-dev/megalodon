@@ -15,6 +15,16 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.skip(
+    reason=(
+        "v9.1 legacy AppleScript-flow tests for launch_fleet.sh. Task 1.8 "
+        "replaced the script with the 3-mode dispatcher (print/--dry-run/--spawn); "
+        "coverage for the new shape lives in test_launch_fleet_v92.py. These tests "
+        "are kept on disk for archival reference but cannot pass against the v9.2 "
+        "script. Delete or migrate as part of Phase 7's audit pass."
+    )
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "launch_fleet.sh"
 LANES = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"]

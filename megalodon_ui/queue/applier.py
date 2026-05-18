@@ -41,12 +41,9 @@ from typing import Any
 
 from .journal import Journal
 from .schemas import validate_payload
+from megalodon_ui.mission_config import load_mission_config
 from megalodon_ui.mission_config.schema import validate_task_id_with_config
-from megalodon_ui.mission_config.default_v9_0_shape import synthesize as _synthesize_default
 from megalodon_ui.mission_config.regex_builder import build_lane_short_charclass
-
-_DEFAULT_CONFIG = _synthesize_default(Path("/tmp"))
-_LANE_SHORT_CHARCLASS = build_lane_short_charclass(_DEFAULT_CONFIG)
 
 SCHEMA_VERSION = 1
 DEFAULT_POLL_SECONDS = 2.0
@@ -134,6 +131,12 @@ class Applier:
         self._running = True
         self._applied_ids: set[str] = set()
         self._rejected_ids: set[str] = set()
+
+        # Load mission-bound config so lane-regex is derived from the actual
+        # mission rather than the v9.0 default. Falls back to default shape
+        # when no MISSION.md / .mission-events is present (new or bare missions).
+        _mission_cfg = load_mission_config(self.mission_dir)
+        self._lane_short_charclass = build_lane_short_charclass(_mission_cfg)
 
         # Ensure dirs exist BEFORE the journal opens.
         self.setup_dirs()
@@ -420,7 +423,7 @@ class Applier:
         with AtomicFile(target) as f:
             content = f.read()
             # Format: `- [bracket] [LANE-X] `task` — desc`
-            pattern = rf"^(-\s+)\[[^\]]+\]\s+(\[LANE-{_LANE_SHORT_CHARCLASS}\]\s+`{re.escape(task_id)}`.*)$"
+            pattern = rf"^(-\s+)\[[^\]]+\]\s+(\[LANE-{self._lane_short_charclass}\]\s+`{re.escape(task_id)}`.*)$"
             matches = re.findall(pattern, content, re.MULTILINE)
             if len(matches) != 1:
                 raise ValueError(

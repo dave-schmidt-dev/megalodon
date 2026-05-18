@@ -1,21 +1,18 @@
 """Megalodon v9.1 — launch_fleet.sh Python helper.
 
 Handles:
-- plan_launches(): config-driven per-lane invocation planning (PM-1 grid math).
 - render_applescript(): AppleScript generation for iTerm pane layout.
-- CLI entry point: ``python3 -m scripts._launch_helpers plan|applescript --mission-dir ...``
+- CLI entry point: ``python3 -m scripts._launch_helpers applescript --mission-dir ...``
 
 CR-4: non-Claude lanes get MANUAL_TICK banner in AppleScript / dry-run output.
 WR-5: checks .fleet-ledger/ for an existing session before allowing spawn.
 PM-1: grid cols = ceil(sqrt(N)), rows = ceil(N / cols).
 
-Importable without FastAPI:
-    uv run --with pyyaml --with pydantic python -c "from scripts._launch_helpers import plan_launches"
+Note: the ``plan`` subcommand was consolidated into megalodon_ui.preview (CV-3, v9.2).
 """
 
 from __future__ import annotations
 
-import json
 import math
 import pathlib
 import sys
@@ -63,24 +60,14 @@ def _grid(n: int) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# plan_launches
+# Internal plan builder (applescript subcommand only; plan subcommand removed CV-3)
 # ---------------------------------------------------------------------------
 
-def plan_launches(mission_dir: str | pathlib.Path, dry_run: bool = False) -> list[dict]:
-    """Build the per-lane launch plan for a mission.
+def _build_applescript_plan(mission_dir: str | pathlib.Path) -> list[dict]:
+    """Build per-lane plan dicts for render_applescript.
 
-    Loads config via scripts._config_loader.load_for_scripts.
-    Returns a list of dicts, one per lane:
-      {
-        lane: str,          # lane name e.g. "AUDIT"
-        cli:  str,          # harness cli e.g. "claude"
-        model: str,         # model string e.g. "claude-sonnet-4-6"
-        argv: list[str],    # full CLI argv (absolute launch file path)
-        env_overlay: dict,  # extra env vars from adapter
-        applescript_pane_index: int,  # 0-based index in grid
-        cwd: str,           # mission dir (absolute)
-        manual_tick: bool,  # True if cli != "claude" (CR-4)
-      }
+    plan subcommand (per-lane argv preview) was moved to megalodon_ui.preview in v9.2 (CV-3).
+    This private helper remains to supply render_applescript with its required data shape.
     """
     from scripts._config_loader import load_for_scripts
 
@@ -88,11 +75,8 @@ def plan_launches(mission_dir: str | pathlib.Path, dry_run: bool = False) -> lis
     config = load_for_scripts(mission_path)
     adapters = _load_adapters()
 
-    lanes = config.lanes
-    cols, rows = _grid(len(lanes))
-
     plan: list[dict] = []
-    for idx, lane in enumerate(lanes):
+    for idx, lane in enumerate(config.lanes):
         cli = lane.harness.cli
         model = lane.harness.model
         adapter = adapters.get(cli)
@@ -145,7 +129,6 @@ def _pane_shell_cmd(entry: dict) -> str:
     For others: cd <cwd> && echo 'MANUAL TICK REQUIRED ...' && <cli> (interactive)
     """
     cwd = entry["cwd"]
-    cli = entry["cli"]
     lane = entry["lane"]
     argv = entry["argv"]
     badge = _badge_prefix(lane)
@@ -162,7 +145,6 @@ def _pane_shell_cmd(entry: dict) -> str:
     else:
         # Claude: full argv as built by ClaudeAdapter.build_argv
         # argv = ["claude", "--print", "--model", <model>, <launch-file>]
-        # We pass launch file path already set by plan_launches
         argv_shell = " ".join(
             '"' + a.replace("\\", "\\\\").replace('"', '\\"') + '"' if " " in a or '"' in a else a
             for a in argv
@@ -267,43 +249,8 @@ def check_existing_fleet(mission_dir: str | pathlib.Path) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Dry-run printer
-# ---------------------------------------------------------------------------
-
-def print_dry_run(plan: list[dict]) -> None:
-    """Print planned invocations to stdout (human-readable + grep-able)."""
-    for entry in plan:
-        parts = [
-            f"lane={entry['lane']}",
-            f"cli={entry['cli']}",
-            f"model={entry['model']}",
-            f"pane={entry['applescript_pane_index']}",
-            f"argv={' '.join(entry['argv'])}",
-        ]
-        print("  ".join(parts))
-        if entry["manual_tick"]:
-            print(f"  >> {MANUAL_TICK_BANNER}")
-
-
-# ---------------------------------------------------------------------------
 # __main__ CLI
 # ---------------------------------------------------------------------------
-
-def _cmd_plan(args: list[str]) -> None:
-    import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--mission-dir", required=True)
-    p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--json", action="store_true", dest="as_json")
-    opts = p.parse_args(args)
-
-    plan = plan_launches(opts.mission_dir)
-    if opts.as_json:
-        # Emit JSON for shell consumption; argv list is included
-        print(json.dumps(plan, indent=2))
-    else:
-        print_dry_run(plan)
-
 
 def _cmd_applescript(args: list[str]) -> None:
     import argparse
@@ -319,7 +266,7 @@ def _cmd_applescript(args: list[str]) -> None:
             file=sys.stderr,
         )
 
-    plan = plan_launches(opts.mission_dir)
+    plan = _build_applescript_plan(opts.mission_dir)
     print(render_applescript(plan), end="")
 
 
@@ -327,15 +274,13 @@ def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
     if not argv:
-        print("Usage: python3 -m scripts._launch_helpers <plan|applescript> [opts]", file=sys.stderr)
+        print("Usage: python3 -m scripts._launch_helpers <applescript> [opts]", file=sys.stderr)
         sys.exit(1)
     cmd, rest = argv[0], argv[1:]
-    if cmd == "plan":
-        _cmd_plan(rest)
-    elif cmd == "applescript":
+    if cmd == "applescript":
         _cmd_applescript(rest)
     else:
-        print(f"Unknown subcommand: {cmd!r}", file=sys.stderr)
+        print(f"Unknown subcommand: {cmd!r} (hint: 'plan' moved to megalodon_ui.preview)", file=sys.stderr)
         sys.exit(1)
 
 

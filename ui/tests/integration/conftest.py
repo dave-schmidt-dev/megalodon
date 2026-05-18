@@ -30,20 +30,23 @@ def fix_medium(tmp_path):
 
 
 @pytest_asyncio.fixture
-async def async_client_with_lifespan(fix_medium):
+async def async_client_with_lifespan(fix_medium, monkeypatch):
     """httpx.AsyncClient connected to the app via ASGITransport, with lifespan.
 
     Wraps client construction inside ``app.router.lifespan_context(app)`` so
     FastAPI startup and shutdown hooks run around every test that uses this
-    fixture.  Currently ``make_app`` has no explicit lifespan body (no-op), but
-    this fixture ensures that once P1 adds tmux-session startup the tests will
-    exercise the real initialised app rather than a cold one.
+    fixture. Sets ``MEGALODON_LIFESPAN_TEST_MODE=1`` so the lifespan skips
+    fleet spawning (no tmux required) and relaxes the socket-path-length
+    guard for pytest tmp_path on macOS. Tests that explicitly exercise the
+    fleet-spawn path use their own setup (see ``test_lifespan_startup.py``).
 
     Skips (not fails) when the backend package is unavailable so the test suite
     stays green before P3-C ships.
     """
     if not _BACKEND_AVAILABLE:
         pytest.skip("awaits P3-C megalodon_ui.server")
+
+    monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
 
     from httpx import AsyncClient, ASGITransport  # type: ignore[import-not-found]
 

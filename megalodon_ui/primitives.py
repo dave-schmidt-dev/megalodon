@@ -248,6 +248,7 @@ def mark_complete(
     lane: str,
     finding: str,
     severity: str,
+    mission_config: MissionConfig | None = None,
 ) -> None:
     """Execute all four RULE-10 steps in a single call.
 
@@ -259,6 +260,11 @@ def mark_complete(
     root = Path(root)
     canonical = canonicalize_task_id(task_id)
     utc = _utc_now_str_minute()
+
+    # Resolve effective config once: use caller-supplied mission_config when
+    # available (request-handling path), else fall back to the module-level
+    # v9.0 default (legacy / test / CLI paths).
+    _cfg = mission_config if mission_config is not None else _DEFAULT_CONFIG
 
     # Step 1: touch done
     claim_dir = root / "claims" / canonical
@@ -272,8 +278,7 @@ def mark_complete(
         text = tasks_path.read_text()
         # Match either `[ ] [LANE-X] \`<task>\`` or `[claimed: ...] [LANE-X] \`<task>\``
         # _LANE_SHORT_CLASS is config-driven (e.g. "[A-F]" for the 6-lane default).
-        # Wrap alternation form as non-capturing so group indices don't shift.
-        _LANE_SHORT_CLASS = build_lane_short_charclass(_DEFAULT_CONFIG)
+        _LANE_SHORT_CLASS = build_lane_short_charclass(_cfg)
         _lane_match = (
             _LANE_SHORT_CLASS
             if _LANE_SHORT_CLASS.startswith("[")
@@ -292,9 +297,12 @@ def mark_complete(
         tasks_path.write_text(new_text)
 
     # Step 3: HISTORY append (canonical line per test_protocol_primitives.py:198).
-    # LANE_LONG_TO_SHORT comes from the v9.0 back-compat config and resolves the
-    # v8 ambiguity where first-letter derivation collided (AUDIT[0]==ARCHITECT[0]).
-    lane_canonical = lane if lane.startswith("LANE-") else f"LANE-{LANE_LONG_TO_SHORT[lane]}"
+    # Derive lane_long_to_short from mission_config when provided (request-handling
+    # path) or fall back to the module-level v9.0 default (legacy / test paths).
+    # This resolves the v8 ambiguity where first-letter derivation collided
+    # (AUDIT[0]==ARCHITECT[0]=='A').
+    _lane_map = {l.name: l.short for l in _cfg.lanes}
+    lane_canonical = lane if lane.startswith("LANE-") else f"LANE-{_lane_map[lane]}"
     history_line = (
         f"{utc} | {agent} | {lane_canonical} | {canonical} | {finding} | {severity}\n"
     )

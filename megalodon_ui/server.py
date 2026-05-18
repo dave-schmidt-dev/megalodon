@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shutil
+import sys
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +31,8 @@ from fastapi.staticfiles import StaticFiles
 from .config import AppConfig
 from . import primitives
 from .queue import queue_client as _qc
-from .mission_config.default_v9_0_shape import synthesize as _synthesize_default
+from .mission_config import load_mission_config
+from .mission_config.schema import MissionConfig
 from .mission_config.regex_builder import (
     build_task_line_re,
     build_status_row_re,
@@ -41,6 +46,9 @@ from .constants import (
     SSE_SIGNAL_NEW, SSE_STATUS_CHANGE, SSE_SYNC, SSE_TASK_CHANGE,
     STALE_THRESHOLD_SECONDS,
 )
+from ._v92_constants import LIFESPAN_STARTUP_TIMEOUT_SECONDS, SOCKET_PATH_LIMIT_BYTES
+from .spawn import FleetSpawner
+from .harnesses import get_adapter
 
 
 # ---------------------------------------------------------------------------
@@ -61,17 +69,18 @@ class MissionContext:
     port: int
     csrf_token: str  # mirror of config.csrf_token for fast access
     allowed_origins: tuple[str, ...]
+    mission_config: MissionConfig = field(default=None)  # type: ignore[assignment]
+    status_row_re: re.Pattern = field(default=None)  # type: ignore[assignment]
+    task_line_re: re.Pattern = field(default=None)  # type: ignore[assignment]
+    phase_header_re: re.Pattern = field(default=None)  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
 # Parsers
 # ---------------------------------------------------------------------------
 
-_DEFAULT_CONFIG = _synthesize_default(Path.cwd())
-_STATUS_ROW_RE = build_status_row_re(_DEFAULT_CONFIG)
 
-
-def parse_status(mission_dir: Path) -> list[dict[str, Any]]:
+def parse_status(mission_dir: Path, ctx: "MissionContext | None" = None) -> list[dict[str, Any]]:
     """Parse STATUS.md table into a list of lane dicts.
 
     REPAIR-MUTATIONS-E2E-5-STATUS-VIEW: each row gets `staleness_seconds`
@@ -83,8 +92,9 @@ def parse_status(mission_dir: Path) -> list[dict[str, Any]]:
         return []
     text = path.read_text()
     now = datetime.now(timezone.utc)
+    status_re = ctx.status_row_re if ctx is not None else build_status_row_re(load_mission_config(mission_dir))
     rows: list[dict[str, Any]] = []
-    for m in _STATUS_ROW_RE.finditer(text):
+    for m in status_re.finditer(text):
         lane = m.group("lane").strip()
         if lane.lower() == "lane":
             continue
@@ -128,11 +138,7 @@ def _parse_yaml_frontmatter(text: str) -> dict[str, Any]:
     return out
 
 
-_TASK_LINE_RE = build_task_line_re(_DEFAULT_CONFIG)
-_PHASE_HEADER_RE = build_phase_header_re(_DEFAULT_CONFIG)
-
-
-def parse_tasks(mission_dir: Path) -> list[dict[str, Any]]:
+def parse_tasks(mission_dir: Path, ctx: "MissionContext | None" = None) -> list[dict[str, Any]]:
     """Parse TASKS.md into a list of phase dicts.
 
     REPAIR-MUTATIONS-E2E-5-STATUS-VIEW: shape `[{name, tasks: [...]}]`.
@@ -144,14 +150,21 @@ def parse_tasks(mission_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     text = path.read_text()
-    phase_headers = list(_PHASE_HEADER_RE.finditer(text))
+    if ctx is not None:
+        task_line_re = ctx.task_line_re
+        phase_header_re = ctx.phase_header_re
+    else:
+        mc = load_mission_config(mission_dir)
+        task_line_re = build_task_line_re(mc)
+        phase_header_re = build_phase_header_re(mc)
+    phase_headers = list(phase_header_re.finditer(text))
     phases: list[dict[str, Any]] = []
     for i, hdr in enumerate(phase_headers):
         start = hdr.end()
         end = phase_headers[i + 1].start() if i + 1 < len(phase_headers) else len(text)
         section = text[start:end]
         tasks: list[dict[str, Any]] = []
-        for m in _TASK_LINE_RE.finditer(section):
+        for m in task_line_re.finditer(section):
             state_block = m.group("state_block").strip()
             if state_block == "" or state_block == " ":
                 state = "open"
@@ -207,6 +220,28 @@ def parse_findings(mission_dir: Path, *, include_scratch: bool = False) -> list[
             meta["severity"] = meta["Severity"]
         out.append(meta)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Lifespan helpers
+# ---------------------------------------------------------------------------
+
+
+async def _df_watchdog(mission_dir: Path) -> None:
+    """Background task: exit 12 if disk free < 50 MB at mission_dir.
+
+    Runs every 60 seconds. Designed to be run as an asyncio task inside the
+    lifespan context manager; cancelled on server shutdown.
+    """
+    while True:
+        await asyncio.sleep(60)
+        stat = shutil.disk_usage(mission_dir)
+        if stat.free < 50 * 1024 * 1024:  # 50 MB
+            print(
+                f"disk free < 50MB at {mission_dir}: {stat.free} bytes",
+                file=sys.stderr,
+            )
+            sys.exit(12)
 
 
 # ---------------------------------------------------------------------------
@@ -298,15 +333,100 @@ def make_app(
             f"http://localhost:{port}",
         )
 
+    mc = load_mission_config(mission_dir)
+
     ctx = MissionContext(
         mission_dir=mission_dir,
         config=cfg,
         port=port,
         csrf_token=cfg.csrf_token,
         allowed_origins=origins,
+        mission_config=mc,
+        status_row_re=build_status_row_re(mc),
+        task_line_re=build_task_line_re(mc),
+        phase_header_re=build_phase_header_re(mc),
     )
 
-    app = FastAPI(title="Megalodon UI", version="2.0.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):  # noqa: ANN001
+        """Start the tmux fleet and watchdog; shut down on exit.
+
+        Exit codes:
+          10 — socket path too long (fatal; bypass uvicorn signal handling).
+          11 — start_all timed out (fatal).
+          12 — disk free < 50 MB (fatal, from watchdog task).
+
+        Test overrides via env vars (read inside lifespan so tests can inject
+        via monkeypatch.setenv before the context manager runs):
+          MEGALODON_LIFESPAN_TIMEOUT_S  — float override for startup timeout.
+          MEGALODON_LIFESPAN_SLEEP_S    — if set, sleep this many seconds before
+                                          start_all; lets tests trigger the timeout
+                                          deterministically.
+        """
+        # Test mode: skip fleet spawn entirely. Used by the v9.1 integration
+        # tests that exercise request handlers without needing a real tmux
+        # fleet. The flag also relaxes the socket-path length guard since
+        # pytest tmp_path on macOS routinely exceeds 100 bytes.
+        test_mode = os.environ.get("MEGALODON_LIFESPAN_TEST_MODE") == "1"
+
+        # 1. Socket path length guard.
+        socket = mission_dir / ".fleet" / "tmux.sock"
+        if not test_mode and len(str(socket).encode()) > SOCKET_PATH_LIMIT_BYTES:
+            print(f"socket path too long: {socket}", file=sys.stderr)
+            sys.exit(10)
+
+        if test_mode:
+            app.state.spawner = None
+            app.state.startup_complete = True
+            try:
+                yield
+            finally:
+                pass
+            return
+
+        # 2. Construct FleetSpawner and start_all under a timeout.
+        spawner = FleetSpawner(mission_dir, ctx.mission_config, get_adapter, socket)
+        app.state.spawner = spawner
+        app.state.startup_complete = False
+
+        timeout = float(
+            os.environ.get("MEGALODON_LIFESPAN_TIMEOUT_S", LIFESPAN_STARTUP_TIMEOUT_SECONDS)
+        )
+        sleep_s_raw = os.environ.get("MEGALODON_LIFESPAN_SLEEP_S")
+
+        async def _start_with_optional_sleep() -> None:
+            if sleep_s_raw is not None:
+                await asyncio.sleep(float(sleep_s_raw))
+            await spawner.start_all()
+
+        try:
+            await asyncio.wait_for(_start_with_optional_sleep(), timeout=timeout)
+        except asyncio.TimeoutError:
+            try:
+                await spawner.stop_all()
+            except Exception:
+                pass
+            print(
+                f"lifespan startup timeout > {timeout}s",
+                file=sys.stderr,
+            )
+            sys.exit(11)
+
+        app.state.startup_complete = True
+
+        # 3. Start df-check background task (every 60 s; exit 12 if < 50 MB free).
+        df_task = asyncio.create_task(_df_watchdog(mission_dir))
+
+        try:
+            yield
+        finally:
+            df_task.cancel()
+            try:
+                await spawner.stop_all()
+            except Exception:
+                pass
+
+    app = FastAPI(title="Megalodon UI", version="2.0.0", lifespan=lifespan)
     app.state.megalodon = ctx  # accessible via dependency injection
 
     # REPAIR-MUTATIONS-E2E-1-SSE: serve UI assets so index.html's
@@ -326,7 +446,6 @@ def make_app(
     # V9 M2 — contract validation. Opt-in via env var until contract.md is
     # fully cross-checked across all factory callers; flip to default-on once
     # we're confident no surprise drift exists.
-    import os
     if os.environ.get("M9_VALIDATE_CONTRACT") == "1":
         contract_path = Path(__file__).resolve().parents[1] / "docs" / "v9" / "api-contract.md"
         _validate_contract(app, contract_path)
@@ -341,9 +460,22 @@ def make_app(
 
 def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
+    @app.get("/healthz")
+    async def healthz() -> JSONResponse:
+        """Liveness + readiness probe.
+
+        Returns 200 {"status": "ok"} once the lifespan startup completes
+        (i.e., FleetSpawner.start_all() returned without error).
+        Returns 503 {"status": "starting"} during startup (before the lifespan
+        has set app.state.startup_complete = True).
+        """
+        if getattr(app.state, "startup_complete", False):
+            return JSONResponse(content={"status": "ok"}, status_code=200)
+        return JSONResponse(content={"status": "starting"}, status_code=503)
+
     @app.get("/api/status")
     async def get_status() -> JSONResponse:
-        rows = parse_status(ctx.mission_dir)
+        rows = parse_status(ctx.mission_dir, ctx)
         return JSONResponse(content=rows)
 
     @app.get("/api/findings")
@@ -368,11 +500,11 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             "poll_interval_seconds": ctx.config.poll_interval_seconds,
             "stale_threshold_seconds": ctx.config.stale_threshold_seconds,
             "allowed_origins": list(ctx.allowed_origins),
-            "lanes": [l.model_dump() for l in _DEFAULT_CONFIG.lanes],
-            "phases": _DEFAULT_CONFIG.phases,
-            "task_id_patterns": _DEFAULT_CONFIG.task_id_patterns.patterns,
-            "harnesses": list({l.harness.cli for l in _DEFAULT_CONFIG.lanes}),
-            "task_sections": _DEFAULT_CONFIG.task_sections,
+            "lanes": [l.model_dump() for l in ctx.mission_config.lanes],
+            "phases": ctx.mission_config.phases,
+            "task_id_patterns": ctx.mission_config.task_id_patterns.patterns,
+            "harnesses": list({l.harness.cli for l in ctx.mission_config.lanes}),
+            "task_sections": ctx.mission_config.task_sections,
         }
 
     @app.post("/api/tasks")
@@ -406,7 +538,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     @app.post("/api/lanes/{lane}/reclaim")
     async def post_reclaim(lane: str):
         # Find target lane's working task from STATUS, attempt reclaim.
-        rows = parse_status(ctx.mission_dir)
+        rows = parse_status(ctx.mission_dir, ctx)
         target = next((r for r in rows if r["lane"].upper() == lane.upper()), None)
         if not target:
             raise HTTPException(status_code=404, detail=f"lane {lane!r} not found")
@@ -496,13 +628,13 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     @app.get("/api/v1/status")
     async def get_v1_status():
-        return {"lanes": parse_status(ctx.mission_dir)}
+        return {"lanes": parse_status(ctx.mission_dir, ctx)}
 
     @app.get("/api/v1/tasks")
     async def get_v1_tasks():
         # REPAIR-MUTATIONS-E2E-5-STATUS-VIEW (b): TASKS.md parsed into
         # phase/task tree consumed by FE `tasks.js:417,452`.
-        return {"phases": parse_tasks(ctx.mission_dir)}
+        return {"phases": parse_tasks(ctx.mission_dir, ctx)}
 
     @app.get(API_STATE)
     async def get_v1_state():
@@ -524,8 +656,8 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             except (IndexError, ValueError):
                 pass
         return {
-            "status": {"lanes": parse_status(ctx.mission_dir)},
-            "tasks": {"phases": parse_tasks(ctx.mission_dir)},
+            "status": {"lanes": parse_status(ctx.mission_dir, ctx)},
+            "tasks": {"phases": parse_tasks(ctx.mission_dir, ctx)},
             "findings": {"list": parse_findings(ctx.mission_dir)},
             "signals": {"list": []},
             "mission": {"phase": mission_phase},
@@ -598,7 +730,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             raise HTTPException(status_code=422, detail=str(e))
 
         # Read current row for this lane to preserve agent/state.
-        rows = parse_status(ctx.mission_dir)
+        rows = parse_status(ctx.mission_dir, ctx)
         target = next((r for r in rows if r["lane"].upper() == to_lane.upper()), None)
         if not target:
             raise HTTPException(status_code=404, detail=f"lane {to_lane!r} not found")
@@ -630,7 +762,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         if not lane:
             raise HTTPException(status_code=422, detail="lane required")
 
-        rows = parse_status(ctx.mission_dir)
+        rows = parse_status(ctx.mission_dir, ctx)
         target = next((r for r in rows if r["lane"].upper() == lane.upper()), None)
         if not target:
             raise HTTPException(status_code=404, detail=f"lane {lane!r} not found")
@@ -664,7 +796,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         rid = _qc.tasks_inject(
             ctx.mission_dir,
             agent="orchestrator",
-            submitting_lane=_DEFAULT_CONFIG.orchestrator_pseudo_lane,
+            submitting_lane=ctx.mission_config.orchestrator_pseudo_lane,
             task_id=task_id,
             lane="A",
             description=description or f"CHALLENGE on {finding}",
@@ -725,7 +857,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         rid = _qc.tasks_inject(
             ctx.mission_dir,
             agent="orchestrator",
-            submitting_lane=_DEFAULT_CONFIG.orchestrator_pseudo_lane,
+            submitting_lane=ctx.mission_config.orchestrator_pseudo_lane,
             task_id=task_id,
             lane=lane,
             description=desc,
@@ -840,7 +972,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                     last_mtime = current_mtime
                     payload = json.dumps({
                         "utc": _now_iso(),
-                        "lanes": parse_status(ctx.mission_dir),
+                        "lanes": parse_status(ctx.mission_dir, ctx),
                     })
                     yield {"event": SSE_STATUS_CHANGE, "data": payload}
 

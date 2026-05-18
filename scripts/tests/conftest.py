@@ -12,6 +12,16 @@ def pytest_configure(config):
         "smoke_harness: spawn a real harness CLI with --help; skipped if CLI absent or CI=1",
     )
 
+
+@pytest.fixture(autouse=True)
+def _lifespan_test_mode(monkeypatch):
+    """Default the v9.2 lifespan into test mode (no fleet spawn, no socket-len guard).
+
+    Tests that need to exercise the real fleet-spawn path explicitly unset
+    this env var via ``monkeypatch.delenv("MEGALODON_LIFESPAN_TEST_MODE", raising=False)``.
+    """
+    monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
+
 FIXTURE_SRC = Path(__file__).parent / "fixtures" / "minimal_mission"
 QUEUE_FIXTURE_SRC = Path(__file__).parent / "fixtures" / "queue_mission"
 
