@@ -1,0 +1,100 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    env:
+      MEGALODON_KILL_ON_EXIT: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tmux (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux
+
+      - name: Verify tmux
+        run: tmux -V
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Verify npm
+        run: npm --version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install Node dependencies
+        if: hashFiles('package-lock.json') != ''
+        run: npm ci
+
+      - name: Unit and integration tests
+        run: >
+          uv run
+          --with pytest
+          --with fastapi
+          --with "uvicorn[standard]"
+          --with sse-starlette
+          --with pyyaml
+          --with pydantic
+          --with httpx
+          --with pytest-asyncio
+          pytest scripts/tests ui/tests/integration ui/tests/unit
+          -v -m "not isolated"
+
+      - name: Forked isolation pass
+        run: >
+          uv run
+          --with pytest
+          --with pytest-forked
+          --with pytest-asyncio
+          --with fastapi
+          --with "uvicorn[standard]"
+          --with sse-starlette
+          --with pyyaml
+          --with pydantic
+          --with httpx
+          pytest -p forked -m isolated
+          scripts/tests ui/tests/integration ui/tests/unit
+          -v
+
+      - name: Lint
+        run: uv run --with ruff ruff check megalodon_ui/ scripts/
+
+      - name: Install Playwright browsers (Linux)
+        if: runner.os == 'Linux' && hashFiles('ui/tests/e2e/playwright.config.ts') != ''
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright browsers (macOS)
+        if: runner.os == 'macOS' && hashFiles('ui/tests/e2e/playwright.config.ts') != ''
+        run: npx playwright install chromium
+
+      - name: Playwright e2e tests
+        if: hashFiles('ui/tests/e2e/playwright.config.ts') != ''
+        run: npx playwright test --config=ui/tests/e2e/playwright.config.ts

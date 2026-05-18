@@ -1,6 +1,59 @@
 """Integration test configuration and shared helpers."""
 
+from __future__ import annotations
+
 import asyncio
+import shutil
+from pathlib import Path
+
+import pytest
+import pytest_asyncio
+
+
+try:
+    from megalodon_ui.server import make_app  # type: ignore[import-not-found]
+    _BACKEND_AVAILABLE = True
+except ImportError:
+    make_app = None  # type: ignore[assignment]
+    _BACKEND_AVAILABLE = False
+
+
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
+
+
+@pytest.fixture
+def fix_medium(tmp_path):
+    """Copy fix-medium fixture to a tmpdir so tests can mutate it freely."""
+    dst = tmp_path / "fix-medium"
+    shutil.copytree(FIXTURES / "fix-medium", dst)
+    return dst
+
+
+@pytest_asyncio.fixture
+async def async_client_with_lifespan(fix_medium):
+    """httpx.AsyncClient connected to the app via ASGITransport, with lifespan.
+
+    Wraps client construction inside ``app.router.lifespan_context(app)`` so
+    FastAPI startup and shutdown hooks run around every test that uses this
+    fixture.  Currently ``make_app`` has no explicit lifespan body (no-op), but
+    this fixture ensures that once P1 adds tmux-session startup the tests will
+    exercise the real initialised app rather than a cold one.
+
+    Skips (not fails) when the backend package is unavailable so the test suite
+    stays green before P3-C ships.
+    """
+    if not _BACKEND_AVAILABLE:
+        pytest.skip("awaits P3-C megalodon_ui.server")
+
+    from httpx import AsyncClient, ASGITransport  # type: ignore[import-not-found]
+
+    app = make_app(mission_dir=fix_medium)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            yield client
 
 
 async def wait_for_queue_applied(client, request_id: str, timeout: float = 5.0,

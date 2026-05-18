@@ -8,6 +8,12 @@ findings/*
 claims/*
 !claims/.gitkeep
 
+# v9.2 fleet runtime state — .fleet/ holds tmux socket, bearer token,
+# dashboard URL, per-lane session/stream logs. Ignored anywhere in the tree;
+# scripts/tests/fixtures/** is re-included for test fixtures.
+.fleet/*
+!.fleet/.gitkeep
+
 # Runtime phase state — operator initializes .mission-events on deploy
 .mission-events
 .phase-flip-locks/*
@@ -19,6 +25,8 @@ claims/*
 !scripts/tests/fixtures/**/findings/**
 !scripts/tests/fixtures/**/claims/
 !scripts/tests/fixtures/**/claims/**
+!scripts/tests/fixtures/**/.fleet/
+!scripts/tests/fixtures/**/.fleet/**
 !scripts/tests/fixtures/**/.mission-events
 !scripts/tests/fixtures/**/.phase-flip-locks/
 !scripts/tests/fixtures/**/.phase-flip-locks/**

@@ -454,3 +454,85 @@ v9.1 ships configurability for lanes/phases/harnesses via `.mission-config.yaml`
 **Commits on `main` (this session):** planning `0ea8d41`; P1 `0f22519` `bdaf1d2` `79102a4` `63b8c76`; P2 `5d8dade` `6c828fb` `e7f6705` `ac9bb4e`; P3 `a36d065` `b8d5dd9` `7b59a42` `d87de96`; P4 `9cb9d35`; P5+P6 `53b812f` `4785d7b`.
 
 **Next:** tmux + web UI headless fleet (v9.2 — design in `docs/v9/v9-2-ROADMAP.md`).
+
+## 2026-05-17T~21:20Z — V9.2 IMPULSE-TIER PLAN COMPLETE (planning only, awaiting warp upgrade)
+
+V9.2 impulse-tier plan v1.2 is complete and pending warp-tier upgrade before implementation.
+
+**Plan artifacts** (`~/Documents/Projects/.plans/megalodon/`):
+- `v9-2-tmux-headless-fleet-2026-05-17.md` (1007 lines, v1.2 — post-self-pass + post-external-contrarian)
+- `v9-2-tmux-headless-fleet-2026-05-17-tasks.md` (30 tasks across 8 phases P0-P7)
+- `v9-2-tmux-headless-fleet-2026-05-17-synthesis.md` (contrarian-review synthesis record)
+- `v9-2-tmux-headless-fleet-2026-05-17-review-contrarian.{json,raw,stderr}` (GPT-5.5 codex xhigh output)
+
+**Plan locks operator decisions:**
+- Single release per brief — spawn + auth + xterm.js browser + interactivity ship together as v9.2.
+- Stdin model = respawn-style follow-up prompts; HarnessAdapter Protocol grows by `build_followup_argv(prompt, prior_session_id, ...)` and `session_log_dir() -> Path | None`.
+- Topology: 127.0.0.1 only; remote = operator's `ssh -L`.
+
+**Planning workflow run** (per `~/.agent/prompts/plan.md`):
+1. Phase 1 — Research: subagent verified 10 brief §8 assumptions against authoritative sources (tmux(1), xterm.js docs, WHATWG SSE, Python docs, GitHub runner-images manifest). Three CONFIRMED, three AMBIGUOUS (mitigated), one REFUTED (`tmux NOT pre-installed on ubuntu-24.04` — CI must install).
+2. Phase 1 — Draft v1.0 produced.
+3. Phase 1.5 — Self-contrarian pass: 3 OW + 16 WR = 19 findings; 15 fixed inline, 4 deferred to external reviewer.
+4. Phase 2 — External contrarian (GPT-5.5 codex xhigh, ~6 min wall, ~226K tokens, confidence high): 8 findings (3 HIGH + 5 MEDIUM). All ACCEPT — 100% (calibration-justified: self-pass filtered easy issues; lighter fixes substituted where reviewer prescription was heavier than risk).
+5. Phase 3 — Synthesis: 8 fixes folded into plan v1.2. **CR-3 surfaced a v9.1 latent gap** — `megalodon_ui/server.py:70-72` `_DEFAULT_CONFIG = _synthesize_default(Path.cwd())` module-level constant means the BACKEND still serves the v9.0 default shape instead of the mission's actual `MissionConfig`, even though the FE migrated to `await loadConfig()` in v9.1. v9.2 P1 closes this gap.
+6. Phase 4 — Task breakdown: 30 tasks with binary done-conditions + test gates per phase.
+
+**Operator gate before implementation:** the user elected to upgrade from impulse to warp tier before any code changes, citing the prior v9.2 spec's failure at this same gate (`docs/superpowers/specs/2026-05-17-megalodon-v9-2-tmux-design.md` was rejected `spec-should-be-redone` by external review). Next session will dispatch the two remaining reviewers (constructive — Claude Opus, implementation-auditor — Gemini 3.1 Pro) in parallel, re-synthesize alongside the existing contrarian findings, then run the fresh-eyes pre-mortem (Kimi K2.5 via `cursor-agent`) on the refined plan. Plan rev becomes v1.3 (warp-complete) before P0 starts.
+
+**No code changes this turn.** Implementation pending warp upgrade.
+
+## 2026-05-17T~22:15Z — V9.2 WARP-TIER PLAN COMPLETE (warp upgrade applied; implementation gate open)
+
+V9.2 plan is now warp-complete at v1.4. Implementation can begin.
+
+**Plan artifacts** (`~/Documents/Projects/.plans/megalodon/`):
+- `v9-2-tmux-headless-fleet-2026-05-17.md` (1239 lines, v1.4 — warp-complete: impulse + warp-review + fresh-eyes pre-mortem)
+- `v9-2-tmux-headless-fleet-2026-05-17-synthesis.md` (381 lines, all three passes — contrarian + warp-review + pre-mortem)
+- `v9-2-tmux-headless-fleet-2026-05-17-review-contrarian.{json,raw,stderr}` (GPT-5.5 — 8 findings, reused from impulse)
+- `v9-2-tmux-headless-fleet-2026-05-17-review-constructive.{json,raw,stderr}` (Claude Opus — 12 findings + 6 strengths + 6 gaps)
+- `v9-2-tmux-headless-fleet-2026-05-17-review-implementation.{json,raw,stderr}` (Gemini 3.1 Pro — 3 findings + 7 verified_claims)
+- `v9-2-tmux-headless-fleet-2026-05-17-review-premortem.{json,raw,stderr}` (Kimi K2.5 — 8 PM + 5 SR + 8 gaps)
+- `v9-2-tmux-headless-fleet-2026-05-17-tasks.md` — STILL ON v1.2; needs refreshing against v1.4 deltas before P0 begins.
+
+**Warp-cycle stats:** 63 findings reviewed across 4 reviewer passes + 1 self-pass; 53 folded into plan (84% acceptance); 0 ESCALATEs at any stage. Plan grew from v1.0 ~750 lines to v1.4 ~1239 lines (+65%).
+
+**Material design changes across cycle (4):**
+- CR-1 — new `session_log_dir() -> Path \| None` Protocol method replacing invalid `session_log_path(cwd, "")` hack.
+- CR-3 + CV-1 — full `MissionConfig` runtime wiring including module-level regex globals and `server.py:667/728` references. Closes v9.1 latent gap (FE migrated, BE still served synthesized default).
+- CR-5 — base64 SSE transport for byte stream (SSE is UTF-8; raw bytes corrupt).
+- CR-8 — preserved `launch_fleet.sh` print/dry-run modes; new `megalodon_ui/preview.py` consolidated from `scripts/_launch_helpers.py` (rather than duplicating).
+
+**Pre-mortem-only material catches (2 systemic, surfaced cross-phase):**
+- SR-1 — phase-boundary integration gap: P1 spawn + P2 auth could ship green independently with combined surface untested until P5 Playwright. P2 commit gate now runs combined P1+P2 integration suite.
+- SR-2 — CR-3 scope was underestimated. P1 grep audit (`_DEFAULT_CONFIG\|_synthesize_default\|LANE_LONG_TO_SHORT\|_LANE_SHORT_CHARCLASS`) gates the CV-1 deliverable so no migration site is missed.
+
+**Reviewer wall times this session:** Claude Opus 360s, Gemini 3.1 Pro 180s, Kimi K2.5 240s. Total warp-delta wall: ~14 min (contrarian reused from impulse). Metrics record appended to `~/Documents/Projects/.plans/metrics.jsonl`.
+
+**No code changes this turn.** Implementation gate is now open — next session refreshes the task file against v1.4 and starts P0 Task 0.1 (`.gitignore` `.fleet/` line).
+
+---
+
+## v9.2 (in progress) — implementation log
+
+2026-05-17 — Task-file refresh against plan v1.4: `v9-2-tmux-headless-fleet-2026-05-17-tasks.md` regenerated, 41 tasks across 7 phases (was 26 across 7).
+
+2026-05-17 — P0 Task 0.1 done: `.gitignore` now ignores `.fleet/*` at any depth with re-include for `scripts/tests/fixtures/**/.fleet/**`.
+
+2026-05-17 — P0 Task 0.3 done: `megalodon_ui/_logging.py` parallel to `scripts/_logging.py`; rotating log to `/tmp/megalodon-ui.log` (1 MB / 2 backups). 6 unit tests green.
+
+2026-05-17 — P0 Task 0.4 done: `megalodon_ui/_v92_constants.py` with the 10 operator-tunable constants from plan §4 Q8 (`INITIAL_PANE_COLS=200`, `INITIAL_PANE_ROWS=50`, `SSE_PER_SUBSCRIBER_QUEUE_MAXSIZE=32`, `SSE_MAX_SUBSCRIBERS_PER_LANE=10`, `STREAM_LOG_WARN_BYTES=524288000`, `TAIL_ON_CONNECT_BYTES=65536`, `COOKIE_MAX_AGE_SECONDS=86400`, `BEARER_TOKEN_BYTES=32`, `LIFESPAN_STARTUP_TIMEOUT_SECONDS=30`, `SOCKET_PATH_LIMIT_BYTES=100`). 11 tests green.
+
+2026-05-17 — P0 Task 0.5 (CR-7) done: `async_client_with_lifespan` fixture exported from `ui/tests/integration/conftest.py`; migrated `test_api_endpoints.py` (9 tests) + `test_sse_stream.py` (2 tests); smoke `test_lifespan_fires_on_test_client.py` (3 tests). All green under fixture. Note: Starlette resolves `lifespan_context` as an instance attribute at construction, so post-construct overrides must assign to `app.router.lifespan_context` directly.
+
+2026-05-17 — P0 Task 0.6 (CV-2) done: `megalodon_ui/__main__.py` rewritten (182 lines) per plan §8 bind-fd-first sequence — listener socket bound in `__main__` then handed to `uvicorn.Server(Config(app=app, fd=listener.fileno()))`, closing the OW-2 probe-close-rebind race. Cleanup-guarded block unwinds `.fleet/ui.token` + `.fleet/dashboard.url` + listener fd on any exit 7–11. Tests: `test_main_passes_fd_to_uvicorn.py` 4/4 green; `test_startup_timeout_cleans_up_token_and_listener.py` strict=False xfail pending Task 1.5 lifespan-timeout wiring.
+
+2026-05-17 — P0 Task 0.7 (gap 6) done: `megalodon_ui/_tmux_version.py` — `parse_tmux_version` covers canonical (`3.5a`, `3.0a`, `2.5`, `next-3.6`) and garbled inputs; `probe_or_exit_6` exits 6 with operator-actionable message below `(2, 6)`. 13 tests green.
+
+2026-05-17 — P0 Task 0.9 (CV-6 xfail audit) — case (b): `test_sse_stream_emits_status_change_on_file_touch` still XFAILs under the CR-7 `async_client_with_lifespan` fixture. Root cause is the BE file-watcher / event emitter (not lifespan wiring); xfail decorator's `reason=` updated to reflect post-CR-7 investigation. Re-audit gated to v9.2 P3.1 (pipe-pane tap may supersede the path entirely).
+
+2026-05-17 — P0 Task 0.8 (gap 5) done: `@pytest.mark.isolated` marker registered in root `pytest.ini` AND `ui/tests/pytest.ini` (so it resolves at every collection site). Registration test `scripts/tests/test_isolated_marker_registered.py` green. Individual tests gain the marker as P3/P4/P6 land (`test_pipe_pane_line_delivery_under_500ms`, `test_sse_replay_then_tail`, `test_sse_backpressure_drops_oldest`, `test_lane_exit_detected_within_5s`).
+
+2026-05-17 — P0 Task 0.2 done: `.github/workflows/test.yml` created — matrix `ubuntu-latest` + `macos-latest`, `tmux` installed per-OS, `npm ci` (IA-1: no pnpm/corepack), 4 test steps (unit+integration excluding `-m isolated`; forked-isolation pass via `pytest -p forked -m isolated`; ruff lint; Playwright via `--config=ui/tests/e2e/playwright.config.ts` per IA-2). Job-level env `MEGALODON_KILL_ON_EXIT=1`. Playwright + `npm ci` guarded by `hashFiles(...)` so the workflow does not fail before P5 lands the config / lockfile.
+
+2026-05-17 — **P0 closed.** Suite (`scripts/tests` + `ui/tests/integration` + `ui/tests/unit`): 448 passed, 2 xfailed (CV-6 + Task-1.5-dep), 0 failed.

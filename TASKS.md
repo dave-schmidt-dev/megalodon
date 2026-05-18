@@ -1,3 +1,11 @@
+> **Active plan:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md` (v1.4 — warp-complete)
+> **Active task file:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17-tasks.md` (refreshed 2026-05-17 against v1.4; 41 tasks across 7 phases).
+> v9.2 — tmux + web UI headless fleet. Implementation in progress.
+>
+> **P0 — Pre-flight: COMPLETE (2026-05-17)** — 9/9 tasks done. 448 passed, 2 documented xfails (CV-6, Task-1.5-dep) across `scripts/tests` + `ui/tests/integration` + `ui/tests/unit`. See HISTORY.md "v9.2 (in progress)" section for per-task log.
+>
+> **P1 — Server-owned tmux spawn + MissionConfig wiring:** next.
+
 # Tasks — Run 2 (make-it-work)
 
 Format: `[ ] [LANE-X] <task-id> — <description>`
