@@ -18,15 +18,17 @@ at tick time; it never reaches into adapter internals directly.
 
 ### Binding a lane to a specific harness
 
-In the mission config (`.megalodon/mission.toml` or equivalent), each lane
-carries a `HarnessBinding` stanza:
+In the mission config (`.mission-config.yaml`), each lane
+carries a `HarnessBinding` stanza inside the lane entry:
 
-```toml
-[[lanes]]
-name        = "planner"
-harness     = "gemini"           # adapter name — one of the six below
-model       = "gemini-3.1-pro-preview"  # optional; adapter default used if absent
-cwd         = "."
+```yaml
+lanes:
+  - name: planner
+    harness:
+      cli: gemini            # adapter name — one of the six below
+      model: gemini-3.1-pro-preview  # optional; adapter default used if absent
+      extra_args: []
+      auth_env: []
 ```
 
 The fleet builder resolves `harness = "gemini"` to `GeminiAdapter()`, calls

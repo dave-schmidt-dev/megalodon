@@ -449,7 +449,7 @@ v9.1 ships configurability for lanes/phases/harnesses via `.mission-config.yaml`
 - SIGHUP config reload documented but not implemented (CV-8 acknowledged).
 - Two side-track investigations remain open in `docs/v9/v9-2-ROADMAP.md`: Inv-1 (typo-path source, unresolved); Inv-2 (RESOLVED — 4 M1.5 sync/async test failures fixed).
 
-**Test counts:** pre-v9.1 baseline scripts/tests/ + ui/tests/ ≈ 252 + ~150 = ~400 with 4 silent failures. Post-v9.1: ≥410 pass + 1 xfail + 0 failing in combined suite.
+**Test counts:** pre-v9.1 baseline scripts/tests/ + ui/tests/ ≈ 252 + ~150 = ~400 with 4 silent failures. Post-v9.1: **410 passed + 1 xfailed + 0 failed** in combined scripts/tests/ + ui/tests/unit/ + ui/tests/integration/ suite (verified 2026-05-17).
 
 **Commits on `main` (this session):** planning `0ea8d41`; P1 `0f22519` `bdaf1d2` `79102a4` `63b8c76`; P2 `5d8dade` `6c828fb` `e7f6705` `ac9bb4e`; P3 `a36d065` `b8d5dd9` `7b59a42` `d87de96`; P4 `9cb9d35`; P5+P6 `53b812f` `4785d7b`.
 

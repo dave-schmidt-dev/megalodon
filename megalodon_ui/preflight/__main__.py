@@ -153,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
             tmp.unlink()
         except OSError:
             pass
-        sys.exit(1)
+        sys.exit(130)  # POSIX convention for SIGINT termination
 
     signal.signal(signal.SIGINT, _snapshot_and_exit)
     signal.signal(signal.SIGTERM, _snapshot_and_exit)

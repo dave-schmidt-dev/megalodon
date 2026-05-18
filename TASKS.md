@@ -122,3 +122,30 @@ The orchestrator-Claude (or human operator) injects one of these tasks.
 - [ ] [CROSS] `S-5` — Add concurrent-write CAS test for ADR-001 (run-1 §9.4 gap). Output: `ui/tests/integration/test_cas_concurrent.py` + run-evidence.
 - [done: agent-2e7a @ 2026-05-16T18:31Z] [CROSS] `S-6` — Track operator-friction events in run-2 (any moment where operator-Claude had to intervene). Output: `findings/<agent>-CROSS-S6-operator-friction-<UTC>.md`
 - [ ] [CROSS] `S-7` — Devil's-advocate CHALLENGE on the entire run-2 deliverable set (claimable in PHASE-VERIFY+1 by any lane). Output: `findings/<agent>-CROSS-S7-meta-challenge-<UTC>.md`
+
+---
+
+## V9.1 — SHIPPED 2026-05-17 (mission-config-driven fleet)
+
+**Current plan:** `~/Documents/Projects/.plans/megalodon/v9-1-mission-config-driven-2026-05-17.md`
+
+All v9.1 tasks are **done**. See HISTORY.md §"V9.1 SHIPPED" for the full delivery record.
+
+### v9.1 completed tasks (summary)
+
+- [done @ 2026-05-17] P1 — config foundation: Pydantic v2 schema, default_v9_0_shape, regex builder, init/validate CLI, 6 harness adapters (Claude/Codex/Gemini must-pass + Copilot/Cursor/Vibe experimental)
+- [done @ 2026-05-17] P2 — core de-hardcoding: 6 production files refactored; lane literals + [A-H] drift eliminated; schema extended with orchestrator_pseudo_lane + task_sections
+- [done @ 2026-05-17] P3 — FE + launch tooling + watchdog: FE config loader, 5 pages migrated, phase navigator hybrid, gen_lane_launches.py config-driven, launch_fleet.sh, watchdog WR-3 non-Claude skip
+- [done @ 2026-05-17] P4 — pre-flight CLI: proposer + interview REPL (max-refine 3 cycles) + writer (CV-2 atomic + SIGINT snapshot)
+- [done @ 2026-05-17] P5 — test consolidation: legacy HISTORY parser (CV-10 + CV-12), CV-4 semantic regex corpus (60+ strings), back-compat integration test (7 tests)
+- [done @ 2026-05-17] P6 — docs: v9-1-MISSION-CONFIG.md, v9-1-HARNESS-ADAPTERS.md, v9-1-PREFLIGHT.md, README + HISTORY updates, P6.5 final documentation pass
+
+**Test suite post-v9.1:** 410 passed + 1 xfailed + 0 failing (combined scripts/tests/ + ui/tests/unit/ + ui/tests/integration/).
+
+### v9.2 follow-up items (deferred)
+
+- CR-4: autonomous-loop wrapper for non-Claude lanes — see `docs/v9/v9-2-ROADMAP.md`
+- WR-3: watchdog S3 JSONL staleness for non-Claude harnesses — see `docs/v9/v9-2-ROADMAP.md`
+- CV-8: SIGHUP config reload (signal stub exists; reload logic not implemented) — see `docs/v9/v9-2-ROADMAP.md`
+- Inv-1: typo-path symlink decision (`megaladon` vs loud-fail) — see `docs/v9/v9-2-ROADMAP.md §Inv-1`
+- Inv-2: RESOLVED 2026-05-17 in commit `b8d5dd9` — four M1.5 sync/async test mismatches fixed
