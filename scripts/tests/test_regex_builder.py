@@ -248,52 +248,59 @@ def test_status_row_re_byte_equal_to_v9_0(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Test 11: semantic equivalence — CV-4 corpus minimal seed
+# Test 11: semantic equivalence — CV-4 full corpus (≥60 strings)
 # ---------------------------------------------------------------------------
 
 def test_semantic_equivalence_v9_0_default(tmp_path):
-    """Full corpus test against both the built RE and v9.0 synthesized shape.
+    """Full corpus test proving v9.1 regex_builder output matches v9.0 TASK_ID_RE.
 
-    First 10 IDs must match both; last 2 must fail both.
-    The v9.0 synthesized shape (default_v9_0_shape.synthesize) includes
-    CHALLENGE-* patterns added in CR-5, so CHALLENGE-AB1 (index 9) matches.
+    Uses the three corpus helpers from _corpus.py (positive 30 + negative 30 +
+    archive-extracted IDs). The only intentional v9.0→v9.1 semantic change is
+    CHALLENGE-* acceptance (CR-5): v9.0's hardcoded TASK_ID_RE excluded CHALLENGE-*;
+    v9.1's default_v9_0_shape includes CHALLENGE-[A-Z0-9_-]+ in task_id_patterns.
+    CHALLENGE-* strings are asserted True on v9.1 and skipped on v9.0 comparison.
     """
-    config = _default_v9_0(tmp_path)
-    built_re = build_task_id_re(config)
+    from megalodon_ui.mission_config.default_v9_0_shape import synthesize
+    from megalodon_ui.mission_config.regex_builder import build_task_id_re
+    from scripts._validation import TASK_ID_RE as V9_0_TASK_ID_RE
+    from scripts.tests._corpus import archive_task_ids, positive_corpus, negative_corpus
+    from pathlib import Path
 
-    # Also build RE from v9.0 synthesized config (same config) for direct comparison
-    v9_0_built_re = build_task_id_re(config)
+    cfg = synthesize(Path("/tmp"))
+    new_re = build_task_id_re(cfg)
 
-    corpus = [
-        "P1",
-        "P2.5",
-        "P3-A",
-        "P3-A-to-F",
-        "P4-RUN-MUTATIONS-E2E-5",
-        "REPAIR-X",
-        "OPERATOR-NOTIFY",
-        "S-12",
-        "TEST-7",
-        "CHALLENGE-AB1",
-        "INVALID/PATH",
-        "",
-    ]
+    # Build the unified corpus.
+    archive = archive_task_ids(Path("/Users/dave/Documents/Projects/megalodon"))
+    corpus = positive_corpus() + negative_corpus() + archive
 
-    should_match = corpus[:10]
-    should_not_match = corpus[10:]
-
-    for task_id in should_match:
-        assert built_re.match(task_id), (
-            f"Expected {task_id!r} to match built_re {built_re.pattern!r}"
-        )
-        assert v9_0_built_re.match(task_id), (
-            f"Expected {task_id!r} to match v9_0_built_re"
+    for s in corpus:
+        new_match = bool(new_re.match(s))
+        v9_0_match = bool(V9_0_TASK_ID_RE.match(s))
+        # CR-5 nuance: v9.1 ACCEPTS CHALLENGE-* (default_v9_0_shape includes
+        # CHALLENGE-[A-Z0-9_-]+ in task_id_patterns); v9.0 hardcoded TASK_ID_RE
+        # REJECTED CHALLENGE-*. Adapt the assertion: if s starts with
+        # "CHALLENGE-", expect new=True and skip the v9.0 comparison.
+        if s.startswith("CHALLENGE-"):
+            assert new_match, f"v9.1 should accept CHALLENGE-* but rejected {s!r}"
+            continue
+        assert new_match == v9_0_match, (
+            f"divergence on {s!r}: new={new_match}, v9.0={v9_0_match}"
         )
 
-    for task_id in should_not_match:
-        assert not built_re.match(task_id), (
-            f"Expected {task_id!r} NOT to match built_re"
-        )
-        assert not v9_0_built_re.match(task_id), (
-            f"Expected {task_id!r} NOT to match v9_0_built_re"
-        )
+
+# ---------------------------------------------------------------------------
+# Test 12: corpus size guard — regression-guard against accidental shrinking
+# ---------------------------------------------------------------------------
+
+def test_corpus_has_minimum_size():
+    """Cheap regression-guard: positive and negative lists must stay at 30 each."""
+    from scripts.tests._corpus import positive_corpus, negative_corpus
+
+    pos = positive_corpus()
+    neg = negative_corpus()
+
+    assert len(pos) == 30, f"positive_corpus() has {len(pos)} entries, expected 30"
+    assert len(neg) == 30, f"negative_corpus() has {len(neg)} entries, expected 30"
+    assert len(pos) + len(neg) >= 60, (
+        f"combined corpus too small: {len(pos) + len(neg)} < 60"
+    )
