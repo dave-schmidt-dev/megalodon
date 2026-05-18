@@ -2,11 +2,26 @@
 
 A blackboard multi-agent coordination protocol for parallel review, audit, synthesis, and similar deep-work missions across multiple Claude sessions.
 
-**Version:** v9.0 (effective 2026-05-17T13:00Z; v8 documented below for migration reference)
+**Version:** v9.1 (effective 2026-05-17; mission-config-driven fleet)
 **Last updated:** 2026-05-17
-**Default cadence:** 3 minutes (configurable in MISSION.md)
+**Default cadence:** 3 minutes (configurable in MISSION.md or `.mission-config.yaml`)
 
-**v9.1 plan ready (not yet implemented):** mission-config-driven lanes/phases/harnesses. Plan at `~/Documents/Projects/.plans/megalodon/v9-1-mission-config-driven-2026-05-17.md`. Task breakdown at `…-tasks.md`. Implementation is the next session (per operator instruction 2026-05-17). Start at Task 0.1 (tag `v9.0-archive`).
+**v9.1 shipped 2026-05-17:** mission-config-driven lanes/phases/harnesses via `.mission-config.yaml`. Operators define lane names, phase sequences, and per-lane harness bindings in one YAML file; the fleet reads it on every tick. Three reference docs: `docs/v9/v9-1-MISSION-CONFIG.md` (schema + examples), `docs/v9/v9-1-HARNESS-ADAPTERS.md` (Claude/Codex/Gemini must-pass + Copilot/Cursor/Vibe experimental), `docs/v9/v9-1-PREFLIGHT.md` (pre-flight CLI interview REPL). Quick-start: `python -m megalodon_ui.mission_config init` writes the default software-engineering template; `python -m megalodon_ui.preflight "<goal>"` opens a Claude-assisted interview and proposes a config. v9.0 missions with no `.mission-config.yaml` keep working — a back-compatible shape is auto-synthesized. Known limitations: non-Claude lanes are manual-tick in v9.1 (CR-4); watchdog S3 JSONL staleness detector is Claude-only (WR-3). Both deferred to v9.2 (`docs/v9/v9-2-ROADMAP.md`).
+
+## v9.1 startup sequence
+
+New to v9.1? Start here before the v8 section.
+
+- **0. Read** `docs/v9/v9-1-MISSION-CONFIG.md` for schema reference and worked examples.
+- **1. Initialize config** (pick one):
+  - `python -m megalodon_ui.mission_config init` — write the default software-engineering template.
+  - `python -m megalodon_ui.preflight "<goal>"` — Claude interviews you and proposes a config.
+  - Copy a YAML directly from the examples in `v9-1-MISSION-CONFIG.md`.
+- **2. Validate:** `python -m megalodon_ui.mission_config validate .mission-config.yaml`
+- **3. Launch fleet:** `./scripts/launch_fleet.sh --mission-dir .` (run `--dry-run` first to preview).
+- **4. Operator dashboard:** browse `http://localhost:8089` (or the port you configured).
+
+Steps 1–4 above replace the v9.0 manual applier/server sequence for new missions. The v9.0 applier sequence below is still required (start applier before workers).
 
 ## What's new in v8
 

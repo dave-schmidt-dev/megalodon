@@ -418,3 +418,39 @@ V9.0 (commit `cd6200f`) verified live via Playwright browser smoke against `scri
 **Operator allowlist additions needed before v9.1 implementation:**
 - `python -m megalodon_ui.mission_config *`
 - `python -m megalodon_ui.preflight *`
+
+---
+
+## 2026-05-17T~22:00Z — V9.1 SHIPPED — mission-config-driven fleet
+
+v9.1 ships configurability for lanes/phases/harnesses via `.mission-config.yaml`, a pre-flight CLI interview REPL, multi-harness adapters for six agent runtimes, and full de-hardcoding of the `AUDIT/…/META` lane and `[A-H]` phase literals across the production codebase.
+
+**What landed (by phase):**
+
+- **Phase 1 — config foundation:** Pydantic v2 schema with CR-1/CR-2/CR-3/CR-8/CR-10 reviewer fixes applied; default v9.0 back-compat shape factory; regex builder (PM-8 length-descending); init/validate CLI (CV-2 atomic write); scripts-side facade; 6 harness adapters — Claude/Codex/Gemini (must-pass) + Copilot/Cursor/Vibe (experimental, CV-5). Commits: `0f22519`, `bdaf1d2`, `79102a4`, `63b8c76`.
+- **Phase 2 — core de-hardcoding:** 6 production files refactored (`_validation`, `_state_read`, `_backends/`, `primitives`, `server`, `queue/applier`). Lane literals + `[A-H]` drift eliminated. Schema extended with `orchestrator_pseudo_lane` + `task_sections` (CR-6, CR-7). Commits: `5d8dade`, `6c828fb`, `e7f6705`, `ac9bb4e`.
+- **Phase 3 — FE + launch tooling + watchdog:** FE config loader with single-flight cache (PM-2 skeleton); 5 pages migrated to `await loadConfig()`; phase navigator hybrid (CR-10 INIT + OW-4); `gen_lane_launches.py` config-driven; `launch_fleet.sh` with Python helper + PM-1 grid + CR-4 manual-tick banner for non-Claude lanes; watchdog extended with WR-3 S3 skip for non-Claude harnesses. Commits: `a36d065`, `b8d5dd9`, `7b59a42`, `d87de96`.
+- **Phase 4 — pre-flight CLI:** proposer + interview REPL (PM-5 max-refine 3 cycles) + writer (CV-2 atomic + SIGINT snapshot). Commit: `9cb9d35`.
+- **Phase 5 — test consolidation:** legacy HISTORY parser (CV-10 + CV-12 SUNSET comment); CV-4 semantic regex equivalence corpus (60+ strings); back-compat integration test (7 tests). Commit: `53b812f`.
+- **Phase 6 — docs:** three v9.1 reference docs (`v9-1-MISSION-CONFIG.md` 475 lines, `v9-1-HARNESS-ADAPTERS.md` 568 lines, `v9-1-PREFLIGHT.md` 462 lines) + README + this HISTORY entry. Commit: `4785d7b` (docs phase closure).
+
+**Planning record:** commit `0ea8d41`.
+
+**Review findings outcome — 22 of 25 ACCEPT findings landed + 5 pre-mortem mitigations applied:**
+
+- Landed: CR-1, CR-2, CR-3, CR-4, CR-5, CR-6, CR-7, CR-8, CR-9, CR-10, IA-2, IA-3, CV-1 (per-batch commits to main, no branch), CV-2, CV-3, CV-4, CV-5, CV-6, CV-7, CV-8 (documented, SIGHUP deferred), CV-9, CV-10, PM-1, PM-2, PM-5, PM-6, PM-7, PM-8.
+- Acknowledged (not blocking): CV-11 (preflight delivered at P4 not P2 per plan), CV-12 (legacy_history sunset comment only, no code delete).
+- Deferred to v9.2: CR-4 autonomous-loop wrapper for non-Claude lanes; WR-3 watchdog S3 JSONL staleness for non-Claude harnesses.
+
+**Known limitations (honest):**
+
+- Non-Claude lanes are manual-tick only (CR-4); no autonomous-loop wrapper ships in v9.1.
+- Watchdog S3 JSONL staleness detector is Claude-only (WR-3); non-Claude lanes silently skipped.
+- SIGHUP config reload documented but not implemented (CV-8 acknowledged).
+- Two side-track investigations remain open in `docs/v9/v9-2-ROADMAP.md`: Inv-1 (typo-path source, unresolved); Inv-2 (RESOLVED — 4 M1.5 sync/async test failures fixed).
+
+**Test counts:** pre-v9.1 baseline scripts/tests/ + ui/tests/ ≈ 252 + ~150 = ~400 with 4 silent failures. Post-v9.1: ≥410 pass + 1 xfail + 0 failing in combined suite.
+
+**Commits on `main` (this session):** planning `0ea8d41`; P1 `0f22519` `bdaf1d2` `79102a4` `63b8c76`; P2 `5d8dade` `6c828fb` `e7f6705` `ac9bb4e`; P3 `a36d065` `b8d5dd9` `7b59a42` `d87de96`; P4 `9cb9d35`; P5+P6 `53b812f` `4785d7b`.
+
+**Next:** tmux + web UI headless fleet (v9.2 — design in `docs/v9/v9-2-ROADMAP.md`).

@@ -251,7 +251,7 @@ def setup_phase_flip_test(root: Path, phase: str):
 def test_V_HIST_validator_canonical_lines():
     """T-V-HIST-validator — HISTORY.md lines match canonical regex."""
     canonical = re.compile(
-        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z \| agent-[0-9a-f]{4} \| LANE-[A-H] \| "
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z \| agent-[0-9a-f]{4} \| LANE-[A-F] \| "
         r"[A-Z][\w.→\-]+ \| .+\.md \| (BLOCKING|MAJOR|MINOR|NIT|DELTA|RECOVERY)$"
     )
     good = "2026-05-16T15:30Z | agent-1234 | LANE-A | P1-A | findings/x.md | MAJOR"
