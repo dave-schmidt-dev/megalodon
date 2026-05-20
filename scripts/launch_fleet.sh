@@ -153,13 +153,17 @@ PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 if [[ "$MODE" == "print" ]]; then
     # Default: delegate to preview module (no tmux argv).
     # Use exec so this bash process is replaced; rc propagates cleanly.
-    exec uv run --directory "$PROJECT_ROOT" python -m megalodon_ui.preview \
+    exec uv run --directory "$PROJECT_ROOT" \
+    --with fastapi --with "uvicorn[standard]" --with sse-starlette --with pyyaml --with pydantic --with starlette \
+    python -m megalodon_ui.preview \
         --mission-dir "$MISSION_DIR"
 fi
 
 if [[ "$MODE" == "dry-run" ]]; then
     # Dry-run: delegate to preview module with tmux argv included.
-    exec uv run --directory "$PROJECT_ROOT" python -m megalodon_ui.preview \
+    exec uv run --directory "$PROJECT_ROOT" \
+    --with fastapi --with "uvicorn[standard]" --with sse-starlette --with pyyaml --with pydantic --with starlette \
+    python -m megalodon_ui.preview \
         --mission-dir "$MISSION_DIR" \
         --include-tmux-argv
 fi
@@ -199,7 +203,9 @@ fi
 
 # Hand off to the megalodon_ui server; exec replaces this bash process so
 # SIGTERM sent to the PID propagates directly to Python (WR-10).
-exec uv run --directory "$PROJECT_ROOT" python -m megalodon_ui \
+exec uv run --directory "$PROJECT_ROOT" \
+    --with fastapi --with "uvicorn[standard]" --with sse-starlette --with pyyaml --with pydantic --with starlette \
+    python -m megalodon_ui \
     --mission-dir "$MISSION_DIR" \
     --host "$HOST" \
     --port "$PORT"

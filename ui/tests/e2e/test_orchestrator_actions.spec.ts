@@ -2,6 +2,7 @@
 // Test IDs T-A-CH-e2e, T-A-RC-e2e, T-A-SG-e2e from P1-E §3.
 
 import { test, expect } from '@playwright/test';
+import { clickAndWaitForApply } from './_helpers';
 
 test.describe('Orchestrator actions', () => {
 
@@ -14,12 +15,22 @@ test.describe('Orchestrator actions', () => {
   });
 
   test('T-A-CH-e2e — inject CHALLENGE via action panel', async ({ page }) => {
-    await page.locator('[data-testid="action-inject-challenge"]').click();
     const fidPicker = page.locator('[data-testid="challenge-finding-picker"]');
     await expect(fidPicker).toBeVisible();
-    // Pick the first finding in the picker.
-    await fidPicker.locator('option').nth(1).click();
-    await page.locator('[data-testid="submit-challenge"]').click();
+    // Pick the first non-placeholder option. Native `<option>` doesn't fire a
+    // selection on .click() in either Chromium or WebKit; selectOption() is the
+    // engine-agnostic Playwright API for native selects. Index 0 is the
+    // "Pick a finding..." placeholder (disabled), so index 1 is the first real
+    // finding.
+    await expect
+      .poll(() => fidPicker.locator('option').count(), { timeout: 5_000 })
+      .toBeGreaterThan(1);
+    await fidPicker.selectOption({ index: 1 });
+    await clickAndWaitForApply(
+      page,
+      page.locator('[data-testid="submit-challenge"]'),
+      '/api/v1/challenge',
+    );
     // Assertion: TASKS view now shows a CHALLENGE-* row.
     await page.goto('/tasks');
     const challenge = page.locator('[data-testid^="task-card-CHALLENGE-"]');
@@ -32,8 +43,14 @@ test.describe('Orchestrator actions', () => {
     const reclaim = page.locator('[data-testid="action-reclaim-AUDIT"]');
     await reclaim.click();
     // Confirm dialog (if any) — keep simple assumption.
-    await page.locator('[data-testid="confirm-reclaim"]').click();
-    // STATUS row should now show STALE-RECLAIMED.
+    await clickAndWaitForApply(
+      page,
+      page.locator('[data-testid="confirm-reclaim"]'),
+      '/api/v1/reclaim',
+    );
+    // STATUS row should now show STALE-RECLAIMED. /api/v1/state hydrate
+    // runs at page load; force a reload so we see the new STATUS row.
+    await page.reload();
     const row = page.locator('[data-testid="lane-row-AUDIT"]');
     await expect(row).toContainText('STALE-RECLAIMED', { timeout: 5_000 });
   });
@@ -51,7 +68,7 @@ test.describe('Orchestrator actions', () => {
     await expect(err).toBeVisible();
     // Now provide cite and re-submit.
     await page.locator('[data-testid="signal-cite"]').fill('findings/X.md:42');
-    await submit.click();
+    await clickAndWaitForApply(page, submit, '/api/v1/signal');
     // STATUS row for TEST should now contain the signal text.
     await page.goto('/');
     const row = page.locator('[data-testid="lane-row-TEST"]');
@@ -79,7 +96,11 @@ test.describe('Orchestrator actions', () => {
       .locator('[data-testid="inject-task-text"]')
       .fill('[ ] [LANE-A] `TEST-INJECT-1` — synthetic e2e task');
     await page.locator('[data-testid="inject-task-section"]').selectOption('CHALLENGE TASKS');
-    await page.locator('[data-testid="submit-inject-task"]').click();
+    await clickAndWaitForApply(
+      page,
+      page.locator('[data-testid="submit-inject-task"]'),
+      '/api/v1/inject-task',
+    );
     // Navigate to /tasks; verify the injected row appears.
     await page.goto('/tasks');
     const injected = page.locator('[data-testid^="task-card-TEST-INJECT-1"]');

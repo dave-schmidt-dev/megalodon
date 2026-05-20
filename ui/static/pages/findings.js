@@ -167,6 +167,91 @@ function slugifyFilename(filename) {
   return base.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 64);
 }
 
+/**
+ * Parse a finding filename into structured parts.
+ *
+ * Grammar (from v9.2 protocol):
+ *   agent-XXXX-L-PHASE-topic-slug-YYYY-MM-DDTHH-MMZ.md
+ * - agent-XXXX → agent-id (4 hex chars)
+ * - L → lane short code (A|B|C|D|E|F)
+ * - PHASE → phase short (P1, P2, P2.5, P3, etc.)
+ * - topic-slug → free-form topic
+ * - YYYY-MM-DDTHH-MMZ or YYYY-MM-DDTHH-MM-SSZ → UTC stamp
+ *
+ * Returns {agent, lane, phase, topic, utc} with empty strings for any part
+ * the filename does not include. Never throws.
+ */
+export function parseFindingFilename(filename) {
+  const out = { agent: "", lane: "", phase: "", topic: "", utc: "" };
+  const base = String(filename || "").replace(/\.md$/i, "").replace(/\.scratch$/i, "");
+  if (!base) return out;
+  // Greedy tail match on the UTC stamp.
+  const utcRe = /-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}(?:-\d{2})?Z)$/;
+  const m = base.match(utcRe);
+  let head = base;
+  if (m) {
+    out.utc = m[1];
+    head = base.slice(0, base.length - m[0].length);
+  }
+  // head looks like: agent-XXXX-L-PHASE-topic-slug
+  const headRe = /^agent-([A-Za-z0-9]+)-([A-Z])-(P\d+(?:\.\d+)?)-(.*)$/;
+  const hm = head.match(headRe);
+  if (hm) {
+    out.agent = `agent-${hm[1]}`;
+    out.lane = hm[2];
+    out.phase = hm[3];
+    out.topic = hm[4];
+  } else {
+    // Best-effort partial parse.
+    const partial = head.match(/^agent-([A-Za-z0-9]+)(?:-([A-Z]))?(?:-(P\d+(?:\.\d+)?))?(?:-(.*))?$/);
+    if (partial) {
+      if (partial[1]) out.agent = `agent-${partial[1]}`;
+      if (partial[2]) out.lane = partial[2];
+      if (partial[3]) out.phase = partial[3];
+      if (partial[4]) out.topic = partial[4];
+    }
+  }
+  return out;
+}
+
+// Map single-letter lane shorts → canonical lane names. Falls back to the
+// raw short if unknown so we never display blank chips.
+const LANE_SHORT_TO_NAME = {
+  A: "AUDIT",
+  B: "ARCHITECT",
+  C: "BACKEND",
+  D: "FRONTEND",
+  E: "TEST",
+  F: "META",
+};
+
+function laneShortToName(short) {
+  const k = String(short || "").toUpperCase();
+  return LANE_SHORT_TO_NAME[k] || k;
+}
+
+/**
+ * Render a "time ago" string from a UTC stamp. Returns "" for unparseable input.
+ * Accepts both YYYY-MM-DDTHH-MMZ (filename form) and ISO (YYYY-MM-DDTHH:MM:SSZ).
+ */
+function utcAgo(utc) {
+  if (!utc) return "";
+  const s = String(utc);
+  // Convert filename-form to ISO.
+  let iso = s;
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})(?:-(\d{2}))?Z$/);
+  if (m) {
+    iso = `${m[1]}T${m[2]}:${m[3]}:${m[4] || "00"}Z`;
+  }
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const deltaSec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (deltaSec < 60) return `${deltaSec}s ago`;
+  if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)}m ago`;
+  if (deltaSec < 86400) return `${Math.floor(deltaSec / 3600)}h ago`;
+  return `${Math.floor(deltaSec / 86400)}d ago`;
+}
+
 // ---- filter state -----------------------------------------------------------
 
 function makeFilterState() {
@@ -393,6 +478,20 @@ export async function render(root) {
   function renderRow(meta) {
     const slug = slugifyFilename(meta.filename);
     const scratch = isScratchFinding(meta);
+    // Fall back to filename-parsed fields when the BE-supplied meta is sparse.
+    // Real-world: many finding records arrive with only `filename` populated;
+    // unlabeled chips were the symptom.
+    const parsed = parseFindingFilename(meta.filename);
+    const sevValue = meta.severity || "DELTA";
+    const laneShort = String(meta.lane || parsed.lane || "").toUpperCase();
+    const laneName = laneShortToName(laneShort);
+    const agent = meta.agent || parsed.agent || "—";
+    const task = meta.task || "";
+    const phase = parsed.phase || "";
+    const topic = parsed.topic || "";
+    const utcRaw = meta.utc || parsed.utc || "";
+    const ago = utcAgo(utcRaw);
+
     const row = el("div", {
       cls: "finding-row",
       testid: `finding-row-${slug}`,
@@ -404,15 +503,27 @@ export async function render(root) {
 
     const header = el("div", { cls: "row finding-row__header" });
     const sev = el("span", {
-      cls: `severity-badge ${meta.severity || "DELTA"}`,
-      text: meta.severity || "—",
+      cls: `severity-badge ${sevValue}`,
+      text: meta.severity || "DELTA",
+      attrs: { title: `severity: ${meta.severity || "DELTA"}`, "aria-label": `severity ${meta.severity || "DELTA"}` },
     });
     const lane = el("span", {
-      cls: `lane-chip ${meta.lane || ""}`,
-      text: meta.lane || "—",
+      cls: `lane-chip ${laneName}`,
+      text: laneName || laneShort || "—",
+      attrs: {
+        title: laneShort ? `lane: ${laneShort} (${laneName})` : "lane: unknown",
+        "aria-label": `lane ${laneName || laneShort || "unknown"}`,
+      },
     });
     header.appendChild(sev);
     header.appendChild(lane);
+    if (phase) {
+      header.appendChild(el("span", {
+        cls: "badge",
+        text: phase,
+        attrs: { title: `phase: ${phase}`, "aria-label": `phase ${phase}` },
+      }));
+    }
     if (meta.has_reconciliation) {
       const recon = el("span", {
         cls: "badge",
@@ -423,17 +534,37 @@ export async function render(root) {
     }
     row.appendChild(header);
 
-    const meta1 = el("div", { cls: "row finding-row__meta mono text-muted" });
-    meta1.appendChild(el("span", { text: meta.task || "—" }));
-    meta1.appendChild(el("span", { text: meta.agent || "—" }));
-    meta1.appendChild(el("span", { text: meta.utc || "—" }));
-    row.appendChild(meta1);
-
+    // Topic / title — prefer FE-extracted topic when meta has no title.
     const title = el("div", {
       cls: "finding-row__title truncate",
-      text: meta.title || meta.filename || "(untitled)",
+      text: meta.title || topic || meta.filename || "(untitled)",
+      attrs: { title: meta.title || topic || meta.filename || "" },
     });
     row.appendChild(title);
+
+    // Meta row: agent / task / utc (with "ago" hint).
+    const meta1 = el("div", { cls: "row finding-row__meta mono text-muted" });
+    meta1.appendChild(el("span", { text: agent, attrs: { title: `agent: ${agent}` } }));
+    if (task) {
+      meta1.appendChild(el("span", { text: task, attrs: { title: `task: ${task}` } }));
+    }
+    if (utcRaw) {
+      const utcText = ago ? `${utcRaw} · ${ago}` : utcRaw;
+      meta1.appendChild(el("span", { text: utcText, attrs: { title: `utc: ${utcRaw}` } }));
+    } else {
+      meta1.appendChild(el("span", { text: "—" }));
+    }
+    row.appendChild(meta1);
+
+    // Filename row (subtle, full filename for operator confidence).
+    row.appendChild(el("div", {
+      cls: "finding-row__filename text-muted mono truncate",
+      text: meta.filename || "",
+      attrs: {
+        title: meta.filename || "",
+        style: "font-size: var(--fs-xs); opacity: 0.7;",
+      },
+    }));
 
     row.addEventListener("click", () => selectFinding(meta.filename));
     row.addEventListener("keydown", (e) => {

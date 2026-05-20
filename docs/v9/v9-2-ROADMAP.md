@@ -1,6 +1,14 @@
 # v9.2 Roadmap — Tmux + Web UI (Headless Fleet)
 
-**Status:** Design sketch, deferred from v9.1.
+**Status:** SUPERSEDED 2026-05-18 by `docs/v9/v9-2-TMUX-FLEET.md`. This file is the original design sketch; treat it as historical context only. For the as-shipped architecture, operator runbook, auth flow, and follow-up-prompt contract, read:
+
+- `docs/v9/v9-2-TMUX-FLEET.md` — architecture + operator runbook (canonical).
+- `docs/v9/v9-2-AUTH.md` — bootstrap flow, cookie semantics, paste-token recovery.
+- `docs/v9/v9-2-FOLLOWUP-PROMPTS.md` — adapter contract, respawn semantics, sentinel chunk.
+
+---
+
+**Original status:** Design sketch, deferred from v9.1.
 **Captured:** 2026-05-17 during v9.1 implementation session.
 **Rationale:** v9.1 makes lanes/phases/harnesses configurable but keeps the v9.0 spawn model (AppleScript → iTerm grid). v9.2 decouples *spawn* from *operator-facing view* so the system runs headless, works on Linux/SSH/containers, and surfaces all lane terminals in one browser tab.
 

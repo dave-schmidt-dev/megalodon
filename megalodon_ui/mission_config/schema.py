@@ -31,6 +31,12 @@ class LaneConfig(BaseModel):
     harness: HarnessBinding
     cadence_seconds: int = Field(ge=30, le=3600, default=300)
     tick_offset_seconds: int = Field(ge=0, le=600, default=0)
+    # Live-REPL mode (v9.3 dogfood): spawn the harness CLI without --print so
+    # it opens an interactive REPL inside its tmux pane. The initial_prompt
+    # is sent post-spawn via tmux send-keys, enabling /loop autonomous
+    # iteration (Claude Code-specific feature; other adapters ignore).
+    live_repl: bool = False
+    initial_prompt: str | None = None
 
 
 class TaskIdPattern(BaseModel):

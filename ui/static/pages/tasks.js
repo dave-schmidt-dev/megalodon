@@ -476,6 +476,15 @@ export async function render(root) {
     const tasksForPhase = phases[ui.selectedPhase] || [];
     const crossTasks = store.get("tasks.cross") || [];
 
+    // Determine global empty-state: BE may briefly publish an empty phases dict
+    // before TASKS.md is parsed. Show a clear notice instead of silent empty.
+    const phaseKeys = Object.keys(phases || {});
+    const totalPhaseTasks = phaseKeys.reduce(
+      (n, k) => n + ((phases[k] && phases[k].length) || 0),
+      0,
+    );
+    const noTasksAtAll = totalPhaseTasks === 0 && (!crossTasks || crossTasks.length === 0);
+
     // Phase header
     const hdr = el("header", { attrs: { style: "margin-bottom:var(--sp-3)" } });
     hdr.appendChild(el("h1", {
@@ -484,6 +493,27 @@ export async function render(root) {
     }));
     hdr.appendChild(renderPhaseTabs(ui.selectedPhase, onSelectPhase));
     root.appendChild(hdr);
+
+    if (noTasksAtAll) {
+      const banner = el("section", {
+        class: "card empty-state",
+        testid: "tasks-empty-banner",
+        attrs: {
+          role: "status",
+          "aria-live": "polite",
+          style: "margin-bottom:var(--sp-3); padding:var(--sp-3); text-align:center",
+        },
+      });
+      banner.appendChild(el("p", {
+        text: "No tasks loaded yet.",
+        attrs: { style: "font-weight:600; margin-bottom:var(--sp-1)" },
+      }));
+      banner.appendChild(el("p", {
+        class: "text-muted",
+        text: "Waiting for the backend to parse TASKS.md. The kanban below will populate automatically.",
+      }));
+      root.appendChild(banner);
+    }
 
     // Kanban — pass config-driven lane list so columns match the loaded config.
     root.appendChild(renderKanban(tasksForPhase, claimsSet, ui.openDrawerId, onCardClick, lanes));

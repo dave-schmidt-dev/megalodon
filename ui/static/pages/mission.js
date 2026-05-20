@@ -172,32 +172,85 @@ function showToast(message, kind) {
 
 function renderSummaryCard(container) {
   clearNode(container);
-  const phase = String(store.get("mission.phase") || "—");
+
+  // Mission id may live in any of these places depending on which BE patch shipped:
+  //   - mission.id              (preferred, v9.2 P2)
+  //   - mission.missionId       (camelCase variant)
+  //   - mission.missionStatus.id / mission_id (legacy object form)
+  // Default label only kicks in when nothing is populated; render an explicit
+  // "metadata not loaded yet" notice instead of leaving the card silently blank.
+  const missionSlice = store.get("mission") || {};
   const missionStatusRaw = store.get("mission.missionStatus");
-  // mission.missionStatus may be a plain string or an object that includes id.
-  let missionId = "Megalodon Self-Improvement";
-  let missionStatus = "—";
+
+  let missionId = "";
+  if (missionSlice && typeof missionSlice === "object") {
+    if (typeof missionSlice.id === "string" && missionSlice.id) missionId = missionSlice.id;
+    else if (typeof missionSlice.missionId === "string" && missionSlice.missionId) missionId = missionSlice.missionId;
+  }
+  let missionStatus = "";
   if (missionStatusRaw && typeof missionStatusRaw === "object") {
-    missionId = String(missionStatusRaw.id || missionStatusRaw.mission_id || missionId);
-    missionStatus = String(missionStatusRaw.status || "—");
+    if (!missionId) missionId = String(missionStatusRaw.id || missionStatusRaw.mission_id || "");
+    missionStatus = String(missionStatusRaw.status || "");
   } else if (typeof missionStatusRaw === "string" && missionStatusRaw) {
     missionStatus = missionStatusRaw;
   }
+  // mission.status (string) fallback if missionStatus slice isn't populated.
+  if (!missionStatus && typeof missionSlice.status === "string" && missionSlice.status) {
+    missionStatus = missionSlice.status;
+  }
+
+  const phase = String(store.get("mission.phase") || "");
   const lanes = store.get("status.lanes") || [];
   const lanesOnline = lanes.filter((l) => l && l.agent && l.agent !== "—" && l.agent !== null).length;
 
+  const hasAnyMeta = !!(missionId || missionStatus || phase);
+
   container.appendChild(el("h2", { class: "card__title" }, "Mission"));
+
+  if (!hasAnyMeta) {
+    container.appendChild(el(
+      "p",
+      {
+        class: "empty-state",
+        "data-testid": "mission-summary-empty",
+        role: "status",
+        "aria-live": "polite",
+      },
+      "Mission metadata not loaded yet. Waiting for backend hydration…",
+    ));
+    // Even so, expose stable testid shells so locators don't fail.
+    container.appendChild(el(
+      "div",
+      { class: "row", style: "gap: var(--sp-2); align-items: baseline; opacity: 0.5;" },
+      el("span", { class: "mono", "data-testid": "mission-id" }, "—"),
+      el("span", { class: "badge mission-status mission-status--unknown", "data-testid": "mission-status-badge" }, "—"),
+    ));
+    return;
+  }
+
+  const displayId = missionId || "—";
+  const displayStatus = missionStatus || "—";
+  const displayPhase = phase || "—";
+
   container.appendChild(el(
     "div",
     { class: "stack-2" },
     el("div", { class: "row", style: "gap: var(--sp-2); align-items: baseline;" },
-      el("span", { class: "mono", "data-testid": "mission-id" }, missionId),
-      el("span", { class: `badge mission-status mission-status--${missionStatus}`, "data-testid": "mission-status-badge" }, missionStatus),
+      el("span", { class: "mono", "data-testid": "mission-id", title: `mission id: ${displayId}` }, displayId),
+      el(
+        "span",
+        {
+          class: `badge mission-status mission-status--${displayStatus}`,
+          "data-testid": "mission-status-badge",
+          title: `mission status: ${displayStatus}`,
+        },
+        displayStatus,
+      ),
     ),
     el("div", { class: "row", style: "gap: var(--sp-3); align-items: baseline; flex-wrap: wrap;" },
       el("div", { class: "stack-1", "data-testid": "current-phase" },
         el("div", { class: "mono", style: "font-size: 11px; opacity: 0.7;" }, "Current phase"),
-        el("div", { class: "phase-display", "data-testid": "mission-phase", style: "font-size: 1.5rem; font-weight: 600;" }, phase),
+        el("div", { class: "phase-display", "data-testid": "mission-phase", style: "font-size: 1.5rem; font-weight: 600;" }, displayPhase),
       ),
       el("div", { class: "stack-1" },
         el("div", { class: "mono", style: "font-size: 11px; opacity: 0.7;" }, "Lanes online"),
@@ -340,29 +393,25 @@ function makeFormCard(testid, title, fields, submitLabel, onSubmit, opts) {
   form.appendChild(el("h3", { class: "card__title" }, title));
   for (const f of fields) form.appendChild(f);
   form.appendChild(errorBox);
-  form.appendChild(el(
-    "button",
-    {
-      type: "submit",
-      "data-role": "primary-submit",
-      class: "button button--primary",
-      "data-testid": opts.submitTestId || `action-submit-${testid.replace(/^action-/, "")}`,
-    },
-    submitLabel,
-  ));
+  const primaryAttrs = {
+    type: "submit",
+    "data-role": "primary-submit",
+    class: "button button--primary",
+    "data-testid": opts.submitTestId || `action-submit-${testid.replace(/^action-/, "")}`,
+  };
+  if (opts.submitTitle) primaryAttrs.title = opts.submitTitle;
+  form.appendChild(el("button", primaryAttrs, submitLabel));
 
   if (confirmTestId) {
-    form.appendChild(el(
-      "button",
-      {
-        type: "submit",
-        "data-role": "confirm-submit",
-        class: "button button--danger",
-        "data-testid": confirmTestId,
-        hidden: true,
-      },
-      confirmLabel,
-    ));
+    const confirmAttrs = {
+      type: "submit",
+      "data-role": "confirm-submit",
+      class: "button button--danger",
+      "data-testid": confirmTestId,
+      hidden: true,
+    };
+    if (opts.confirmTitle) confirmAttrs.title = opts.confirmTitle;
+    form.appendChild(el("button", confirmAttrs, confirmLabel));
     form.appendChild(el(
       "button",
       {
@@ -370,6 +419,7 @@ function makeFormCard(testid, title, fields, submitLabel, onSubmit, opts) {
         "data-role": "cancel-confirm",
         class: "button",
         hidden: true,
+        title: "Cancels this operation without making any changes.",
         onclick: () => {
           pendingConfirm = false;
           const pBtn = form.querySelector('button[data-role="primary-submit"]');
@@ -546,7 +596,10 @@ function buildChallengeForm() {
       const out = await postAction(API_CHALLENGE, body);
       showToast(`CHALLENGE injected: task ${out.task_id || "?"}`, "success");
     },
-    { submitTestId: "submit-challenge" },
+    {
+      submitTestId: "submit-challenge",
+      submitTitle: "Injects a CHALLENGE event based on an existing finding. The challenged lane will see this as a required objection to address before BUILD.",
+    },
   );
 }
 
@@ -567,7 +620,12 @@ function buildReclaimForm() {
       const out = await postAction(API_RECLAIM, { lane, force });
       showToast(`Reclaimed ${lane}: ${out.action || "ok"}`, "success");
     },
-    { confirmTestId: "confirm-reclaim", confirmLabel: "Confirm reclaim" },
+    {
+      confirmTestId: "confirm-reclaim",
+      confirmLabel: "Confirm reclaim",
+      submitTitle: "Forces a lane's claim back to ORCHESTRATOR. The agent will be told STALE-RECLAIMED on next tick. Check 'force' to reclaim even if the lane is not stale.",
+      confirmTitle: "Confirms the reclaim. The agent may lose in-progress work. Use when a lane is hung > 10 min.",
+    },
   );
 }
 
@@ -600,7 +658,11 @@ function buildSignalForm() {
       await postAction(API_SIGNAL, { from_lane, to_lane, claim, evidence });
       showToast(`SIGNAL posted ${from_lane} → ${to_lane}`, "success");
     },
-    { submitTestId: "submit-signal", errorTestId: "signal-error" },
+    {
+      submitTestId: "submit-signal",
+      errorTestId: "signal-error",
+      submitTitle: "Posts a cross-lane signal file to signals/LANE-X-to-LANE-Y-<UTC>.md. The target lane reads this on its next tick.",
+    },
   );
 }
 
@@ -616,6 +678,7 @@ function buildPhaseFlipTargetButtons() {
       "data-testid": `flip-target-${phase}`,
       "aria-pressed": "false",
       "data-phase": phase,
+      title: `Set target phase to ${phase}`,
       onclick: () => {
         hiddenTo.value = phase;
         const all = targetGroup.querySelectorAll('button[data-testid^="flip-target-"]');
@@ -658,7 +721,12 @@ function buildPhaseFlipForm() {
       // REPAIR-7: optimistic store update — SSE may lag; test asserts immediately.
       store.set("mission.phase", to);
     },
-    { confirmTestId: "confirm-flip", confirmLabel: "Confirm phase flip" },
+    {
+      confirmTestId: "confirm-flip",
+      confirmLabel: "Confirm phase flip",
+      submitTitle: "Initiates a mission phase flip. Operator-driven; takes a from/to pair and a reason. Affects all 6 lanes immediately. Locked by .phase-flip-locks/ directory while in progress. You will be asked to confirm.",
+      confirmTitle: "Confirms the phase flip. This is irreversible — all lanes will be notified of the new phase on their next tick.",
+    },
   );
 }
 
@@ -677,7 +745,10 @@ function buildMissionStatusForm() {
       // REPAIR-7: optimistic store update — SSE may lag; badge re-renders on subscribe.
       store.set("mission.missionStatus", status);
     },
-    { submitTestId: "submit-mission-status" },
+    {
+      submitTestId: "submit-mission-status",
+      submitTitle: "Updates the mission status badge shown in the header. Does not flip the phase — use Phase Flip for phase transitions.",
+    },
   );
 }
 
@@ -713,7 +784,10 @@ function buildInjectTaskForm() {
       await postAction(API_INJECT_TASK, { task_text, section });
       showToast(`Task injected into ${section}`, "success");
     },
-    { submitTestId: "submit-inject-task" },
+    {
+      submitTestId: "submit-inject-task",
+      submitTitle: "Injects a new task into TASKS.md for a specific lane. Format: [ ] [LANE-X] `task-id` — description. The task becomes claimable on the target lane's next tick.",
+    },
   );
 }
 
@@ -947,6 +1021,16 @@ export async function render(root) {
     renderHistoryTail(historyCard);
   }));
   unsubs.push(store.subscribe("mission.missionStatus", () => {
+    renderSummaryCard(summaryCard);
+  }));
+  unsubs.push(store.subscribe("mission.id", () => {
+    renderSummaryCard(summaryCard);
+  }));
+  unsubs.push(store.subscribe("mission.status", () => {
+    renderSummaryCard(summaryCard);
+  }));
+  // Whole-slice subscribe catches hydrate-as-object pushes (mission := {...}).
+  unsubs.push(store.subscribe("mission", () => {
     renderSummaryCard(summaryCard);
   }));
   unsubs.push(store.subscribe("status.lanes", () => {

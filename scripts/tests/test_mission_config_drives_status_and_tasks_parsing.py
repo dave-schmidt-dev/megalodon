@@ -199,9 +199,12 @@ async def test_tasks_endpoint_parses_non_default_lane_tasks(cv1_mission: Path):
         f"task id mismatch: expected {expected_ids}, got {task_ids}"
     )
 
-    # Verify lane short attribution is correct (LANE-P through LANE-U).
+    # Verify lane attribution maps each short to its config-declared long
+    # name (PAPA/QUEBEC/ROMEO/SIERRA/TANGO/UNIFORM). The FE kanban buckets
+    # tasks by `lane.name` from config; parse_tasks does this mapping so the
+    # kanban renders rows in the right column.
     task_lanes = {t["lane"] for t in tasks}
-    expected_lanes = {f"LANE-{s}" for s in _NON_DEFAULT_SHORTS}
+    expected_lanes = set(_LANE_NAMES)
     assert task_lanes == expected_lanes, (
         f"task lane mismatch: expected {expected_lanes}, got {task_lanes}"
     )

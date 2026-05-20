@@ -17,10 +17,13 @@ from megalodon_ui import tmux
 from megalodon_ui.mission_config.schema import MissionConfig
 from megalodon_ui.spawn import FleetSpawner
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("tmux") is None,
-    reason="tmux not installed",
-)
+pytestmark = [
+    pytest.mark.isolated,
+    pytest.mark.skipif(
+        shutil.which("tmux") is None,
+        reason="tmux not installed",
+    ),
+]
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 STUB_ADAPTER_PATH = FIXTURES_DIR / "stub_adapter.py"

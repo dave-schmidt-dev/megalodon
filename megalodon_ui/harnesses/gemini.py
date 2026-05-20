@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import pathlib
 
-from .base import Capabilities, Event, ModelSpec
+from .base import Capabilities, Event, ModelSpec, _FollowupArgvDefault
 
 
-class GeminiAdapter:
+class GeminiAdapter(_FollowupArgvDefault):
     """Concrete HarnessAdapter for the Google Gemini CLI."""
 
     name: str = "gemini"
@@ -80,6 +80,9 @@ class GeminiAdapter:
     def session_log_path(
         self, cwd: pathlib.Path, session_id: str
     ) -> pathlib.Path | None:
+        return self.session_log_dir(cwd)
+
+    def session_log_dir(self, cwd: pathlib.Path) -> pathlib.Path | None:
         return pathlib.Path.home() / ".gemini" / "history" / cwd.name
 
     # ------------------------------------------------------------------

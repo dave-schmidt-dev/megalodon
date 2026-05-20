@@ -116,12 +116,43 @@ class HarnessAdapter(Protocol):
         """
         ...
 
+    def build_followup_argv(
+        self,
+        prompt: str,
+        *,
+        prior_session_id: str | None,
+        model: str,
+        cwd: pathlib.Path,
+        output_format: str = "text",
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Build argv for a follow-up invocation after a prior pane run completed.
+
+        Plan section 4 Q2 contract: when ``prior_session_id`` is set and the
+        adapter's CLI exposes a session-resume affordance, the returned argv
+        must chain to that prior session. Otherwise the call must be
+        functionally identical to ``build_argv`` (a fresh invocation).
+
+        Default implementation lives in ``_FollowupArgvDefault`` below;
+        ``ClaudeAdapter`` and ``CodexAdapter`` override directly.
+        """
+        ...
+
     def session_log_path(
         self, cwd: pathlib.Path, session_id: str
     ) -> pathlib.Path | None:
         """Return the filesystem path where this harness writes session logs.
 
         Returns None if the harness does not persist session logs.
+        """
+        ...
+
+    def session_log_dir(self, cwd: pathlib.Path) -> pathlib.Path | None:
+        """Return the parent directory where new session log entries appear.
+
+        Used by FleetSpawner for the before/after snapshot diff that
+        discovers a freshly-spawned harness's session id (CR-1, PM-6).
+        Returns None for harnesses that do not persist sessions on disk.
         """
         ...
 
@@ -132,3 +163,38 @@ class HarnessAdapter(Protocol):
     def supports(self) -> Capabilities:
         """Return static capability flags for this adapter."""
         ...
+
+
+# ---------------------------------------------------------------------------
+# Default mixin for build_followup_argv
+# ---------------------------------------------------------------------------
+
+
+class _FollowupArgvDefault:
+    """Mixin: forwards ``build_followup_argv`` to ``build_argv``.
+
+    Adapters whose CLIs do not expose a session-resume affordance (gemini,
+    copilot, cursor, vibe) inherit from this so a follow-up prompt behaves
+    like a fresh invocation. ``prior_session_id`` is intentionally ignored —
+    surfacing it as a no-op rather than an error keeps the orchestrator side
+    free of per-adapter branching.
+    """
+
+    def build_followup_argv(
+        self,
+        prompt: str,
+        *,
+        prior_session_id: str | None,
+        model: str,
+        cwd: pathlib.Path,
+        output_format: str = "text",
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[list[str], dict[str, str]]:
+        del prior_session_id  # default impl ignores prior session
+        return self.build_argv(  # type: ignore[attr-defined]
+            prompt,
+            model=model,
+            cwd=cwd,
+            output_format=output_format,
+            extra_env=extra_env,
+        )

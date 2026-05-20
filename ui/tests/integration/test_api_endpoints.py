@@ -41,9 +41,13 @@ def fix_failure_modes(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_A_CH_inject_appends_task_and_creates_claim(async_client_with_lifespan, fix_medium):
-    """T-A-CH-int — POST /api/v1/challenge adds [ ] [CHALLENGE-*] to TASKS.md atomically.
+    """T-A-CH-int — POST /api/v1/challenge adds a CHALLENGE-* task to TASKS.md atomically.
 
     URL + body aligned with api-contract.md:55 (P3-E Stage 2c, agent-43d9).
+    Canonical task-id format (v8 Edit 3, ASCII-only) is backtick-quoted:
+        `- [ ] [LANE-A] \`CHALLENGE-<finding-stem>\` — CHALLENGE on <finding>.md`
+    The old `[CHALLENGE-…]` bracket variant was an artifact of fixture pollution
+    from earlier runs (TASKS.md was committed dirty); the BE never wrote it.
     """
     r = await async_client_with_lifespan.post("/api/v1/challenge", json={
         "finding_filename": "agent-x-A-P1-A.md",
@@ -52,7 +56,7 @@ async def test_A_CH_inject_appends_task_and_creates_claim(async_client_with_life
     request_id = r.json()["request_id"]
     await wait_for_queue_applied(async_client_with_lifespan, request_id, mission_dir=fix_medium)
     tasks = (fix_medium / "TASKS.md").read_text()
-    assert "[CHALLENGE-" in tasks
+    assert "`CHALLENGE-" in tasks, tasks
 
 
 # ---------- Orchestrator action: reclaim stale row ----------

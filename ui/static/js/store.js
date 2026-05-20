@@ -95,6 +95,8 @@ function initialState() {
     tasks: { phases: {}, cross: [] },
     findings: { list: [], byFilename: {} },
     signals: { list: [] },
+    claims: { list: [] },
+    activitySummaries: {},
     mission: { phase: "", events: [], missionStatus: "" },
     config: {
       heartbeatIntervalSeconds: 15,
@@ -202,6 +204,7 @@ export class Store {
     if (payload.tasks) this.set("tasks", payload.tasks);
     if (payload.findings) this.set("findings", payload.findings);
     if (payload.signals) this.set("signals", payload.signals);
+    if (payload.claims) this.set("claims", payload.claims);
     if (payload.mission) this.set("mission", payload.mission);
     if (payload.config) {
       const c = payload.config;
@@ -344,16 +347,54 @@ export class Store {
 
   // --- private: notification machinery ---
 
-  /** Emit change events for a path and all ancestors (including root ""). */
+  /** Emit change events for a path, all ancestors (including root ""),
+   *  AND any subscribed descendant paths whose value changed.
+   *
+   *  Descendant fan-out fixes bug-3 (phase strip stuck on INIT): when
+   *  `hydrate()` does `set("mission", {phase: "PHASE-PLAN", ...})` the
+   *  parent slice is replaced wholesale, so subscribers on the nested
+   *  key `"mission.phase"` would never fire without this walk.
+   *  Only paths that already have at least one subscriber are visited,
+   *  so this is O(subscribed descendants) — not a full deep traversal.
+   */
   _emitPath(segs, oldVal, newVal) {
+    const exactPath = segs.join(".");
     // exact path
-    this._notify(segs.join("."), newVal, oldVal);
+    this._notify(exactPath, newVal, oldVal);
+    // descendants — only subscribed paths under exactPath that actually changed.
+    this._emitChangedDescendants(exactPath, oldVal, newVal);
     // ancestors
     for (let i = segs.length - 1; i >= 0; i--) {
       const ancestorSegs = segs.slice(0, i);
       const ancestorPath = ancestorSegs.join(".");
       const ancestorVal = i === 0 ? this._state : walk(this._state, ancestorSegs);
       this._notify(ancestorPath, ancestorVal, ancestorVal /* old≈new for ancestor */);
+    }
+  }
+
+  /** Notify subscribers on any descendant of `parentPath` whose value
+   *  differs between oldParent and newParent. Walks only paths that
+   *  actually have subscribers (looked up in this._subs).
+   *  Skips the parent path itself and any top-level paths when
+   *  parentPath === "" (root callers fire those separately).
+   */
+  _emitChangedDescendants(parentPath, oldParent, newParent) {
+    const prefix = parentPath === "" ? "" : parentPath + ".";
+    for (const subPath of this._subs.keys()) {
+      if (subPath === parentPath) continue;
+      if (subPath === "") continue;
+      if (parentPath !== "" && !subPath.startsWith(prefix)) continue;
+      const relSegs = parentPath === ""
+        ? splitPath(subPath)
+        : splitPath(subPath.slice(prefix.length));
+      // Skip immediate top-level keys when fanning out from root — _notifyAll
+      // already emits those.
+      if (parentPath === "" && relSegs.length === 1) continue;
+      const newDesc = walk(newParent, relSegs);
+      const oldDesc = walk(oldParent, relSegs);
+      if (newDesc !== oldDesc) {
+        this._notify(subPath, newDesc, oldDesc);
+      }
     }
   }
 
@@ -377,6 +418,9 @@ export class Store {
     for (const k of Object.keys(newRoot)) {
       this._notify(k, newRoot[k], oldRoot ? oldRoot[k] : undefined);
     }
+    // Fan out to any subscribed nested paths whose value changed under the
+    // wholesale root swap (same fix as _emitPath but for the root-set path).
+    this._emitChangedDescendants("", oldRoot || {}, newRoot);
   }
 }
 

@@ -4,19 +4,12 @@
 
 import { test, expect } from '@playwright/test';
 
-// Point the server at the failure-modes fixture for this whole suite.
-test.use({
-  baseURL: process.env.MEGALODON_UI_URL || 'http://127.0.0.1:8765',
-});
+// baseURL is set by the project config (chromium-failure-modes / webkit-failure-modes
+// in playwright.config.ts) to point at the fix-medium-failure-modes fixture on
+// its dedicated port. Do NOT override here — a `test.use({ baseURL })` would
+// silently steal these specs onto the wrong fixture.
 
 test.describe('Failure-mode UI surfacing', () => {
-
-  test.beforeAll(async () => {
-    // Operator pre-step: server must be launched with MEGALODON_MISSION_DIR
-    // pointing at fix-medium-failure-modes. The webServer.env in
-    // playwright.config.ts can be overridden via env var when running this
-    // suite specifically.
-  });
 
   test('T-FX-FAILMODE-a — stuck-phase-flip warning panel appears', async ({ page }) => {
     await page.goto('/mission');

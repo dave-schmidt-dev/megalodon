@@ -13,9 +13,9 @@ import sys
 from pathlib import Path
 
 
-def _cmd_init(mission_dir: Path, force: bool) -> int:
+def _cmd_init(mission_dir: Path, force: bool, live_repl: bool) -> int:
     import yaml
-    from megalodon_ui.mission_config import default_v9_0_shape
+    from megalodon_ui.mission_config import default_v9_0_shape, default_v9_3_live_repl
 
     target = mission_dir / ".mission-config.yaml"
     tmp = mission_dir / ".mission-config.yaml.tmp"
@@ -27,7 +27,10 @@ def _cmd_init(mission_dir: Path, force: bool) -> int:
         )
         return 1
 
-    config = default_v9_0_shape.synthesize(mission_dir)
+    if live_repl:
+        config = default_v9_3_live_repl.synthesize(mission_dir)
+    else:
+        config = default_v9_0_shape.synthesize(mission_dir)
     payload = yaml.safe_dump(
         config.model_dump(mode="json"),
         sort_keys=False,
@@ -91,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Overwrite existing .mission-config.yaml",
     )
+    p_init.add_argument(
+        "--live-repl",
+        action="store_true",
+        help="Use the v9.3 live-REPL template (claude REPL + /loop autonomous per lane)",
+    )
 
     p_validate = sub.add_parser("validate", help="Validate a .mission-config.yaml file")
     p_validate.add_argument("path", type=Path, metavar="PATH", help="Path to YAML file")
@@ -98,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "init":
-        return _cmd_init(args.mission_dir, args.force)
+        return _cmd_init(args.mission_dir, args.force, args.live_repl)
     if args.command == "validate":
         return _cmd_validate(args.path)
 

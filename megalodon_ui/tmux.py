@@ -131,6 +131,65 @@ async def kill_server(socket: Path) -> int:
     return await proc.wait()
 
 
+async def display_message_pane_dead(
+    socket: Path, name: str
+) -> tuple[bool, int | None]:
+    """Query a pane's dead-ness + exit status (CV-8 lazy probe).
+
+    Runs ``tmux display-message -p -F '#{pane_dead}|#{pane_dead_status}'``
+    on the named session's pane 0.0 and parses the single-line output.
+
+    Returns:
+        (dead, status_or_None)
+        * ``dead=False`` for a running pane; status is ``None``.
+        * ``dead=True`` for an exited pane; status is the integer rc tmux
+          captured (may be 0).
+        * Any non-zero rc or unparseable output → ``(False, None)`` so the
+          caller treats the query as "no signal" rather than "pane is dead
+          but rc unknown".
+    """
+    spawn = asyncio.create_subprocess_exec
+    proc = await spawn(
+        "tmux", "-S", str(socket),
+        "display-message", "-p",
+        "-F", "#{pane_dead}|#{pane_dead_status}",
+        "-t", name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return False, None
+    text = stdout.decode("utf-8", errors="replace").strip()
+    if "|" not in text:
+        return False, None
+    dead_str, status_str = text.split("|", 1)
+    dead = dead_str.strip() == "1"
+    status_str = status_str.strip()
+    if not status_str or not dead:
+        return dead, None
+    try:
+        return dead, int(status_str)
+    except ValueError:
+        return dead, None
+
+
+async def send_keys(socket: Path, name: str, keys: str, *, enter: bool = True) -> int:
+    """Type ``keys`` into the named session's active pane.
+
+    Used by FleetSpawner to deliver the per-lane initial_prompt into a
+    live-REPL CLI after it's had time to render its TUI. ``enter=True``
+    appends an Enter keystroke so a slash command or prompt fires.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "tmux", "-S", str(socket),
+        "send-keys", "-t", name,
+        keys,
+        *(["Enter"] if enter else []),
+    )
+    return await proc.wait()
+
+
 async def display_message_pane_pipe(socket: Path, name: str) -> bool:
     """Return True if pipe-pane is currently active on the named session's pane."""
     proc = await asyncio.create_subprocess_exec(

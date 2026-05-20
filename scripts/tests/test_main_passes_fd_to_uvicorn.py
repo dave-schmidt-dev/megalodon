@@ -103,6 +103,7 @@ def test_bind_happens_before_token_write(tmp_path: Path) -> None:
         _patched_main_env(),
         patch("megalodon_ui.__main__.socket.socket", _TrackingSocket),
         patch("megalodon_ui.__main__.os.open", _tracking_os_open),
+        patch("megalodon_ui.auth.os.open", _tracking_os_open),
         patch("megalodon_ui.__main__.uvicorn.Server", _CapturingServer),
     ):
         _run_main(tmp_path)

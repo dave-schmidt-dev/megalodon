@@ -23,10 +23,10 @@ from __future__ import annotations
 
 import pathlib
 
-from .base import Capabilities, Event, ModelSpec
+from .base import Capabilities, Event, ModelSpec, _FollowupArgvDefault
 
 
-class CursorAdapter:
+class CursorAdapter(_FollowupArgvDefault):
     """Concrete HarnessAdapter for the Cursor Agent CLI."""
 
     name: str = "cursor"
@@ -90,6 +90,10 @@ class CursorAdapter:
     ) -> pathlib.Path | None:
         # Returns the session directory; cursor-agent writes chat files inside it.
         return pathlib.Path.home() / ".cursor" / "chats" / session_id
+
+    def session_log_dir(self, cwd: pathlib.Path) -> pathlib.Path | None:
+        # cursor-agent has no stable per-cwd session manifest dir.
+        return None
 
     # ------------------------------------------------------------------
     # auth / capabilities

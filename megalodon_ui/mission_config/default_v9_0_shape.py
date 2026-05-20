@@ -62,5 +62,19 @@ def synthesize(mission_dir: Path) -> MissionConfig:
             r"^(P\d+(\.\d+)?(-[A-F](-to-[A-F])?)?|P\d+-RUN-[A-Z0-9_-]+|REPAIR-[A-Z0-9_-]+|OPERATOR-[A-Z_-]+|S-\d+|TEST-\d+|CHALLENGE-[A-Z0-9_-]+)$"
         ]),
         orchestrator_pseudo_lane="META",  # v9.0 back-compat — server.py uses submitting_lane="META"
-        task_sections=["PHASE 1 — PLAN", "OPERATOR-ACCEPTANCE TASKS"],  # match mission.js literal labels (CR-7)
+        # Match mission.js `TASK_SECTIONS_FALLBACK` 1-for-1 so the FE select
+        # offers every canonical section the operator can inject into.
+        # E2E spec T-A-IT-e2e exercises `CHALLENGE TASKS`; older 2-entry list
+        # silently hid that option (and others) from the dropdown.
+        task_sections=[
+            "PHASE 1 — PLAN",
+            "PHASE 2 — CHALLENGE",
+            "PHASE 2.5 — Plan-v2 reconciliation",
+            "PHASE 3 — BUILD",
+            "PHASE 4 — VERIFY",
+            "PHASE 5 — RUN",
+            "OPERATOR-ACCEPTANCE TASKS",
+            "CHALLENGE TASKS",
+            "CROSS-LANE / SECONDARY TASK POOL",
+        ],
     )

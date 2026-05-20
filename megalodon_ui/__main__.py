@@ -9,23 +9,27 @@ from __future__ import annotations
 import argparse
 import errno
 import os
-import secrets
 import socket
 import sys
 from pathlib import Path
 
 import uvicorn
 
+from . import auth
 from ._logging import get_logger
 from ._tmux_version import probe_or_exit_6
-from ._v92_constants import BEARER_TOKEN_BYTES, SOCKET_PATH_LIMIT_BYTES
+from ._v92_constants import SOCKET_PATH_LIMIT_BYTES
 from .constants import DEFAULT_PORT
 
 
 def _bind_listener(host: str, port: int) -> socket.socket:
     """Create, bind and listen on (host, port); exit 9 on EADDRINUSE."""
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Deliberately do NOT set SO_REUSEADDR — we want EADDRINUSE on collision.
+    # SO_REUSEADDR lets us re-bind to a port in TIME_WAIT (common in dev/CI
+    # restart loops). It does NOT enable concurrent listeners — a second active
+    # listener still raises EADDRINUSE. So "two megalodon-ui on the same port"
+    # still fails loudly, which is the property the safety guard cares about.
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         listener.bind((host, port))
     except OSError as exc:
@@ -38,32 +42,6 @@ def _bind_listener(host: str, port: int) -> socket.socket:
         raise
     listener.listen(128)
     return listener
-
-
-def _write_token_atomic(token_path: Path, token: str) -> None:
-    """Atomic write token to token_path (mode 0600) using O_EXCL; exit 8 on failure."""
-    old_umask = os.umask(0o077)
-    try:
-        for attempt in range(2):
-            try:
-                fd = os.open(str(token_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError:
-                if attempt == 0:
-                    token_path.unlink(missing_ok=True)
-                    continue
-                sys.stderr.write(
-                    f"failed to write bearer token to {token_path} after retry; exit 8\n"
-                )
-                sys.exit(8)
-            else:
-                try:
-                    os.fchmod(fd, 0o600)
-                    os.write(fd, token.encode())
-                finally:
-                    os.close(fd)
-                return
-    finally:
-        os.umask(old_umask)
 
 
 def _write_dashboard_url_atomic(url_path: Path, url: str) -> None:
@@ -145,8 +123,14 @@ def main() -> None:
     # Step 6 (cleanup-guarded block): covers token write, URL write, uvicorn.
     try:
         # Step 7: generate + atomically write bearer token.
-        token = secrets.token_urlsafe(BEARER_TOKEN_BYTES)
-        _write_token_atomic(token_path, token)
+        token = auth.generate_token()
+        try:
+            auth.write_token_atomic(token_path, token)
+        except FileExistsError:
+            sys.stderr.write(
+                f"failed to write bearer token to {token_path} after retry; exit 8\n"
+            )
+            sys.exit(8)
 
         # Step 8: compose + emit dashboard URL (stdout, log, file).
         dashboard_url = f"http://{args.host}:{args.port}/#t={token}"

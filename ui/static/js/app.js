@@ -21,6 +21,13 @@ const PAGE_LOADERS = {
 };
 
 let currentPageCleanup = null;
+// Monotonic mount counter. Each mountPage() call bumps it. Stale in-flight
+// renders compare their captured id against this counter and abort their
+// final clearNode/appendChild writes if a newer navigation has started.
+// Without this guard, dashboard.render's `await loadConfig()` would resolve
+// LATE and paint dashboard over whatever tab the operator just clicked —
+// the visible "snap back to Dashboard" bug.
+let _mountSeq = 0;
 
 function getRoot() {
   return document.getElementById("app-root");
@@ -42,6 +49,12 @@ async function mountPage(path) {
   const root = getRoot();
   if (!root) return;
 
+  // Claim this mount. Any in-flight render older than `myId` must abort its
+  // final paints; this is the only thing preventing dashboard's slow
+  // `await loadConfig()` from overwriting a fresh tab the operator clicked
+  // mid-render.
+  const myId = ++_mountSeq;
+
   // Unmount the previous page first.
   if (currentPageCleanup) {
     try { currentPageCleanup(); } catch (err) { console.error("[app] cleanup error:", err); }
@@ -52,24 +65,52 @@ async function mountPage(path) {
   clearNode(root);
   root.appendChild(emptyState("Loading…"));
 
+  // FIX(bug-2): update the active nav indicator BEFORE awaiting the lazy
+  // page-module import. Otherwise the highlight only appears after the
+  // dynamic import resolves (≈50-200ms), which the operator perceives as
+  // "the indicator doesn't update". Also fired again after mount so a
+  // late-stage failure doesn't leave the indicator stale.
+  updateNavActive(path);
+
   try {
     const mod = await loader();
+    if (myId !== _mountSeq) return;  // a newer navigation won the race
     clearNode(root);
-    const cleanup = mod.render(root);
+    // FIX(bug-snap-back): `render` is async in every page module — so the
+    // raw return value is a Promise, not the cleanup function. The previous
+    // `typeof cleanup === "function"` guard always failed silently, leaking
+    // every page's setIntervals + store subscriptions across navigations.
+    // Now we await the render promise and adopt its resolved cleanup, and
+    // gate the adoption on still being the current mount so a late-resolving
+    // stale render can't (a) overwrite the visible page or (b) install its
+    // cleanup as the page-cleanup-of-record.
+    const cleanup = await mod.render(root);
+    if (myId !== _mountSeq) {
+      // A newer mountPage started while we were rendering. Discard our
+      // cleanup by invoking it directly so its timers/subs don't leak.
+      if (typeof cleanup === "function") {
+        try { cleanup(); } catch (err) { console.error("[app] stale-cleanup error:", err); }
+      }
+      return;
+    }
     currentPageCleanup = typeof cleanup === "function" ? cleanup : null;
   } catch (err) {
+    if (myId !== _mountSeq) return;
     console.error(`[app] failed to render ${path}:`, err);
     clearNode(root);
     root.appendChild(emptyState(`Page failed to load: ${String(err)}`));
   }
+  if (myId !== _mountSeq) return;
   updateNavActive(path);
 }
 
 function updateNavActive(path) {
-  const links = document.querySelectorAll('nav.app-nav a, [role="navigation"] a');
+  // Normalize both sides: strip trailing slashes; treat "" same as "/".
+  const norm = (path || "/").replace(/\/+$/, "") || "/";
+  const links = document.querySelectorAll(".app-nav a");
   for (const a of links) {
-    const href = a.getAttribute("href");
-    if (href === path) {
+    const href = (a.getAttribute("href") || "").replace(/\/+$/, "") || "/";
+    if (href === norm) {
       a.setAttribute("aria-current", "page");
     } else {
       a.removeAttribute("aria-current");

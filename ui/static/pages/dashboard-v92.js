@@ -1,0 +1,386 @@
+// @ts-check
+// dashboard-v92.js — v9.2 xterm.js dashboard (one Terminal per lane).
+//
+// Spec: ~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md §6.5
+// Tests: ui/tests/e2e/dashboard-loads.spec.ts, auth-redirect.spec.ts (P5.3)
+//
+// Loaded unconditionally by index.html. NO-OP unless /api/v1/config returns
+// `v92_dashboard: true` (the MEGALODON_V92_DASHBOARD env var at server start).
+// This keeps v9.0 / v9.1 dashboards untouched while letting a v9.2-mode server
+// take over the `/` page.
+
+(async () => {
+  // Wait for the inline auth bootstrap in index.html so any `#t=<token>` URL
+  // has been exchanged for a cookie before we issue gated requests.
+  try {
+    await (window.__auth_bootstrap__ || Promise.resolve());
+  } catch (e) {
+    // bootstrap failures are non-fatal here; downstream fetches will surface 401.
+  }
+
+  let config;
+  try {
+    const resp = await authFetch('/api/v1/config');
+    if (!resp || !resp.ok) {
+      if (resp && resp.status === 401) showPasteTokenModal();
+      return;
+    }
+    config = await resp.json();
+  } catch (e) {
+    console.error('dashboard-v92: /api/v1/config fetch failed', e);
+    return;
+  }
+
+  if (!config || !config.v92_dashboard) return;
+
+  document.body.classList.add('v92-mode');
+  injectV92Styles(config.lanes.length);
+  const grid = ensureGridRoot();
+  ensurePasteTokenModal();
+
+  for (const lane of config.lanes) {
+    mountLane(grid, lane);
+  }
+
+  // Test-only hook: close every open SSE connection. Some Playwright specs
+  // need to free up Chrome's 6-connection-per-host HTTP/1.1 budget so other
+  // fetches don't queue behind streaming pane-streams. No-op in production
+  // (nobody calls it).
+  window.__v92_closeAllStreams = () => {
+    for (const [, entry] of _laneEventSources) {
+      try { entry.es && entry.es.close(); } catch {}
+      entry.es = null;
+    }
+  };
+})();
+
+// --- helpers ---------------------------------------------------------------
+
+const _laneEventSources = new Map();
+
+function injectV92Styles(laneCount) {
+  if (document.getElementById('v92-dashboard-style')) return;
+  const cols = Math.max(1, Math.ceil(Math.sqrt(laneCount || 1)));
+  const style = document.createElement('style');
+  style.id = 'v92-dashboard-style';
+  style.textContent = `
+    body.v92-mode .app-header,
+    body.v92-mode .app-nav,
+    body.v92-mode #app-root,
+    body.v92-mode #toast-region { display: none !important; }
+    body.v92-mode { margin: 0; padding: 0; background: #0b0d10; color: #e6e6e6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .v92-lane-grid {
+      display: grid;
+      grid-template-columns: repeat(${cols}, 1fr);
+      gap: 6px;
+      padding: 6px;
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+    .v92-lane-pane {
+      background: #15181d;
+      border: 1px solid #2a2f37;
+      display: flex;
+      flex-direction: column;
+      min-height: 200px;
+      overflow: hidden;
+    }
+    .v92-lane-header {
+      padding: 4px 8px;
+      font-size: 12px;
+      background: #1f242c;
+      border-bottom: 1px solid #2a2f37;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .v92-lane-term { flex: 1; min-height: 0; }
+    .v92-paste-token-modal {
+      border: 1px solid #2a2f37;
+      background: #15181d;
+      color: #e6e6e6;
+      padding: 16px 20px;
+      max-width: 460px;
+    }
+    .v92-paste-token-modal::backdrop { background: rgba(0,0,0,0.6); }
+    .v92-paste-token-form { display: flex; flex-direction: column; gap: 8px; }
+    .v92-paste-token-form input[type=text] {
+      background: #0b0d10; color: #e6e6e6; border: 1px solid #2a2f37;
+      padding: 6px 8px; font-family: inherit; font-size: 13px;
+    }
+    .v92-paste-token-form button {
+      background: #2a2f37; color: #e6e6e6; border: 1px solid #3a414b;
+      padding: 6px 12px; cursor: pointer;
+    }
+    .v92-paste-token-form button:hover { background: #353c46; }
+    .v92-paste-token-error { color: #ff8b8b; margin: 4px 0 0; font-size: 12px; }
+    .v92-paste-token-hint { font-size: 11px; opacity: 0.7; margin: -4px 0 4px; }
+    .v92-followup { display: flex; gap: 6px; padding: 6px; border-top: 1px solid #2a2f37; }
+    .v92-followup textarea {
+      flex: 1; resize: vertical; min-height: 36px;
+      background: #0b0d10; color: #e6e6e6; border: 1px solid #2a2f37; padding: 4px 6px;
+      font-family: inherit; font-size: 12px;
+    }
+    .v92-followup button {
+      background: #2a2f37; color: #e6e6e6; border: 1px solid #3a414b;
+      padding: 4px 12px; cursor: pointer;
+    }
+    .v92-followup button:disabled { opacity: 0.5; cursor: not-allowed; }
+  `;
+  document.head.appendChild(style);
+}
+
+function ensureGridRoot() {
+  let grid = document.querySelector('[data-testid="lane-grid"]');
+  if (grid) return grid;
+  grid = document.createElement('div');
+  grid.setAttribute('data-testid', 'lane-grid');
+  grid.className = 'v92-lane-grid';
+  document.body.appendChild(grid);
+  return grid;
+}
+
+function mountLane(grid, lane) {
+  const pane = document.createElement('div');
+  pane.setAttribute('data-testid', `lane-pane-${lane.name}`);
+  pane.setAttribute('data-lane', lane.name);
+  pane.className = 'v92-lane-pane';
+
+  const header = document.createElement('header');
+  header.className = 'v92-lane-header';
+  header.setAttribute('data-testid', `lane-header-${lane.name}`);
+  const label = document.createElement('span');
+  label.textContent = `${lane.name} (${lane.short || ''})`;
+  const status = document.createElement('span');
+  status.className = 'v92-lane-status';
+  status.setAttribute('data-testid', `lane-status-${lane.name}`);
+  status.textContent = 'running';
+  header.appendChild(label);
+  header.appendChild(status);
+
+  const termHost = document.createElement('div');
+  termHost.className = 'v92-lane-term';
+  termHost.setAttribute('data-testid', `lane-term-${lane.name}`);
+
+  const form = document.createElement('form');
+  form.className = 'v92-followup';
+  form.setAttribute('data-testid', `lane-followup-${lane.name}`);
+  const ta = document.createElement('textarea');
+  ta.placeholder = `Follow-up prompt for ${lane.name}…`;
+  ta.setAttribute('data-testid', `followup-input-${lane.name}`);
+  const sendBtn = document.createElement('button');
+  sendBtn.type = 'submit';
+  sendBtn.textContent = 'Send';
+  sendBtn.setAttribute('data-testid', `followup-send-${lane.name}`);
+  form.appendChild(ta);
+  form.appendChild(sendBtn);
+
+  pane.appendChild(header);
+  pane.appendChild(termHost);
+  pane.appendChild(form);
+  grid.appendChild(pane);
+
+  const term = new window.Terminal({
+    allowProposedApi: true,
+    convertEol: true,
+    cursorBlink: false,
+    scrollback: 5000,
+    theme: { background: '#0b0d10' },
+  });
+  term.open(termHost);
+
+  const entry = { lane, term, es: null, sawFirstByte: false, sendBtn, statusEl: status };
+  _laneEventSources.set(lane.name, entry);
+  openEventSource(entry);
+  startLaneStatePoll(entry);
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const prompt = (ta.value || '').trim();
+    if (!prompt) return;
+    sendBtn.disabled = true;
+    entry.sawFirstByte = false;
+    const timeoutId = window.setTimeout(() => { sendBtn.disabled = false; }, 3_000);
+    entry._sendTimeoutId = timeoutId;
+    try {
+      const r = await authFetch(`/api/v1/lane/${encodeURIComponent(lane.short || lane.name)}/followup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
+      if (r && r.ok) {
+        ta.value = '';
+      }
+    } catch (e) {
+      // ignore — debounce still releases on timeout or first-byte
+    }
+  });
+}
+
+function startLaneStatePoll(entry) {
+  const { lane } = entry;
+  const key = lane.short || lane.name;
+  const tick = async () => {
+    try {
+      const r = await authFetch(`/api/v1/lane/${encodeURIComponent(key)}/state`, { cache: 'no-store' });
+      if (r && r.ok) {
+        const body = await r.json();
+        if (entry.statusEl) {
+          if (body.running === false && body.exited_rc !== null) {
+            entry.statusEl.textContent = `exited (rc=${body.exited_rc})`;
+            entry.statusEl.setAttribute('data-running', 'false');
+          } else {
+            entry.statusEl.textContent = 'running';
+            entry.statusEl.setAttribute('data-running', 'true');
+          }
+        }
+      }
+    } catch {}
+    window.setTimeout(tick, 2_000);
+  };
+  tick();
+}
+
+function openEventSource(entry) {
+  const { lane } = entry;
+  const es = new EventSource(`/api/v1/lane/${encodeURIComponent(lane.short || lane.name)}/pane-stream`, {
+    withCredentials: true,
+  });
+  entry.es = es;
+  es.onmessage = (ev) => {
+    try {
+      const bytes = base64ToUint8(ev.data);
+      // Send-button debounce (gap 4): release on first non-sentinel byte.
+      // Sentinel is `\x1bc` (0x1b 0x63) — terminal clear, sent on subscribe + on respawn.
+      const isPureSentinel =
+        bytes.length === 2 && bytes[0] === 0x1b && bytes[1] === 0x63;
+      if (!isPureSentinel && !entry.sawFirstByte) {
+        entry.sawFirstByte = true;
+        if (entry._sendTimeoutId) {
+          window.clearTimeout(entry._sendTimeoutId);
+          entry._sendTimeoutId = null;
+        }
+        if (entry.sendBtn) entry.sendBtn.disabled = false;
+      }
+      entry.term.write(bytes);
+    } catch (e) {
+      // malformed event — ignore
+    }
+  };
+  es.onerror = async () => {
+    if (es.readyState !== EventSource.CLOSED) return;
+    // The browser swallows the actual HTTP status on EventSource. Probe via
+    // a same-origin GET (which the middleware gates the same way) to learn
+    // whether the closure was a 401. Anything else means the endpoint is
+    // simply unavailable — leave the session alone.
+    try {
+      const probe = await fetch(`/api/v1/lane/${encodeURIComponent(lane.short || lane.name)}/pane-stream`, {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: { Accept: 'text/event-stream' },
+      });
+      if (probe.status === 401) {
+        showPasteTokenModal();
+      }
+      try { probe.body && probe.body.cancel(); } catch {}
+    } catch (e) {
+      // network error — leave silently
+    }
+  };
+}
+
+function ensurePasteTokenModal() {
+  if (document.querySelector('[data-testid="paste-token-modal"]')) return;
+  const modal = document.createElement('dialog');
+  modal.setAttribute('data-testid', 'paste-token-modal');
+  modal.className = 'v92-paste-token-modal';
+
+  const form = document.createElement('form');
+  form.className = 'v92-paste-token-form';
+  const heading = document.createElement('p');
+  heading.textContent = 'Session expired or invalid. Paste a fresh bearer token:';
+  const hint = document.createElement('p');
+  hint.className = 'v92-paste-token-hint';
+  hint.textContent = 'Recover via `cat <mission>/.fleet/dashboard.url` or server stdout.';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'bearer token';
+  input.required = true;
+  input.autocomplete = 'off';
+  input.setAttribute('data-testid', 'paste-token-input');
+  const submit = document.createElement('button');
+  submit.type = 'submit';
+  submit.textContent = 'Submit';
+  submit.setAttribute('data-testid', 'paste-token-submit');
+  const err = document.createElement('p');
+  err.className = 'v92-paste-token-error';
+  err.setAttribute('data-testid', 'paste-token-error');
+  err.hidden = true;
+
+  form.appendChild(heading);
+  form.appendChild(hint);
+  form.appendChild(input);
+  form.appendChild(submit);
+  form.appendChild(err);
+  modal.appendChild(form);
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const token = (input.value || '').trim();
+    if (!token) return;
+    err.hidden = true;
+    err.textContent = '';
+    try {
+      const r = await fetch('/api/v1/auth/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+        credentials: 'same-origin',
+      });
+      if (r.ok) {
+        modal.close();
+        reconnectAllEventSources();
+      } else {
+        err.textContent = `Token rejected (HTTP ${r.status}).`;
+        err.hidden = false;
+      }
+    } catch (e) {
+      err.textContent = `Network error: ${e && e.message ? e.message : e}`;
+      err.hidden = false;
+    }
+  });
+
+  document.body.appendChild(modal);
+}
+
+function showPasteTokenModal() {
+  ensurePasteTokenModal();
+  const modal = document.querySelector('[data-testid="paste-token-modal"]');
+  if (modal && typeof modal.showModal === 'function' && !modal.open) {
+    try { modal.showModal(); } catch {}
+  } else if (modal) {
+    modal.setAttribute('open', '');
+  }
+}
+
+function reconnectAllEventSources() {
+  for (const entry of _laneEventSources.values()) {
+    try { entry.es && entry.es.close(); } catch {}
+    openEventSource(entry);
+  }
+}
+
+async function authFetch(url, init) {
+  const opts = Object.assign({ credentials: 'same-origin' }, init || {});
+  const resp = await fetch(url, opts);
+  if (resp.status === 401) showPasteTokenModal();
+  return resp;
+}
+
+function base64ToUint8(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}

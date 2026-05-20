@@ -9,10 +9,13 @@ import pytest_asyncio
 
 from megalodon_ui import tmux
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("tmux") is None,
-    reason="tmux not on PATH",
-)
+pytestmark = [
+    pytest.mark.isolated,
+    pytest.mark.skipif(
+        shutil.which("tmux") is None,
+        reason="tmux not on PATH",
+    ),
+]
 
 
 # ---------------------------------------------------------------------------

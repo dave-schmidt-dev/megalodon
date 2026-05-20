@@ -27,10 +27,10 @@ from __future__ import annotations
 import json
 import pathlib
 
-from .base import Capabilities, Event, ModelSpec
+from .base import Capabilities, Event, ModelSpec, _FollowupArgvDefault
 
 
-class VibeAdapter:
+class VibeAdapter(_FollowupArgvDefault):
     """Concrete HarnessAdapter for the Mistral Vibe CLI."""
 
     name: str = "vibe"
@@ -97,6 +97,10 @@ class VibeAdapter:
     ) -> pathlib.Path | None:
         # Returns the session directory; vibe writes session files inside it.
         return pathlib.Path.home() / ".vibe" / "sessions" / session_id
+
+    def session_log_dir(self, cwd: pathlib.Path) -> pathlib.Path | None:
+        # vibe has no pre-spawn session manifest surface for snapshot diff.
+        return None
 
     # ------------------------------------------------------------------
     # auth / capabilities

@@ -8,15 +8,20 @@ A blackboard multi-agent coordination protocol for parallel review, audit, synth
 
 **v9.1 shipped 2026-05-17:** mission-config-driven lanes/phases/harnesses via `.mission-config.yaml`. Operators define lane names, phase sequences, and per-lane harness bindings in one YAML file; the fleet reads it on every tick. Three reference docs: `docs/v9/v9-1-MISSION-CONFIG.md` (schema + examples), `docs/v9/v9-1-HARNESS-ADAPTERS.md` (Claude/Codex/Gemini must-pass + Copilot/Cursor/Vibe experimental), `docs/v9/v9-1-PREFLIGHT.md` (pre-flight CLI interview REPL). Quick-start: `python -m megalodon_ui.mission_config init` writes the default software-engineering template; `python -m megalodon_ui.preflight "<goal>"` opens a Claude-assisted interview and proposes a config. v9.0 missions with no `.mission-config.yaml` keep working — a back-compatible shape is auto-synthesized. Known limitations: non-Claude lanes are manual-tick in v9.1 (CR-4); watchdog S3 JSONL staleness detector is Claude-only (WR-3). Both deferred to v9.2 (`docs/v9/v9-2-ROADMAP.md`).
 
-## v9.2 — Tmux headless fleet (in progress)
+## v9.2 — Tmux headless fleet (SHIPPED 2026-05-18)
 
-- **Status:** P0 pre-flight + P1 server-owned tmux spawn shipped (commits `96d9989`..HEAD). Phases P2 auth, P3 stream tap, P4 SSE, P5 xterm.js dashboard, P6 follow-up prompts, P7 polish — open work.
+- **Status:** SHIPPED. All seven phases closed (P0 pre-flight, P1 server-owned tmux spawn, P2 cookie auth, P3 stream tap, P4 SSE pane-stream, P5 xterm.js dashboard, P6 follow-up prompts + respawn, P7 destructive teardown + watchdog + docs). Two real-tmux tests run CI-Linux-only via `pytest -p forked -m isolated` (macOS hits the 104-byte tmux socket-path limit on `tmp_path`).
+- **Doc set:** `docs/v9/v9-2-TMUX-FLEET.md` (architecture + operator runbook), `docs/v9/v9-2-AUTH.md` (bootstrap flow, cookie semantics, paste-token recovery), `docs/v9/v9-2-FOLLOWUP-PROMPTS.md` (adapter contract + respawn semantics + sentinel chunk). The earlier `docs/v9/v9-2-ROADMAP.md` is SUPERSEDED.
 - **Entry point:** `python -m megalodon_ui --mission-dir <path> --host 127.0.0.1 --port 8000`. The bind-fd-first sequence (see `megalodon_ui/__main__.py`) binds the listener BEFORE handing the fd to uvicorn; this closes the v9.1 OW-2 probe-close-rebind race. Exits: 6 (tmux < 2.6), 7 (mission dir invalid), 8 (token write failed), 9 (EADDRINUSE), 10 (socket path too long), 11 (lifespan startup timeout), 12 (disk free < 50 MB).
+- **Dashboard URL recovery:** the bootstrap URL is written to `<mission>/.fleet/dashboard.url` at startup. `cat <mission>/.fleet/dashboard.url` re-opens the dashboard from any shell (CV-11).
+- **Destructive teardown:** `DELETE /api/v1/fleet` (cookie-gated) or standalone `python -m megalodon_ui.shutdown --mission-dir <path>` (CLI; idempotent). Both kill the tmux server + unlink `ui.token`, `tmux.sock`, `dashboard.url`.
+- **`MEGALODON_FLEET_OWNED=1`** session-scoped env marker protects operator-created `lane-*` tmux sessions from orphan cleanup. Documented in `v9-2-TMUX-FLEET.md` §3.
 - **Preview without spawning:** `python -m megalodon_ui.preview --mission-dir <path> [--include-tmux-argv]`.
 - **Launcher:** `scripts/launch_fleet.sh` has three modes — `print` (default; delegates to preview), `--dry-run` (preview + tmux argv), `--spawn|--exec` (handoff via `exec uv run python -m megalodon_ui`). The `--no-launch` flag was removed in v9.2 (CV-4).
-- **Runtime state directory:** `<mission>/.fleet/` holds `tmux.sock`, `ui.token` (mode 0600), `dashboard.url`, per-lane `<short>.stream.log` (P3), and per-lane `<short>.session.txt` (P3). Always gitignored; test fixtures under `scripts/tests/fixtures/**/.fleet/**` are re-included.
+- **Runtime state directory:** `<mission>/.fleet/` holds `tmux.sock`, `ui.token` (mode 0600), `dashboard.url`, per-lane `<short>.stream.log`, and per-lane `<short>.session.txt`. Always gitignored; test fixtures under `scripts/tests/fixtures/**/.fleet/**` are re-included.
+- **Watchdog (P7.3):** stream-log size warn at `STREAM_LOG_WARN_BYTES` (500 MB) — emits `STREAM-LOG-SIZE` SIGNAL finding. Never auto-rotates.
 - **Test mode:** the lifespan honors `MEGALODON_LIFESPAN_TEST_MODE=1` to bypass fleet spawn for integration tests that exercise request handlers without a real tmux. Set automatically by the `async_client_with_lifespan` fixture and the `scripts/tests/conftest.py` autouse fixture.
-- **Plan & remaining work:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md` (plan v1.4) + `…-tasks.md`. See `HISTORY.md` for the implementation log.
+- **Plan archive:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md` (plan v1.4) + `…-tasks.md`. See `HISTORY.md` for the implementation log.
 
 ## v9.1 startup sequence
 

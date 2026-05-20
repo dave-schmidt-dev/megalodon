@@ -1,12 +1,19 @@
-> **Active plan:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md` (v1.4 — warp-complete)
-> **Active task file:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17-tasks.md` (refreshed 2026-05-17 against v1.4; 41 tasks across 7 phases).
-> v9.2 — tmux + web UI headless fleet. Implementation in progress.
+> **Active plan:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md` (v1.4 — warp-complete) — **SHIPPED 2026-05-18**.
+> **Active task file:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17-tasks.md` — all P0-P7 tasks `done`.
+> v9.2 — tmux + web UI headless fleet. Implementation complete.
 >
-> **P0 — Pre-flight: COMPLETE (2026-05-17)** — 9/9 tasks done.
+> **P0 — Pre-flight:** done (9/9).
+> **P1 — Server-owned tmux spawn + MissionConfig wiring:** done (7/8; Task 1.6 CV-9 deferred to v9.3).
+> **P2 — Cookie auth:** done.
+> **P3 — Stream tap (pipe-pane):** done.
+> **P4 — SSE pane-stream:** done.
+> **P5 — xterm.js dashboard:** done (Task 5.3 partial: 4 Playwright fixme stubs deferred to v9.3 fake-spawner mode).
+> **P6 — Follow-up prompts + respawn:** done (Task 6.4 partial: `followup.spec.ts` fixme — same blocker).
+> **P7 — Polish + destructive teardown + docs:** done (5 + 4 burn-residuals tasks). Surface: `DELETE /api/v1/fleet`, `python -m megalodon_ui.shutdown` CLI, watchdog `STREAM-LOG-SIZE` detector, v9-2-{TMUX-FLEET,AUTH,FOLLOWUP-PROMPTS}.md docs, audits, ruff cleanup (P7.6), real-tmux isolated tagging (P7.7), fake-spawner test mode + 4 fixme→active (P7.8), 9/13 v9.0 e2e fixes (P7.9 partial — 4 deferred to v9.3).
 >
-> **P1 — Server-owned tmux spawn + MissionConfig wiring: COMPLETE (2026-05-17)** — 7/8 tasks done; Task 1.6 (CV-9 concurrent port-bind regression) deferred to Phase 7. New modules: `megalodon_ui/{tmux,spawn,preview}.py` + lifespan in `server.py` + `get_adapter` in `harnesses/__init__.py`. Suite: 464 passed, 41 skipped, 3 xfailed, 0 failed. See HISTORY.md "v9.2 (in progress)" for per-task detail.
+> **Final suite:** 637 passed, 34 skipped, 12 deselected, 3 xfailed, 0 failed. All 4 real-tmux files tagged `@pytest.mark.isolated` (CI Linux only). v9.2 Playwright: 11/11 chromium-v92-dashboard specs green.
 >
-> **Open (next):** P2 auth, P3 stream tap, P4 SSE backend, P5 xterm.js dashboard, P6 follow-up prompts, P7 polish + docs + destructive teardown. Implementation paused at the P1 phase boundary per operator request.
+> See `HISTORY.md` "V9.2 SHIPPED" for the full delivery record.
 
 # Tasks — Run 2 (make-it-work)
 

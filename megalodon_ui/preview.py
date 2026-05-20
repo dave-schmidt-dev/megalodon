@@ -91,15 +91,24 @@ def preview(mission_dir: pathlib.Path, include_tmux_argv: bool = False) -> int:
             str(launch_file),
             model=model,
             cwd=mission_dir,
+            **({"live_repl": True} if lane.live_repl else {}),
         )
 
         parts = [
             f"lane={short}",
             f"cli={cli}",
             f"model={model}",
-            f"argv={shlex.join(argv)}",
         ]
+        if lane.live_repl:
+            parts.append("mode=live-repl")
+        parts.append(f"argv={shlex.join(argv)}")
         print("  ".join(parts))
+
+        if lane.live_repl and lane.initial_prompt:
+            preview_prompt = lane.initial_prompt
+            if len(preview_prompt) > 120:
+                preview_prompt = preview_prompt[:117] + "..."
+            print(f"  initial_prompt (sent post-spawn via tmux send-keys): {preview_prompt}")
 
         if include_tmux_argv:
             for tmux_line in _tmux_lines(mission_dir, short, argv, INITIAL_PANE_COLS, INITIAL_PANE_ROWS):

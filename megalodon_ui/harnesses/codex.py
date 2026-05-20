@@ -64,6 +64,39 @@ class CodexAdapter:
         return argv, {}
 
     # ------------------------------------------------------------------
+    # build_followup_argv (P6.1 + CR-2) — resume subcommand shape
+    # ------------------------------------------------------------------
+
+    def build_followup_argv(
+        self,
+        prompt: str,
+        *,
+        prior_session_id: str | None,
+        model: str,
+        cwd: pathlib.Path,
+        output_format: str = "text",
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[list[str], dict[str, str]]:
+        if prior_session_id:
+            argv = [
+                "codex",
+                "exec",
+                "resume",
+                prior_session_id,
+                prompt,
+            ]
+        else:
+            argv = [
+                "codex",
+                "exec",
+                "-m", model,
+                "-s", "read-only",
+                "--skip-git-repo-check",
+                prompt,
+            ]
+        return argv, {}
+
+    # ------------------------------------------------------------------
     # parse_stream_line
     # ------------------------------------------------------------------
 
@@ -90,7 +123,11 @@ class CodexAdapter:
         self, cwd: pathlib.Path, session_id: str
     ) -> pathlib.Path | None:
         # Returns the session directory; Codex writes multiple files inside it.
-        return pathlib.Path.home() / ".codex" / "sessions" / session_id
+        return self.session_log_dir(cwd) / session_id  # type: ignore[operator]
+
+    def session_log_dir(self, cwd: pathlib.Path) -> pathlib.Path | None:
+        # Codex namespaces sessions globally with UUIDs (not per-cwd).
+        return pathlib.Path.home() / ".codex" / "sessions"
 
     # ------------------------------------------------------------------
     # auth / capabilities

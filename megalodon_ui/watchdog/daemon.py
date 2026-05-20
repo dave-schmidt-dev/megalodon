@@ -18,8 +18,15 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from megalodon_ui._v92_constants import STREAM_LOG_WARN_BYTES
+
 from .alerts import AlertManager
-from .detectors import detect_jsonl_stale, detect_process, detect_status_stale
+from .detectors import (
+    detect_jsonl_stale,
+    detect_process,
+    detect_status_stale,
+    detect_stream_log_size,
+)
 
 if TYPE_CHECKING:
     from megalodon_ui.mission_config import LaneConfig, MissionConfig
@@ -127,6 +134,20 @@ def poll_once(
                         evidence=[f"JSONL {jsonl.name} > {jsonl_threshold}s old"],
                     )
                     continue
+
+        # S4 — stream-log size (P7.3)
+        stream_log = mission_dir / ".fleet" / f"{lane.short}.stream.log"
+        s4 = detect_stream_log_size(stream_log, STREAM_LOG_WARN_BYTES)
+        if s4 == "warn":
+            alerts.alert(
+                name,
+                "STREAM-LOG-SIZE",
+                evidence=[
+                    f"{stream_log.name} = {stream_log.stat().st_size} bytes"
+                    f" >= {STREAM_LOG_WARN_BYTES}"
+                ],
+            )
+            continue
 
         # Recovered
         alerts.recover(name)

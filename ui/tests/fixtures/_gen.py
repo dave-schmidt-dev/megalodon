@@ -194,10 +194,15 @@ def gen_medium(root: Path, rng, lanes=LANES_6, n_findings=12, with_failure_modes
         + "\n".join(rows) + "\n"
     )
 
-    # TASKS — minimal, just the 4 phases × 6 lanes shape
+    # TASKS — minimal, just the 4 phases × 6 lanes shape.
+    # Headers MUST match the canonical phase-name form used by .mission-events,
+    # tasks.js PHASE_TABS, and mission.js MANUAL_FLIPPABLE_PHASES_FALLBACK —
+    # otherwise `parse_tasks` buckets tasks under a key the FE never asks for
+    # and the kanban renders empty (T-A-CH-e2e / T-A-IT-e2e regression).
+    PHASE_HEADERS = ["PHASE-PLAN", "PHASE-CHALLENGE", "PHASE-BUILD", "PHASE-VERIFY"]
     task_lines = ["# Tasks\n"]
     for phase_idx in range(4):
-        task_lines.append(f"\n## PHASE {phase_idx+1}\n")
+        task_lines.append(f"\n## {PHASE_HEADERS[phase_idx]}\n")
         for lane in lanes:
             code = LANE_CODE[lane]
             tid = f"P{phase_idx+1}-{code}"

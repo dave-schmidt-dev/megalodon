@@ -225,6 +225,7 @@ def test_tmux_pre_flight(mission_3lane: Path, tmp_path: Path) -> None:
 # A proper integration test lives in test_real_tmux_spawn.py.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.nondestructive
 @pytest.mark.xfail(
     reason=(
         "SIGTERM propagation requires a long-running child process. "

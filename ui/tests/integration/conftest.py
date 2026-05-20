@@ -21,11 +21,21 @@ except ImportError:
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
+def _ignore_runtime_state(_src, names):
+    """Skip runtime artifacts that Playwright or earlier runs may have written.
+
+    .fleet/*.stream.log, .fleet/dashboard.url, .fleet/tmux.sock are runtime
+    state — they should not be carried into integration-test tmp copies of
+    the fixture. Also skips any UNIX socket (shutil.copytree errors on those).
+    """
+    return [n for n in names if n.endswith(".stream.log") or n == "tmux.sock" or n == "dashboard.url"]
+
+
 @pytest.fixture
 def fix_medium(tmp_path):
     """Copy fix-medium fixture to a tmpdir so tests can mutate it freely."""
     dst = tmp_path / "fix-medium"
-    shutil.copytree(FIXTURES / "fix-medium", dst)
+    shutil.copytree(FIXTURES / "fix-medium", dst, ignore=_ignore_runtime_state)
     return dst
 
 

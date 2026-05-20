@@ -29,6 +29,8 @@ import argparse
 import fcntl
 import hashlib
 import json
+import logging
+import logging.handlers
 import os
 import re
 import shutil
@@ -38,6 +40,49 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+# Per-mission rolling log for the queue applier. Operator-visible audit trail
+# of every intent the applier sees: who submitted, target file, intent type,
+# outcome (applied / rejected / reconciled). Defaults: 10MB per file, 2 backups
+# = 30MB max total. File lives in <mission>/.fleet/queue-applier.log so it's
+# gitignored alongside other runtime state.
+_APPLIER_LOG_MAX_BYTES = 10 * 1024 * 1024
+_APPLIER_LOG_BACKUPS = 2
+_log = logging.getLogger("megalodon.queue.applier")
+
+
+def _setup_applier_logger(mission_dir: Path) -> None:
+    """Wire the per-mission rolling file handler. Idempotent."""
+    log_path = mission_dir / ".fleet" / "queue-applier.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    # Don't double-attach if already configured for this path.
+    for h in _log.handlers:
+        if isinstance(h, logging.handlers.RotatingFileHandler):
+            if getattr(h, "baseFilename", "") == str(log_path):
+                return
+    handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=_APPLIER_LOG_MAX_BYTES,
+        backupCount=_APPLIER_LOG_BACKUPS,
+        encoding="utf-8",
+    )
+    # v9.3.6 — `%(asctime)s` defaults to time.localtime; we were appending a
+    # literal `Z` suffix that falsely claimed UTC. Anyone parsing the log
+    # (check_megalodon_workers.sh, stale-lane detector) saw timestamps 4 hours
+    # off in EDT and flagged active lanes as 200+ min stale. Switch the
+    # converter to gmtime so the `Z` suffix matches reality.
+    import time as _t
+    _fmt = logging.Formatter(
+        "%(asctime)sZ | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+    _fmt.converter = _t.gmtime
+    handler.setFormatter(_fmt)
+    _log.addHandler(handler)
+    _log.setLevel(logging.INFO)
+    # Don't propagate to root; we want a dedicated stream.
+    _log.propagate = False
 
 from .journal import Journal
 from .schemas import validate_payload
@@ -142,6 +187,10 @@ class Applier:
         self.setup_dirs()
         self.journal = Journal(self.journal_path)
         self._replay_journal_state()
+
+        # Wire the operator-visible rolling log.
+        _setup_applier_logger(self.mission_dir)
+        _log.info("applier init pid=%d mission=%s", os.getpid(), self.mission_dir)
 
     # ---- setup ----
 
@@ -267,11 +316,21 @@ class Applier:
                 self._applied_ids.add(rid)
                 self._archive(req_path, "applied", rid)
                 count += 1
+                _log.info(
+                    "APPLIED rid=%s agent=%s lane=%s intent=%s target=%s",
+                    rid, req.get("agent", "?"), req.get("submitting_lane", "?"),
+                    req.get("intent", "?"), req.get("target_file", "?"),
+                )
             except ValueError as e:
                 # Apply-time validation/precondition (B4 strict-owner, etc.).
                 self.journal.write_rejected(rid, str(e))
                 self._rejected_ids.add(rid)
                 self._reject(req_path, req, f"apply-failed: {e}")
+                _log.warning(
+                    "REJECTED rid=%s agent=%s lane=%s intent=%s target=%s reason=%s",
+                    rid, req.get("agent", "?"), req.get("submitting_lane", "?"),
+                    req.get("intent", "?"), req.get("target_file", "?"), str(e),
+                )
             except Exception as e:
                 # Unexpected (I/O, etc.) — record REJECTED but re-raise so
                 # the operator sees the underlying failure; the target file
@@ -280,6 +339,11 @@ class Applier:
                 self.journal.write_rejected(rid, f"unexpected: {e!r}")
                 self._rejected_ids.add(rid)
                 self._reject(req_path, req, f"apply-failed: {e!r}")
+                _log.error(
+                    "EXCEPTION rid=%s agent=%s lane=%s intent=%s target=%s err=%r",
+                    rid, req.get("agent", "?"), req.get("submitting_lane", "?"),
+                    req.get("intent", "?"), req.get("target_file", "?"), e,
+                )
                 raise
 
         return count

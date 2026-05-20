@@ -10,6 +10,33 @@
   <script src="/static/js/contract-trace.js"></script>
 </head>
 <body data-control-mode="false" data-last-event-id="">
+  <!-- Auth bootstrap: exchanges a bearer token (in `#t=...`) for a session cookie.
+       Runs before module scripts so cookie is present before any v9.2 API fetch.
+       FIX(bug-1): replaceState preserves current pathname+search instead of "/"
+       so deep-linked SPA routes survive the auth handshake. -->
+  <script>
+    window.__auth_bootstrap__ = (async () => {
+      const hash = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+      const token = hash.get("t");
+      if (!token) return null;
+      try {
+        const resp = await fetch("/api/v1/auth/exchange", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+          credentials: "same-origin",
+        });
+        if (!resp.ok) {
+          console.warn("[auth] exchange failed", resp.status);
+          return null;
+        }
+        return true;
+      } finally {
+        // Wipe the token from URL/history/bookmarks but preserve current page.
+        history.replaceState(null, "", location.pathname + location.search);
+      }
+    })();
+  </script>
   <noscript>This UI requires JavaScript.</noscript>
 
   <header role="banner" class="app-header">
@@ -20,16 +47,26 @@
 
     <div class="app-header__center">
       <ol class="phase-strip" aria-label="Mission phase">
-        <li class="phase-segment" data-testid="phase-segment-INIT">INIT</li>
-        <li class="phase-segment" data-testid="phase-segment-PHASE-PLAN">PLAN</li>
-        <li class="phase-segment" data-testid="phase-segment-PHASE-CHALLENGE">CHALLENGE</li>
-        <li class="phase-segment" data-testid="phase-segment-PHASE-BUILD">BUILD</li>
-        <li class="phase-segment" data-testid="phase-segment-PHASE-VERIFY">VERIFY</li>
-        <li class="phase-segment" data-testid="phase-segment-PHASE-RUN">RUN</li>
-        <li class="phase-segment" data-testid="phase-segment-PHASE-HEAL">HEAL</li>
-        <li class="phase-segment" data-testid="phase-segment-PHASE-OPERATOR-ACCEPTANCE">OP-ACK</li>
-        <li class="phase-segment" data-testid="phase-segment-DRAINING">DRAINING</li>
-        <li class="phase-segment" data-testid="phase-segment-COMPLETE">COMPLETE</li>
+        <li class="phase-segment" data-testid="phase-segment-INIT"
+          title="INIT: Mission bootstrap. Operator configures .mission-config.yaml and launches agents. No lane work begins until phase advances.">INIT</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-PLAN"
+          title="PHASE-PLAN: Lanes write their plan for the work. Synchronization barrier — no lane advances to BUILD until operator phase-flips.">PLAN</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-CHALLENGE"
+          title="PHASE-CHALLENGE: Lanes review each other's plans and raise objections. A second synchronization barrier before implementation begins.">CHALLENGE</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-BUILD"
+          title="PHASE-BUILD: Lanes implement their plans, hold claims, write findings. Main execution phase — most agent activity happens here.">BUILD</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-VERIFY"
+          title="PHASE-VERIFY: Tests run, integration checked. Lanes confirm their deliverables meet the spec before advancing.">VERIFY</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-RUN"
+          title="PHASE-RUN: Mission output deployed or executed. Operator-supervised; agents may still patch issues found live.">RUN</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-HEAL"
+          title="PHASE-HEAL: Post-failure recovery. Lanes diagnose and fix issues that surfaced in VERIFY or RUN.">HEAL</li>
+        <li class="phase-segment" data-testid="phase-segment-PHASE-OPERATOR-ACCEPTANCE"
+          title="PHASE-OPERATOR-ACCEPTANCE (OP-ACK): Operator reviews final output and signs off. No lane advances to COMPLETE without explicit approval.">OP-ACK</li>
+        <li class="phase-segment" data-testid="phase-segment-DRAINING"
+          title="DRAINING: Mission winding down. Agents complete in-flight tasks then go idle. No new claims accepted after this point.">DRAINING</li>
+        <li class="phase-segment" data-testid="phase-segment-COMPLETE"
+          title="COMPLETE: Mission finished. All deliverables written and accepted. Read-only archive state.">COMPLETE</li>
       </ol>
     </div>
 
@@ -40,6 +77,7 @@
         data-testid="action-toggle-control-mode"
         role="switch"
         aria-checked="false"
+        title="Toggle between Read-only mode (safe, no mutations) and Control mode (enables Reclaim, Phase Flip, and other operator actions that affect agents)."
       >
         <span class="control-mode-toggle__label" data-state="off">🔒 Read-only</span>
         <span class="control-mode-toggle__label" data-state="on">🔓 Control</span>

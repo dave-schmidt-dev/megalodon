@@ -65,6 +65,84 @@ def test_build_argv_text_default():
 # ---------------------------------------------------------------------------
 
 
+def test_build_argv_live_repl_omits_print_and_prompt():
+    """v9.3 dogfood: live_repl=True returns REPL argv (no --print, no prompt).
+
+    Now also injects a tight --allowedTools so the agent doesn't prompt for
+    every protocol primitive (claim mkdir, claim rm, Read/Edit/Write); but
+    Python and general Bash are explicitly NOT auto-approved — those surface
+    to the operator via the dashboard's permission_watcher.
+    """
+    argv, env = ADAPTER.build_argv(
+        "ignored-because-repl-takes-input-via-send-keys",
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+        live_repl=True,
+    )
+    assert argv[:2] == ["claude", "--model"]
+    assert "claude-opus-4-7" in argv
+    assert "--print" not in argv
+    assert env == {}
+    # allowedTools must be present and contain protocol primitives only
+    assert "--allowedTools" in argv
+    allowed_idx = argv.index("--allowedTools") + 1
+    allowed = argv[allowed_idx]
+    # Protocol primitives auto-approved
+    assert "Bash(mkdir claims/*)" in allowed
+    assert "Bash(rm -rf claims/*)" in allowed
+    assert "ScheduleWakeup" in allowed
+    assert "Read" in allowed and "Edit" in allowed and "Write" in allowed
+    # Read-only workspace shell ops auto-approved (v9.3 — "read from project
+    # workspace" is a basic capability, not a per-command decision).
+    for safe in ["Bash(ls:*)", "Bash(grep:*)", "Bash(cat:*)", "Bash(echo:*)",
+                 "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(rg:*)"]:
+        assert safe in allowed, f"missing safe shell op: {safe}"
+    # Read-only git auto-approved.
+    assert "Bash(git status*)" in allowed
+    assert "Bash(git diff*)" in allowed
+    assert "Bash(git log*)" in allowed
+    # Bare `python3 -c "..."` NOT auto-approved (arbitrary code injection).
+    assert "Bash(python" not in allowed
+    # find NOT auto-approved (has -exec arbitrary-command-execution).
+    assert "Bash(find:*)" not in allowed
+    # v9.3.3 — test runners auto-approved (operator-authorized at-launch).
+    # NARROW SCOPE (option 1): `uv run` is gated to invocations that DECLARE
+    # pytest in --with deps, so `uv run --with pytest ... pytest ...` from
+    # the launch template auto-approves but `uv run --with badpkg python -c
+    # "..."` still prompts.
+    assert "Bash(pytest:*)" in allowed
+    assert "Bash(uv run --with pytest*)" in allowed
+    assert "Bash(./scripts/run_e2e.sh*)" in allowed
+    assert "Bash(npx playwright:*)" in allowed
+    # Crucially the BROAD `Bash(uv run:*)` pattern is NOT present — that was
+    # the medium-risk surface the operator explicitly rejected.
+    assert "Bash(uv run:*)" not in allowed
+    # Wildcard / dangerous-rm NOT auto-approved.
+    assert "Bash(rm:*)" not in allowed
+    assert "Bash(*)" not in allowed
+    # Network ops NOT auto-approved EXCEPT localhost-scoped curl for queue endpoints.
+    assert "Bash(wget" not in allowed
+    # General-purpose curl (no host scope) must NOT be auto-approved.
+    assert "Bash(curl:*)" not in allowed
+    assert "Bash(curl -X*)" not in allowed
+    # But localhost-scoped curl IS allowed (agents call queue endpoints).
+    assert "Bash(curl -s http://127.0.0.1*)" in allowed
+    assert "Bash(curl -s -X POST http://127.0.0.1*)" in allowed
+
+
+def test_build_argv_live_repl_ignores_output_format():
+    """live_repl mode is REPL-only; output-format is meaningless."""
+    argv, _ = ADAPTER.build_argv(
+        "hello",
+        model="claude-sonnet-4-6",
+        cwd=Path("/tmp"),
+        output_format="stream-json",
+        live_repl=True,
+    )
+    assert "--output-format" not in argv
+    assert "stream-json" not in argv
+
+
 def test_build_argv_stream_json_when_supported():
     argv, env = ADAPTER.build_argv(
         "hello",

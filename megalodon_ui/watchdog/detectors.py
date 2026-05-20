@@ -54,3 +54,17 @@ def detect_jsonl_stale(log_path: Path, threshold_seconds: int) -> str:
         return "skip"
     age = time.time() - log_path.stat().st_mtime
     return "hung" if age > threshold_seconds else "ok"
+
+
+def detect_stream_log_size(stream_log: Path, threshold_bytes: int) -> str:
+    """S4 (P7.3) — 'warn' if stream log size at or above threshold; else 'ok'/'skip'.
+
+    Returns 'skip' when the file doesn't exist (lane has not produced bytes
+    yet). Returns 'warn' at boundary equality (size == threshold) so a
+    monotonically growing log triggers the alert exactly once at the crossing
+    rather than one byte late.
+    """
+    if not stream_log.exists():
+        return "skip"
+    size = stream_log.stat().st_size
+    return "warn" if size >= threshold_bytes else "ok"

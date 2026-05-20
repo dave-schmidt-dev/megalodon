@@ -1,20 +1,18 @@
 ---
 lane: TEST
 agent: agent-7248
-task: scratch
+task: scratch-notes
 severity: NIT
 utc: 2026-01-01T01:45Z
-artifact: synthetic (fixture)
 scratch: true
+artifact: synthetic (fixture)
 ---
 
-# Scratch: working notes
+# Scratch: TEST lane notes
 
 ## Summary
 
-Seeded fixture scratch file. Body intentionally minimal. Used by `test_status_view:53` to verify scratch-chip toggle filter behavior on the FINDINGS view.
-
-## Notes
-
-- Filename suffix `.scratch.md` is the convention; FE filter chip should toggle visibility based on this suffix OR `scratch: true` frontmatter.
-- This is one of N scratch files; tests assert toggling changes the rendered count.
+Ephemeral scratch finding used by the `scratch chip toggles scratch-file visibility`
+e2e test. Marked `scratch: true` in frontmatter so the FE filter chip can hide/show
+it. Regenerated alongside `_gen.py` output; if you re-run the generator, recreate
+this file.

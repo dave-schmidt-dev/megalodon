@@ -26,6 +26,10 @@ _ACTION_HINTS = {
         "Session JSONL has stopped writing despite STATUS heartbeat — likely hung "
         "mid-tool-call. Investigate."
     ),
+    "STREAM-LOG-SIZE": (
+        "Per-lane stream log has grown past the warn threshold. Rotate or "
+        "truncate `<mission>/.fleet/<short>.stream.log` to reclaim space."
+    ),
 }
 
 

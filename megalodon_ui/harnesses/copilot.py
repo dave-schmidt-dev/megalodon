@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import pathlib
 
-from .base import Capabilities, Event, ModelSpec
+from .base import Capabilities, Event, ModelSpec, _FollowupArgvDefault
 
 
-class CopilotAdapter:
+class CopilotAdapter(_FollowupArgvDefault):
     """Concrete HarnessAdapter for the GitHub Copilot CLI."""
 
     name: str = "copilot"
@@ -82,6 +82,10 @@ class CopilotAdapter:
     ) -> pathlib.Path | None:
         # Returns the session directory; Copilot writes state files inside it.
         return pathlib.Path.home() / ".copilot" / "session-state" / session_id
+
+    def session_log_dir(self, cwd: pathlib.Path) -> pathlib.Path | None:
+        # Copilot does not expose a stable session-id discovery surface.
+        return None
 
     # ------------------------------------------------------------------
     # auth / capabilities
