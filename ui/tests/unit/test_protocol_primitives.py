@@ -20,6 +20,7 @@ import pytest
 # Until then these tests skip cleanly so CI doesn't redbar on absent code.
 try:
     from megalodon_ui import primitives  # type: ignore[import-not-found]
+
     BACKEND_AVAILABLE = True
 except ImportError:
     primitives = None  # type: ignore[assignment]
@@ -120,8 +121,12 @@ def test_R10_a_atomic_completion_block(tmp_path):
     )
 
     primitives.mark_complete(
-        tmp_path, task_id="T1", agent="agent-X", lane="LANE-A",
-        finding="findings/agent-X-A-T1-2026.md", severity="MINOR",
+        tmp_path,
+        task_id="T1",
+        agent="agent-X",
+        lane="LANE-A",
+        finding="findings/agent-X-A-T1-2026.md",
+        severity="MINOR",
     )
 
     assert (tmp_path / "claims" / "T1" / "done").exists()
@@ -137,7 +142,9 @@ def test_R10_a_atomic_completion_block(tmp_path):
 def test_R11_a_phase_flip_winner_full_sequence(tmp_path):
     """T-R11-a — mkdir wins, all 4 post-mkdir steps complete."""
     setup_phase_flip_test(tmp_path, phase="PHASE-PLAN")
-    won = primitives.try_phase_flip(tmp_path, "PHASE-PLAN", "PHASE-CHALLENGE", "agent-X")
+    won = primitives.try_phase_flip(
+        tmp_path, "PHASE-PLAN", "PHASE-CHALLENGE", "agent-X"
+    )
     assert won is True
     last_event = (tmp_path / ".mission-events").read_text().strip().splitlines()[-1]
     assert "PHASE-PLAN->PHASE-CHALLENGE" in last_event
@@ -149,7 +156,9 @@ def test_R11_b_phase_flip_loser_no_op(tmp_path):
     """T-R11-b — mkdir loses (peer holds lock); flip is no-op."""
     setup_phase_flip_test(tmp_path, phase="PHASE-PLAN")
     (tmp_path / ".phase-flip-locks" / "PHASE-PLAN-to-PHASE-CHALLENGE").mkdir()
-    won = primitives.try_phase_flip(tmp_path, "PHASE-PLAN", "PHASE-CHALLENGE", "agent-X")
+    won = primitives.try_phase_flip(
+        tmp_path, "PHASE-PLAN", "PHASE-CHALLENGE", "agent-X"
+    )
     assert won is False
     # .mission-events untouched
     last_event = (tmp_path / ".mission-events").read_text().strip().splitlines()[-1]
@@ -174,7 +183,8 @@ def test_R11_c_crash_during_flip_recovery(tmp_path):
     old_ts = datetime(2026, 5, 16, 15, 30, tzinfo=timezone.utc).timestamp()
     os.utime(lock_dir, (old_ts, old_ts))
     primitives.detect_and_recover_stuck_flips(
-        tmp_path, now=datetime(2026, 5, 16, 15, 35, tzinfo=timezone.utc),
+        tmp_path,
+        now=datetime(2026, 5, 16, 15, 35, tzinfo=timezone.utc),
         stuck_after_seconds=60,
     )
     # After recovery, .mission-events should reflect the flip.
@@ -279,9 +289,27 @@ def test_severity_escalation_minor_to_major_with_one_peer():
 def test_severity_escalation_major_to_blocking_with_two_independent():
     """MAJOR → BLOCKING with 2+ INDEPENDENT lanes' Pass-1 (README.md:139)."""
     findings = [
-        {"severity": "MAJOR", "artifact": "x.py:42", "agent": "a", "lane": "A", "pass": 1},
-        {"severity": "MAJOR", "artifact": "x.py:42", "agent": "b", "lane": "B", "pass": 1},
-        {"severity": "MAJOR", "artifact": "x.py:42", "agent": "c", "lane": "C", "pass": 1},
+        {
+            "severity": "MAJOR",
+            "artifact": "x.py:42",
+            "agent": "a",
+            "lane": "A",
+            "pass": 1,
+        },
+        {
+            "severity": "MAJOR",
+            "artifact": "x.py:42",
+            "agent": "b",
+            "lane": "B",
+            "pass": 1,
+        },
+        {
+            "severity": "MAJOR",
+            "artifact": "x.py:42",
+            "agent": "c",
+            "lane": "C",
+            "pass": 1,
+        },
     ]
     assert primitives.compute_effective_severity(findings) == "BLOCKING"
 
@@ -290,8 +318,20 @@ def test_severity_escalation_major_to_blocking_with_two_independent():
 def test_severity_ack_verified_does_not_count_toward_quorum():
     """ACK-VERIFIED responses do NOT count toward quorum (README.md:139)."""
     findings = [
-        {"severity": "MAJOR", "artifact": "x.py:42", "agent": "a", "lane": "A", "pass": 1},
-        {"severity": "MAJOR", "artifact": "x.py:42", "agent": "b", "lane": "B", "pass": 2,
-         "type": "ACK-VERIFIED"},
+        {
+            "severity": "MAJOR",
+            "artifact": "x.py:42",
+            "agent": "a",
+            "lane": "A",
+            "pass": 1,
+        },
+        {
+            "severity": "MAJOR",
+            "artifact": "x.py:42",
+            "agent": "b",
+            "lane": "B",
+            "pass": 2,
+            "type": "ACK-VERIFIED",
+        },
     ]
     assert primitives.compute_effective_severity(findings) == "MAJOR"  # not BLOCKING

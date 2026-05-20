@@ -65,6 +65,9 @@ const fixtures = {
   mutationsChromium: prepareFixture('fix-medium', 'mut-c'),
   failureModesChromium: prepareFixture('fix-medium-failure-modes', 'fail-c'),
   v92Chromium: prepareFixture('fix-medium-v92', 'v92-c'),
+  gridChromium: prepareFixture('fix-small', 'grid-c'),
+  // Phase-1 smoke: same 3-lane fix-small fixture, fake spawner enabled.
+  gridSmokeChromium: prepareFixture('fix-small', 'smoke-c'),
   defaultWebkit: prepareFixture('fix-medium', 'def-w'),
   mutationsWebkit: prepareFixture('fix-medium', 'mut-w'),
   failureModesWebkit: prepareFixture('fix-medium-failure-modes', 'fail-w'),
@@ -72,13 +75,16 @@ const fixtures = {
 };
 
 // Port allocation: keep chromium on the original 8765-8767 plus 8768 for v92;
-// webkit gets 8775-8778. Mismatched-port assertions in specs read from baseURL,
-// not literal ports, so this is purely an operational convenience.
+// webkit gets 8775-8778. Grid project gets 8769. Smoke gets 8770.
+// Mismatched-port assertions in specs read from baseURL, not literal ports,
+// so this is purely an operational convenience.
 const ports = {
   defaultChromium: 8765,
   mutationsChromium: 8766,
   failureModesChromium: 8767,
   v92Chromium: 8768,
+  gridChromium: 8769,
+  gridSmokeChromium: 8770,
   defaultWebkit: 8775,
   mutationsWebkit: 8776,
   failureModesWebkit: 8777,
@@ -89,6 +95,50 @@ const SERVER_CMD = (port: number, missionDir: string) =>
   `uv run --directory ${path.resolve(__dirname, '..', '..', '..')} ` +
   `--with fastapi --with "uvicorn[standard]" --with sse-starlette --with pyyaml ` +
   `python3 -m megalodon_ui --port ${port} --mission-dir ${missionDir}`;
+
+// Parse `--project=<name>` / `--project <name>` from argv so we only spin up
+// the webServer(s) needed for the selected project. Without this, all 10
+// webServers start on every run regardless of --project=, causing slow startup
+// and parallel-execution port-collision races between concurrent test runs.
+// Empty set (no --project flag) → start everything (full multi-project run).
+function selectedProjectNames(): Set<string> {
+  const argv = process.argv;
+  const out = new Set<string>();
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--project' && argv[i + 1]) out.add(argv[i + 1]);
+    else if (a.startsWith('--project=')) out.add(a.slice('--project='.length));
+  }
+  return out;
+}
+
+const PROJECT_TO_PORT: Record<string, number> = {
+  'chromium-default': ports.defaultChromium,
+  'chromium-mutations': ports.mutationsChromium,
+  'chromium-failure-modes': ports.failureModesChromium,
+  'chromium-v92-dashboard': ports.v92Chromium,
+  'chromium-grid': ports.gridChromium,
+  'chromium-grid-smoke': ports.gridSmokeChromium,
+  'webkit-default': ports.defaultWebkit,
+  'webkit-mutations': ports.mutationsWebkit,
+  'webkit-failure-modes': ports.failureModesWebkit,
+  'webkit-v92-dashboard': ports.v92Webkit,
+};
+
+function filterWebServersByProject<T extends { url: string }>(all: T[]): T[] {
+  const sel = selectedProjectNames();
+  if (sel.size === 0) return all;
+  const wantedPorts = new Set<number>();
+  for (const p of sel) {
+    const port = PROJECT_TO_PORT[p];
+    if (port !== undefined) wantedPorts.add(port);
+  }
+  if (wantedPorts.size === 0) return all;
+  return all.filter(ws => {
+    const m = ws.url.match(/:(\d+)/);
+    return m ? wantedPorts.has(parseInt(m[1], 10)) : false;
+  });
+}
 
 const NON_MUTATION_DEFAULT_ENV = {
   // v9.0 specs only need request handlers + static rendering; bypass
@@ -107,14 +157,30 @@ const V92_ENV = {
   MEGALODON_FAKE_SPAWNER: '1',
 };
 
+// Smoke environment: fake spawner enabled so /__fake__/emit works and so lane
+// sessions are pre-populated (inject endpoint needs spawner.sessions). The
+// fake-spawner lifespan branch in server.py runs before the test_mode branch,
+// so MEGALODON_LIFESPAN_TEST_MODE would be a no-op here and is omitted.
+const GRID_SMOKE_ENV = {
+  MEGALODON_FAKE_SPAWNER: '1',
+};
+
 // Specs that belong to the v9.2 dashboard project (xterm dashboard + auth +
-// followup). They use the fake spawner and exchange state via /__fake__/*.
+// followup + terminal-pane component). They use the fake spawner and exchange
+// state via /__fake__/*.
 const V92_SPEC_PATTERN =
-  /(dashboard-loads|auth-redirect|streams-render|lane-exit-detected|followup-send-debounced|followup)\.spec\.ts$/;
+  /(dashboard-loads|auth-redirect|streams-render|lane-exit-detected|followup-send-debounced|followup|test_terminal_pane)\.spec\.ts$/;
 const FAILURE_MODES_PATTERN = /test_failure_modes\.spec\.ts$/;
 const MUTATIONS_PATTERN = /test_orchestrator_actions\.spec\.ts$/;
-// Everything that doesn't match the above three patterns belongs to *-default.
-const DEFAULT_IGNORE = [V92_SPEC_PATTERN, FAILURE_MODES_PATTERN, MUTATIONS_PATTERN];
+// Grid page specs run against the 3-lane fix-small fixture (chromium-grid project).
+// Also includes lane_detail spec which navigates from the grid.
+// The v9.4 phase-1 smoke spec runs against chromium-grid-smoke (fake spawner enabled).
+// The stale-badge spec (T2.8) runs under chromium-grid because it needs MEGALODON_FAKE_SPAWNER=1
+// (uses _test/stale_override endpoint) — chromium-grid now includes MEGALODON_FAKE_SPAWNER.
+const GRID_SPEC_PATTERN = /test_(grid_(lane_count|click_navigates)|lane_detail|activity_wall|stale_badge|v94_phase2_smoke|v94_phase3_smoke|findings_page|signals_page|mission_page|tasks_page|approval_rules)\.spec\.ts$/;
+const GRID_SMOKE_SPEC_PATTERN = /test_v94_phase1_smoke\.spec\.ts$/;
+// Everything that doesn't match the above four/five patterns belongs to *-default.
+const DEFAULT_IGNORE = [V92_SPEC_PATTERN, FAILURE_MODES_PATTERN, MUTATIONS_PATTERN, GRID_SPEC_PATTERN, GRID_SMOKE_SPEC_PATTERN];
 
 export default defineConfig({
   testDir: '.',
@@ -168,6 +234,20 @@ export default defineConfig({
       workers: 1,
       use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.v92Chromium}` },
     },
+    {
+      name: 'chromium-grid',
+      testMatch: GRID_SPEC_PATTERN,
+      fullyParallel: false,
+      workers: 1,
+      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.gridChromium}` },
+    },
+    {
+      name: 'chromium-grid-smoke',
+      testMatch: GRID_SMOKE_SPEC_PATTERN,
+      fullyParallel: false,
+      workers: 1,
+      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.gridSmokeChromium}` },
+    },
     // ---- WebKit (Safari engine) ----
     {
       name: 'webkit-default',
@@ -195,7 +275,7 @@ export default defineConfig({
     },
   ],
 
-  webServer: [
+  webServer: filterWebServersByProject([
     { command: SERVER_CMD(ports.defaultChromium, fixtures.defaultChromium),
       url: `http://127.0.0.1:${ports.defaultChromium}/`,
       reuseExistingServer: false, timeout: 30_000, env: NON_MUTATION_DEFAULT_ENV },
@@ -208,6 +288,15 @@ export default defineConfig({
     { command: SERVER_CMD(ports.v92Chromium, fixtures.v92Chromium),
       url: `http://127.0.0.1:${ports.v92Chromium}/`,
       reuseExistingServer: false, timeout: 30_000, env: V92_ENV },
+    // chromium-grid now uses MEGALODON_FAKE_SPAWNER=1 so test_stale_badge.spec.ts
+    // can call _test/stale_override (T2.8). Existing grid/lane_detail specs are
+    // unaffected — they don't test spawner behaviour directly.
+    { command: SERVER_CMD(ports.gridChromium, fixtures.gridChromium),
+      url: `http://127.0.0.1:${ports.gridChromium}/`,
+      reuseExistingServer: false, timeout: 30_000, env: GRID_SMOKE_ENV },
+    { command: SERVER_CMD(ports.gridSmokeChromium, fixtures.gridSmokeChromium),
+      url: `http://127.0.0.1:${ports.gridSmokeChromium}/`,
+      reuseExistingServer: false, timeout: 30_000, env: GRID_SMOKE_ENV },
     { command: SERVER_CMD(ports.defaultWebkit, fixtures.defaultWebkit),
       url: `http://127.0.0.1:${ports.defaultWebkit}/`,
       reuseExistingServer: false, timeout: 30_000, env: NON_MUTATION_DEFAULT_ENV },
@@ -220,5 +309,5 @@ export default defineConfig({
     { command: SERVER_CMD(ports.v92Webkit, fixtures.v92Webkit),
       url: `http://127.0.0.1:${ports.v92Webkit}/`,
       reuseExistingServer: false, timeout: 30_000, env: V92_ENV },
-  ],
+  ]),
 });

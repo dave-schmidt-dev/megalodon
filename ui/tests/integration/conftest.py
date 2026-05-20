@@ -12,6 +12,7 @@ import pytest_asyncio
 
 try:
     from megalodon_ui.server import make_app  # type: ignore[import-not-found]
+
     _BACKEND_AVAILABLE = True
 except ImportError:
     make_app = None  # type: ignore[assignment]
@@ -28,7 +29,11 @@ def _ignore_runtime_state(_src, names):
     state — they should not be carried into integration-test tmp copies of
     the fixture. Also skips any UNIX socket (shutil.copytree errors on those).
     """
-    return [n for n in names if n.endswith(".stream.log") or n == "tmux.sock" or n == "dashboard.url"]
+    return [
+        n
+        for n in names
+        if n.endswith(".stream.log") or n == "tmux.sock" or n == "dashboard.url"
+    ]
 
 
 @pytest.fixture
@@ -69,9 +74,13 @@ async def async_client_with_lifespan(fix_medium, monkeypatch):
             yield client
 
 
-async def wait_for_queue_applied(client, request_id: str, timeout: float = 5.0,
-                                  poll_interval: float = 0.05,
-                                  mission_dir=None) -> dict:
+async def wait_for_queue_applied(
+    client,
+    request_id: str,
+    timeout: float = 5.0,
+    poll_interval: float = 0.05,
+    mission_dir=None,
+) -> dict:
     """Drive the queue applier then poll /api/v1/queue/{request_id} until status != 'pending'.
 
     In integration tests the applier daemon is not running, so we instantiate

@@ -12,7 +12,13 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .schema import HarnessBinding, LaneConfig, MissionConfig, MissionInfo, TaskIdPattern
+from .schema import (
+    HarnessBinding,
+    LaneConfig,
+    MissionConfig,
+    MissionInfo,
+    TaskIdPattern,
+)
 
 
 def _synthesize_utc_started(mission_dir: Path) -> str:
@@ -28,14 +34,20 @@ def _synthesize_utc_started(mission_dir: Path) -> str:
                 fm = yaml.safe_load(m.group(1)) or {}
                 if isinstance(fm, dict) and "utc_started" in fm:
                     val = fm["utc_started"]
-                    if isinstance(val, str) and re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", val):
+                    if isinstance(val, str) and re.match(
+                        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", val
+                    ):
                         return val
             except yaml.YAMLError:
                 pass
-        return datetime.fromtimestamp(mission_md.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return datetime.fromtimestamp(
+            mission_md.stat().st_mtime, tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
     events = mission_dir / ".mission-events"
     if events.exists():
-        return datetime.fromtimestamp(events.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return datetime.fromtimestamp(events.stat().st_mtime, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -49,18 +61,60 @@ def synthesize(mission_dir: Path) -> MissionConfig:
             description="auto-synthesized back-compat shape for v9.0 mission",
         ),
         lanes=[
-            LaneConfig(name="AUDIT",     short="A", harness=HarnessBinding(cli="claude", model="claude-sonnet-4-6"), cadence_seconds=300),
-            LaneConfig(name="ARCHITECT", short="B", harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),   cadence_seconds=300),
-            LaneConfig(name="BACKEND",   short="C", harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),   cadence_seconds=180),
-            LaneConfig(name="FRONTEND",  short="D", harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),   cadence_seconds=180),
-            LaneConfig(name="TEST",      short="E", harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),   cadence_seconds=180),
-            LaneConfig(name="META",      short="F", harness=HarnessBinding(cli="claude", model="claude-sonnet-4-6"), cadence_seconds=420),
+            LaneConfig(
+                name="AUDIT",
+                short="A",
+                harness=HarnessBinding(cli="claude", model="claude-sonnet-4-6"),
+                cadence_seconds=300,
+            ),
+            LaneConfig(
+                name="ARCHITECT",
+                short="B",
+                harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),
+                cadence_seconds=300,
+            ),
+            LaneConfig(
+                name="BACKEND",
+                short="C",
+                harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),
+                cadence_seconds=180,
+            ),
+            LaneConfig(
+                name="FRONTEND",
+                short="D",
+                harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),
+                cadence_seconds=180,
+            ),
+            LaneConfig(
+                name="TEST",
+                short="E",
+                harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),
+                cadence_seconds=180,
+            ),
+            LaneConfig(
+                name="META",
+                short="F",
+                harness=HarnessBinding(cli="claude", model="claude-sonnet-4-6"),
+                cadence_seconds=420,
+            ),
         ],
-        phases=["INIT", "PHASE-PLAN", "PHASE-CHALLENGE", "PHASE-BUILD", "PHASE-VERIFY",
-                "PHASE-RUN", "PHASE-HEAL", "PHASE-OPERATOR-ACCEPTANCE", "DRAINING", "COMPLETE"],
-        task_id_patterns=TaskIdPattern(patterns=[
-            r"^(P\d+(\.\d+)?(-[A-F](-to-[A-F])?)?|P\d+-RUN-[A-Z0-9_-]+|REPAIR-[A-Z0-9_-]+|OPERATOR-[A-Z_-]+|S-\d+|TEST-\d+|CHALLENGE-[A-Z0-9_-]+)$"
-        ]),
+        phases=[
+            "INIT",
+            "PHASE-PLAN",
+            "PHASE-CHALLENGE",
+            "PHASE-BUILD",
+            "PHASE-VERIFY",
+            "PHASE-RUN",
+            "PHASE-HEAL",
+            "PHASE-OPERATOR-ACCEPTANCE",
+            "DRAINING",
+            "COMPLETE",
+        ],
+        task_id_patterns=TaskIdPattern(
+            patterns=[
+                r"^(P\d+(\.\d+)?(-[A-F](-to-[A-F])?)?|P\d+-RUN-[A-Z0-9_-]+|REPAIR-[A-Z0-9_-]+|OPERATOR-[A-Z_-]+|S-\d+|TEST-\d+|CHALLENGE-[A-Z0-9_-]+)$"
+            ]
+        ),
         orchestrator_pseudo_lane="META",  # v9.0 back-compat — server.py uses submitting_lane="META"
         # Match mission.js `TASK_SECTIONS_FALLBACK` 1-for-1 so the FE select
         # offers every canonical section the operator can inject into.

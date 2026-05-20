@@ -46,28 +46,43 @@ _FORBIDDEN_RE = re.compile(
 )
 
 # Files allowed to mention these patterns (e.g., plan docs, this test).
-_ALLOWLIST_RELATIVE: frozenset[str] = frozenset({
-    # Self: constructed strings won't match anyway, but explicit is kinder
-    # to future readers running the file by hand.
-    "scripts/tests/test_no_legacy_auth_artifacts.py",
-})
+_ALLOWLIST_RELATIVE: frozenset[str] = frozenset(
+    {
+        # Self: constructed strings won't match anyway, but explicit is kinder
+        # to future readers running the file by hand.
+        "scripts/tests/test_no_legacy_auth_artifacts.py",
+    }
+)
 
 # File extensions to scan; binary/asset extensions are skipped wholesale.
-_SCAN_SUFFIXES: frozenset[str] = frozenset({
-    ".py", ".js", ".ts", ".tsx", ".html", ".css", ".md", ".json", ".yaml", ".yml",
-})
+_SCAN_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".html",
+        ".css",
+        ".md",
+        ".json",
+        ".yaml",
+        ".yml",
+    }
+)
 
 # Generated / vendored paths to skip — bundled JS, build outputs, caches.
-_SKIP_PATH_PARTS: frozenset[str] = frozenset({
-    "node_modules",
-    "__pycache__",
-    ".pytest_cache",
-    "playwright-report",
-    "test-results",
-    "dist",
-    "build",
-    ".venv",
-})
+_SKIP_PATH_PARTS: frozenset[str] = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        "playwright-report",
+        "test-results",
+        "dist",
+        "build",
+        ".venv",
+    }
+)
 
 
 def _iter_scanned_files() -> list[Path]:

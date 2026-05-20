@@ -13,6 +13,7 @@ This file builds a minimal mission in tmp_path with:
 Then verifies that GET /api/v1/state and GET /api/v1/tasks correctly parse
 those rows/tasks via the ctx-bound regex.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -21,6 +22,7 @@ import pytest
 
 try:
     from megalodon_ui.server import make_app
+
     _BACKEND_AVAILABLE = True
 except ImportError:
     make_app = None  # type: ignore[assignment]

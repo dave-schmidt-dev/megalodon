@@ -8,6 +8,7 @@ falsely flagged active lanes as 200+ minutes stale.
 
 Fix: set the Formatter's `converter = time.gmtime` so the `Z` suffix matches.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,7 +20,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import pytest
 
 from megalodon_ui.queue.applier import _setup_applier_logger
 
@@ -59,7 +59,9 @@ def test_applier_log_timestamp_is_actual_utc(tmp_path):
     # The parsed timestamp (claimed UTC by the trailing `Z`) must fall within
     # the window we captured before/after. Tolerance: 2 seconds either side
     # for filesystem flush + clock granularity.
-    assert before_utc.timestamp() - 2 <= parsed.timestamp() <= after_utc.timestamp() + 2, (
+    assert (
+        before_utc.timestamp() - 2 <= parsed.timestamp() <= after_utc.timestamp() + 2
+    ), (
         f"timestamp drift: parsed={parsed.isoformat()} "
         f"before={before_utc.isoformat()} after={after_utc.isoformat()}. "
         "If parsed is ~4 hours off, the Formatter is still using localtime."

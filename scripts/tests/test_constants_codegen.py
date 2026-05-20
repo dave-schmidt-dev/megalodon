@@ -1,8 +1,7 @@
 """V9 M4 codegen tests."""
+
 from __future__ import annotations
 
-import importlib
-import io
 import sys
 from pathlib import Path
 
@@ -42,6 +41,7 @@ def test_tuple_constant_emitted_as_js_array():
 
 def test_skips_private_attributes(monkeypatch):
     import megalodon_ui.constants as c
+
     monkeypatch.setattr(c, "_PRIVATE", "x", raising=False)
     js = gen_js_constants.generate_js()
     assert "_PRIVATE" not in js
@@ -49,6 +49,7 @@ def test_skips_private_attributes(monkeypatch):
 
 def test_skips_non_upper_attributes(monkeypatch):
     import megalodon_ui.constants as c
+
     monkeypatch.setattr(c, "camelCase", "x", raising=False)
     monkeypatch.setattr(c, "snake_case", "x", raising=False)
     js = gen_js_constants.generate_js()
@@ -59,6 +60,7 @@ def test_skips_non_upper_attributes(monkeypatch):
 def test_unsupported_type_raises():
     # Simulate by adding a dict at runtime; codegen should refuse.
     import megalodon_ui.constants as c
+
     original = getattr(c, "BAD_DICT", None)
     c.BAD_DICT = {"a": 1}
     try:

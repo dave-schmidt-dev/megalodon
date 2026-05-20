@@ -1,4 +1,5 @@
 """Megalodon v9.1 harness adapters package."""
+
 from __future__ import annotations
 
 from functools import lru_cache

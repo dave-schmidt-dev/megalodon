@@ -90,6 +90,7 @@ async def test_token_write_mode_survives_permissive_umask_in_lifespan(
     write boundary must still produce 0600 — the audit boundary that protects
     the bearer file across the whole lifespan-up window."""
     import os
+
     fleet = fix_medium / ".fleet"
     fleet.mkdir(parents=True, exist_ok=True)
     token_path = fleet / "ui.token"

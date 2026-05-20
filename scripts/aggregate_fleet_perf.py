@@ -7,6 +7,7 @@ summary suitable for feeding A3 fleet-matrix decisions on the next mission.
 Operator runs post-mission:
     python3 scripts/aggregate_fleet_perf.py --mission-dir <mission>
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,12 +41,16 @@ def aggregate(mission_dir: Path, output: Path) -> dict:
     for lane, ticks in by_lane.items():
         summary[lane] = {
             "tick_count": len(ticks),
-            "tasks_completed": sum(len(t.get("tasks_completed", []) or []) for t in ticks),
+            "tasks_completed": sum(
+                len(t.get("tasks_completed", []) or []) for t in ticks
+            ),
             "cas_retries": sum(t.get("cas_retries", 0) or 0 for t in ticks),
             "repair_injections_received": sum(
                 len(t.get("repair_injections_received", []) or []) for t in ticks
             ),
-            "total_walltime_seconds": sum(t.get("walltime_seconds", 0) or 0 for t in ticks),
+            "total_walltime_seconds": sum(
+                t.get("walltime_seconds", 0) or 0 for t in ticks
+            ),
         }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({"lanes": summary}, indent=2))

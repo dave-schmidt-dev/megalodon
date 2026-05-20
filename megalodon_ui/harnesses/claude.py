@@ -28,7 +28,9 @@ class ClaudeAdapter:
 
     name: str = "claude"
     default_model: str = "claude-opus-4-7"
-    supports_autonomous_loop = True  # CR-4: only Claude supports autonomous loop in v9.1
+    supports_autonomous_loop = (
+        True  # CR-4: only Claude supports autonomous loop in v9.1
+    )
 
     available_models: tuple[ModelSpec, ...] = (
         ModelSpec(id="claude-opus-4-7", aliases=("opus",), is_default=True),
@@ -54,6 +56,7 @@ class ClaudeAdapter:
         output_format: str = "text",
         extra_env: dict[str, str] | None = None,
         live_repl: bool = False,
+        extra_allowed_tools: list[str] | None = None,
     ) -> tuple[list[str], dict[str, str]]:
         if live_repl:
             # --allowedTools policy for live_repl agents:
@@ -121,6 +124,12 @@ class ClaudeAdapter:
                 "Bash(./scripts/run_e2e.sh*) Bash(scripts/run_e2e.sh*) "
                 "Bash(npx playwright:*) Bash(npm test*) Bash(npm run test*)"
             )
+            # PM-8: append operator-approved patterns from .fleet/approval-rules.json.
+            # Patterns are space-separated as additional entries in the single
+            # --allowedTools value string (same format as the static allowlist above;
+            # confirmed by T3.0 doc: CLI accepts space-separated patterns in one arg).
+            if extra_allowed_tools:
+                allowed = allowed + " " + " ".join(extra_allowed_tools)
             return ["claude", "--model", model, "--allowedTools", allowed], {}
         argv = ["claude", "--print", "--model", model]
         if output_format == "stream-json":

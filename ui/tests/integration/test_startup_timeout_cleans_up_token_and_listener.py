@@ -12,6 +12,7 @@ lifespan is a no-op that returns immediately, so the server exits 0 without
 triggering cleanup. This entire test is marked xfail until Task 1.5 lands.
 TODO: remove xfail marker when Task 1.5 lifespan timeout integration is merged.
 """
+
 from __future__ import annotations
 
 import os
@@ -54,10 +55,14 @@ def test_startup_timeout_cleans_up_token_and_listener(tmp_path: Path) -> None:
     proc = subprocess.run(
         [
             sys.executable,
-            "-m", "megalodon_ui",
-            "--mission-dir", str(tmp_path),
-            "--port", str(port),
-            "--host", "127.0.0.1",
+            "-m",
+            "megalodon_ui",
+            "--mission-dir",
+            str(tmp_path),
+            "--port",
+            str(port),
+            "--host",
+            "127.0.0.1",
         ],
         env=env,
         timeout=15,
@@ -73,7 +78,9 @@ def test_startup_timeout_cleans_up_token_and_listener(tmp_path: Path) -> None:
 
     # Credential files must have been cleaned up.
     assert not token_path.exists(), f"ui.token still exists after exit 11: {token_path}"
-    assert not url_path.exists(), f"dashboard.url still exists after exit 11: {url_path}"
+    assert not url_path.exists(), (
+        f"dashboard.url still exists after exit 11: {url_path}"
+    )
 
     # Listener port must be rebindable — uvicorn must have released it.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

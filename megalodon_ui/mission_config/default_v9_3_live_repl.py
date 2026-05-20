@@ -23,7 +23,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import default_v9_0_shape
-from .schema import HarnessBinding, LaneConfig, MissionConfig, MissionInfo, TaskIdPattern
+from .schema import (
+    HarnessBinding,
+    LaneConfig,
+    MissionConfig,
+    MissionInfo,
+    TaskIdPattern,
+)
 
 
 # Short inline prompt: stays under Claude Code's TUI paste-detection heuristic
@@ -54,53 +60,71 @@ def synthesize(mission_dir: Path) -> MissionConfig:
         ),
         lanes=[
             LaneConfig(
-                name="AUDIT", short="A",
+                name="AUDIT",
+                short="A",
                 role="AUDIT — scrutinize protocol adherence, race conditions, security",
                 harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),
                 live_repl=True,
                 initial_prompt=_initial_prompt("AUDIT"),
             ),
             LaneConfig(
-                name="ARCHITECT", short="B",
+                name="ARCHITECT",
+                short="B",
                 role="ARCHITECT — design specs, ADRs, integration shapes",
                 harness=HarnessBinding(cli="claude", model="claude-opus-4-7"),
                 live_repl=True,
                 initial_prompt=_initial_prompt("ARCHITECT"),
             ),
             LaneConfig(
-                name="BACKEND", short="C",
+                name="BACKEND",
+                short="C",
                 role="BACKEND — implement server/primitives/adapters in megalodon_ui/",
                 harness=HarnessBinding(cli="claude", model="claude-sonnet-4-6"),
                 live_repl=True,
                 initial_prompt=_initial_prompt("BACKEND"),
             ),
             LaneConfig(
-                name="FRONTEND", short="D",
+                name="FRONTEND",
+                short="D",
                 role="FRONTEND — implement UI in ui/static/, wire dashboard forms",
                 harness=HarnessBinding(cli="claude", model="claude-sonnet-4-6"),
                 live_repl=True,
                 initial_prompt=_initial_prompt("FRONTEND"),
             ),
             LaneConfig(
-                name="TEST", short="E",
+                name="TEST",
+                short="E",
                 role="TEST — write/run pytest + playwright suites, eliminate skipped/xfail",
                 harness=HarnessBinding(cli="claude", model="claude-sonnet-4-6"),
                 live_repl=True,
                 initial_prompt=_initial_prompt("TEST"),
             ),
             LaneConfig(
-                name="META", short="F",
+                name="META",
+                short="F",
                 role="META — observe agent behavior, track tick activity, mid/final reports",
                 harness=HarnessBinding(cli="claude", model="claude-haiku-4-5-20251001"),
                 live_repl=True,
                 initial_prompt=_initial_prompt("META"),
             ),
         ],
-        phases=["INIT", "PHASE-PLAN", "PHASE-CHALLENGE", "PHASE-BUILD", "PHASE-VERIFY",
-                "PHASE-RUN", "PHASE-HEAL", "PHASE-OPERATOR-ACCEPTANCE", "DRAINING", "COMPLETE"],
-        task_id_patterns=TaskIdPattern(patterns=[
-            r"^(P\d+(\.\d+)?(-[A-F](-to-[A-F])?)?|P\d+-RUN-[A-Z0-9_-]+|REPAIR-[A-Z0-9_-]+|OPERATOR-[A-Z_-]+|S-\d+|TEST-\d+|CHALLENGE-[A-Z0-9_-]+|OA-[A-Z0-9_-]+)$"
-        ]),
+        phases=[
+            "INIT",
+            "PHASE-PLAN",
+            "PHASE-CHALLENGE",
+            "PHASE-BUILD",
+            "PHASE-VERIFY",
+            "PHASE-RUN",
+            "PHASE-HEAL",
+            "PHASE-OPERATOR-ACCEPTANCE",
+            "DRAINING",
+            "COMPLETE",
+        ],
+        task_id_patterns=TaskIdPattern(
+            patterns=[
+                r"^(P\d+(\.\d+)?(-[A-F](-to-[A-F])?)?|P\d+-RUN-[A-Z0-9_-]+|REPAIR-[A-Z0-9_-]+|OPERATOR-[A-Z_-]+|S-\d+|TEST-\d+|CHALLENGE-[A-Z0-9_-]+|OA-[A-Z0-9_-]+)$"
+            ]
+        ),
         orchestrator_pseudo_lane="META",
         task_sections=[
             "PHASE 1 — PLAN",

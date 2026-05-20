@@ -1,4 +1,5 @@
 """V9 A1 — watchdog detectors S1, S2, S3."""
+
 from __future__ import annotations
 
 import os
@@ -37,10 +38,14 @@ def detect_status_stale(status_md: Path, lane: str, threshold_seconds: int) -> s
         if m["lane"].strip() == lane:
             last_utc = m["last_utc"].strip()
             try:
-                dt = datetime.strptime(last_utc, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                dt = datetime.strptime(last_utc, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc
+                )
             except ValueError:
                 try:
-                    dt = datetime.strptime(last_utc, "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
+                    dt = datetime.strptime(last_utc, "%Y-%m-%dT%H:%MZ").replace(
+                        tzinfo=timezone.utc
+                    )
                 except ValueError:
                     return "unknown"
             age = (datetime.now(timezone.utc) - dt).total_seconds()

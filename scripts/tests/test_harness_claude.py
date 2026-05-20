@@ -13,7 +13,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from megalodon_ui.harnesses.claude import ClaudeAdapter
-from megalodon_ui.harnesses.base import Event
 
 ADAPTER = ClaudeAdapter()
 
@@ -94,8 +93,16 @@ def test_build_argv_live_repl_omits_print_and_prompt():
     assert "Read" in allowed and "Edit" in allowed and "Write" in allowed
     # Read-only workspace shell ops auto-approved (v9.3 — "read from project
     # workspace" is a basic capability, not a per-command decision).
-    for safe in ["Bash(ls:*)", "Bash(grep:*)", "Bash(cat:*)", "Bash(echo:*)",
-                 "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(rg:*)"]:
+    for safe in [
+        "Bash(ls:*)",
+        "Bash(grep:*)",
+        "Bash(cat:*)",
+        "Bash(echo:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(wc:*)",
+        "Bash(rg:*)",
+    ]:
         assert safe in allowed, f"missing safe shell op: {safe}"
     # Read-only git auto-approved.
     assert "Bash(git status*)" in allowed
@@ -187,7 +194,5 @@ def test_help_smoke():
         pytest.skip("claude CLI not found")
     if os.environ.get("CI"):
         pytest.skip("smoke tests disabled in CI")
-    result = subprocess.run(
-        ["claude", "--help"], capture_output=True, timeout=10
-    )
+    result = subprocess.run(["claude", "--help"], capture_output=True, timeout=10)
     assert result.returncode == 0

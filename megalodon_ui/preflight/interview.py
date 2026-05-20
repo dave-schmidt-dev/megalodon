@@ -164,7 +164,9 @@ def run_interview(
             # Inner loop: only accept approve/abandon — do NOT invoke Claude again
             while True:
                 try:
-                    operator_input = input("Type 'approve' to accept or 'abandon' to exit: ").strip()
+                    operator_input = input(
+                        "Type 'approve' to accept or 'abandon' to exit: "
+                    ).strip()
                 except EOFError:
                     return None, current_yaml
                 if operator_input.lower() == "approve":

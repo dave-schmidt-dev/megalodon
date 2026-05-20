@@ -5,13 +5,13 @@ CV-3: S2 (STATUS row stale) must fire for non-Claude lanes exactly as it does
 WR-3: S3 (JSONL log stale) must be skipped for non-Claude lanes; the known
       limitation is documented in daemon.py and announced at startup.
 """
+
 from __future__ import annotations
 
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -98,24 +98,16 @@ def test_s3_jsonl_detector_skipped_for_non_claude_lane(tmp_path, monkeypatch, ca
     # STATUS row is fresh → S2 will NOT fire; S3 must also not fire.
     status = mission / "STATUS.md"
     fresh_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    status.write_text(
-        f"| CODEX | agent-codex | working: task | {fresh_utc} | foo |\n"
-    )
+    status.write_text(f"| CODEX | agent-codex | working: task | {fresh_utc} | foo |\n")
 
     # Give the lane a PID so S3 *would* run if not gated.
     fake_pid = 99999
-    monkeypatch.setattr(
-        "megalodon_ui.watchdog.daemon._read_pid", lambda lane: fake_pid
-    )
+    monkeypatch.setattr("megalodon_ui.watchdog.daemon._read_pid", lambda lane: fake_pid)
     # S1: declare the fake pid alive so the loop doesn't stop at CRASHED.
-    monkeypatch.setattr(
-        "megalodon_ui.watchdog.daemon.detect_process", lambda pid: "ok"
-    )
+    monkeypatch.setattr("megalodon_ui.watchdog.daemon.detect_process", lambda pid: "ok")
     # _find_jsonl returns None (no JSONL on disk) — but even if it returned a
     # path, S3 must be skipped for non-Claude lanes.
-    monkeypatch.setattr(
-        "megalodon_ui.watchdog.daemon._find_jsonl", lambda pid: None
-    )
+    monkeypatch.setattr("megalodon_ui.watchdog.daemon._find_jsonl", lambda pid: None)
 
     _, lanes = _make_codex_config()
 

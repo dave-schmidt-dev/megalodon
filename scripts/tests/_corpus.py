@@ -51,19 +51,42 @@ def positive_corpus() -> list[str]:
     also match the v9.1 builder output)."""
     return [
         # P\d+(\.\d+)?(-[A-F](-to-[A-F])?)? family (8 cases)
-        "P1", "P2.5", "P3-A", "P3-A-to-F", "P10", "P0.1", "P0-B", "P9-F-to-A",
+        "P1",
+        "P2.5",
+        "P3-A",
+        "P3-A-to-F",
+        "P10",
+        "P0.1",
+        "P0-B",
+        "P9-F-to-A",
         # P\d+-RUN-... family (4)
-        "P4-RUN-MUTATIONS-E2E-5", "P5-RUN-X", "P0-RUN-Z_Y", "P11-RUN-AB-CD",
+        "P4-RUN-MUTATIONS-E2E-5",
+        "P5-RUN-X",
+        "P0-RUN-Z_Y",
+        "P11-RUN-AB-CD",
         # REPAIR-... (4)
-        "REPAIR-X", "REPAIR-CLAIM_RACE", "REPAIR-MIGRATE-V8", "REPAIR-A",
+        "REPAIR-X",
+        "REPAIR-CLAIM_RACE",
+        "REPAIR-MIGRATE-V8",
+        "REPAIR-A",
         # OPERATOR-... (4)
-        "OPERATOR-NOTIFY", "OPERATOR-ACK", "OPERATOR-PHASE_FLIP", "OPERATOR-A",
+        "OPERATOR-NOTIFY",
+        "OPERATOR-ACK",
+        "OPERATOR-PHASE_FLIP",
+        "OPERATOR-A",
         # S-\d+ (3)
-        "S-1", "S-12", "S-999",
+        "S-1",
+        "S-12",
+        "S-999",
         # TEST-\d+ (3)
-        "TEST-1", "TEST-7", "TEST-100",
+        "TEST-1",
+        "TEST-7",
+        "TEST-100",
         # CHALLENGE-... (4) — CR-5
-        "CHALLENGE-AB1", "CHALLENGE-FOO-BAR", "CHALLENGE-X", "CHALLENGE-1_2_3",
+        "CHALLENGE-AB1",
+        "CHALLENGE-FOO-BAR",
+        "CHALLENGE-X",
+        "CHALLENGE-1_2_3",
     ]  # total = 30
 
 
@@ -73,17 +96,40 @@ def negative_corpus() -> list[str]:
     Includes path traversal, empty, malformed, lowercase, special chars."""
     return [
         # Path-traversal forbidden chars (4)
-        "../etc/passwd", "foo/bar", "foo\\bar", "foo\x00bar",
+        "../etc/passwd",
+        "foo/bar",
+        "foo\\bar",
+        "foo\x00bar",
         # Empty / whitespace (3)
-        "", "   ", "\t",
+        "",
+        "   ",
+        "\t",
         # Lowercase / wrong-case (4)
-        "p1", "audit-X", "challenge-foo", "operator-x",
+        "p1",
+        "audit-X",
+        "challenge-foo",
+        "operator-x",
         # Missing required structure (5)
-        "P", "P-", "P--", "RUN-X", "RUN-1",
+        "P",
+        "P-",
+        "P--",
+        "RUN-X",
+        "RUN-1",
         # Special chars not in v9.0 grammar (5)
-        "P1!", "P1@home", "S-1#tag", "TEST-1$", "P1.5+P2",
+        "P1!",
+        "P1@home",
+        "S-1#tag",
+        "TEST-1$",
+        "P1.5+P2",
         # Plausible-but-wrong prefixes (5)
-        "AUDIT-1", "BACKEND-X", "META-2", "INIT-0", "FOO-BAR-BAZ",
+        "AUDIT-1",
+        "BACKEND-X",
+        "META-2",
+        "INIT-0",
+        "FOO-BAR-BAZ",
         # Multi-line / overlength (4)
-        "P1\nP2", "P" + "1" * 200, "X" * 256, "ÿ" + "P1",
+        "P1\nP2",
+        "P" + "1" * 200,
+        "X" * 256,
+        "ÿ" + "P1",
     ]  # total = 30

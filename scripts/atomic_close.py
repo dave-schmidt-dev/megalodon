@@ -111,20 +111,32 @@ def main(argv: list[str] | None = None) -> int:
         else:
             request_id = _build_request_id(args.agent)
             if args.dry_run:
-                _emit({
-                    "ok": True, "dry_run": True, "request_id": request_id,
-                    "would_run": ["CLAIM_DIR_DONE", "TASKS_BRACKET",
-                                  "HISTORY_APPEND", "STATUS_UPDATE"],
-                    "utc": _utc_now(),
-                })
+                _emit(
+                    {
+                        "ok": True,
+                        "dry_run": True,
+                        "request_id": request_id,
+                        "would_run": [
+                            "CLAIM_DIR_DONE",
+                            "TASKS_BRACKET",
+                            "HISTORY_APPEND",
+                            "STATUS_UPDATE",
+                        ],
+                        "utc": _utc_now(),
+                    }
+                )
                 return 0
             result = execute_close(
                 mission,
                 request_id=request_id,
-                task_id=args.task, lane=args.lane, agent=args.agent,
+                task_id=args.task,
+                lane=args.lane,
+                agent=args.agent,
                 utc=_utc_now(),
-                finding_path=args.finding, severity=args.severity,
-                notes=args.notes, summary=args.summary,
+                finding_path=args.finding,
+                severity=args.severity,
+                notes=args.notes,
+                summary=args.summary,
             )
     except Exception as exc:  # noqa: BLE001
         log.error("unexpected exception: %s\n%s", exc, traceback.format_exc())

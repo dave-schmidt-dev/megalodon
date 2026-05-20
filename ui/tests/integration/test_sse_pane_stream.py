@@ -122,6 +122,7 @@ async def spawner_with_lane_A(tmp_path: Path, monkeypatch):
         return fake_proc
 
     import megalodon_ui.spawn as spawn_mod
+
     monkeypatch.setattr(spawn_mod.tmux, "list_sessions", AsyncMock(return_value=[]))
     monkeypatch.setattr(spawn_mod.tmux, "new_session", AsyncMock(return_value=0))
     monkeypatch.setattr(spawn_mod.tmux, "pipe_pane", AsyncMock(return_value=0))
@@ -272,6 +273,7 @@ async def authed_async_client_with_spawner(
         return fake_proc
 
     import megalodon_ui.spawn as spawn_mod
+
     monkeypatch.setattr(spawn_mod.tmux, "list_sessions", AsyncMock(return_value=[]))
     monkeypatch.setattr(spawn_mod.tmux, "new_session", AsyncMock(return_value=0))
     monkeypatch.setattr(spawn_mod.tmux, "pipe_pane", AsyncMock(return_value=0))

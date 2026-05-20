@@ -53,7 +53,9 @@ async def test_v92_dashboard_true_when_env_set(value, queue_mission, monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", ["0", "false", "False", "", "no", "off"])
-async def test_v92_dashboard_false_for_explicit_false_values(value, queue_mission, monkeypatch):
+async def test_v92_dashboard_false_for_explicit_false_values(
+    value, queue_mission, monkeypatch
+):
     """Falsy env var values keep v92_dashboard False."""
     monkeypatch.setenv("MEGALODON_V92_DASHBOARD", value)
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)

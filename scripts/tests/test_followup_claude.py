@@ -36,7 +36,7 @@ def test_build_followup_argv_with_prior_session_id_includes_resume() -> None:
     assert "--resume" in argv, f"argv must carry --resume, got {argv!r}"
     resume_idx = argv.index("--resume")
     assert argv[resume_idx + 1] == "abc-123-def", (
-        f"argv[--resume+1] must be the prior_session_id, got {argv[resume_idx+1]!r}"
+        f"argv[--resume+1] must be the prior_session_id, got {argv[resume_idx + 1]!r}"
     )
     # prompt is preserved
     assert "tell me more" in argv

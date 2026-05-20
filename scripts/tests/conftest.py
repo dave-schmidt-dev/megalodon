@@ -22,6 +22,7 @@ def _lifespan_test_mode(monkeypatch):
     """
     monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
 
+
 FIXTURE_SRC = Path(__file__).parent / "fixtures" / "minimal_mission"
 QUEUE_FIXTURE_SRC = Path(__file__).parent / "fixtures" / "queue_mission"
 
@@ -57,4 +58,5 @@ def default_config():
     """
     from megalodon_ui.mission_config.default_v9_0_shape import synthesize
     from pathlib import Path
+
     return synthesize(Path("/tmp"))

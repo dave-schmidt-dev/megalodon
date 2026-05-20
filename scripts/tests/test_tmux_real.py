@@ -74,8 +74,12 @@ async def test_fleet_owned_env_marker(tmux_socket: Path, tmp_path: Path) -> None
     assert rc == 0
 
     proc = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(tmux_socket),
-        "show-environment", "-t", "test-lane",
+        "tmux",
+        "-S",
+        str(tmux_socket),
+        "show-environment",
+        "-t",
+        "test-lane",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )

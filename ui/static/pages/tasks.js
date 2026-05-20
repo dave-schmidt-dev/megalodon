@@ -1,45 +1,41 @@
 // @ts-check
-// tasks.js — /tasks page for the Megalodon orchestrator console.
+// tasks.js — /tasks page, kanban-by-phase view.
 //
-// Spec:
-//   - findings/agent-1371-D-P2.5-frontend-plan-v2-2026-05-16T15-45Z.md §C4
-//   - findings/agent-1371-D-P1-frontend-plan-2026-05-16T1532Z.md §3 /tasks
+// v9.4 T3.9 rewrite: columns = phases from GET /api/v1/tasks.
+// Each card shows id, lane chip, state badge, title/description.
+// Click → detail drawer; ESC closes. Lane filter bar at top.
 //
-// Sections rendered (top → bottom):
-//   1. Phase tab bar (4 tabs; default = store.mission.phase)
-//   2. Kanban grouped by lane (6 columns)
-//   3. Non-canonical claims panel (collapsible)
-//   4. CROSS task pool
-//
-// Hard rules followed here:
-//   - NO innerHTML (security-hook gated). textContent + createElement only.
+// Hard rules:
+//   - NO innerHTML. textContent + createElement only.
 //   - No external deps.
-//   - Module exports a single render(root) → cleanup function.
-//   - Subscribes to: tasks.phases, tasks.cross, mission.phase, claims
+//   - No real-time polling.
+//   - Exports render(root) → cleanup function.
 //
-// Task shape (per spec / store.js):
-//   { task_id|id, lane, description, claim_state, claim_agent?, claim_utc?,
-//     finding_filename?, phase? }
+// API shape consumed:
+//   GET /api/v1/tasks → {phases: [{name, tasks: [{id, lane, state, agent, utc, description}]}]}
+//
+// Store slices used (for non-canonical claims panel only):
+//   claims
 
 import { store } from "../js/store.js";
-import { loadConfig } from "../js/config.js";
 
-const PHASE_TABS = [
-  { id: "PHASE-PLAN", label: "Plan" },
-  { id: "PHASE-CHALLENGE", label: "Challenge" }, // covers P2 + P2.5
-  { id: "PHASE-BUILD", label: "Build" },
-  { id: "PHASE-VERIFY", label: "Verify" },
-];
-
-// Fallback lane list used until config resolves (v9.0 back-compat).
-const LANES_FALLBACK = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"];
-
-/** Return the canonical id for a task (spec says task_id; store may use id). */
-function taskKey(t) {
-  return t && (t.task_id || t.id || "") + "";
+/** Make a DOM element with attrs and optional textContent. No innerHTML. */
+function el(tag, opts) {
+  const node = document.createElement(tag);
+  if (!opts) return node;
+  if (opts.class) node.className = opts.class;
+  if (opts.text != null) node.textContent = String(opts.text);
+  if (opts.title) node.setAttribute("title", String(opts.title));
+  if (opts.testid) node.setAttribute("data-testid", String(opts.testid));
+  if (opts.attrs) {
+    for (const k of Object.keys(opts.attrs)) {
+      node.setAttribute(k, String(opts.attrs[k]));
+    }
+  }
+  return node;
 }
 
-/** Slugify a non-canonical claim dirname for use in data-testid. */
+/** Slugify a string for safe use in data-testid/class names. */
 function slugify(s) {
   return String(s || "")
     .toLowerCase()
@@ -47,35 +43,33 @@ function slugify(s) {
     .replace(/^-+|-+$/g, "");
 }
 
-/** Truncate a long string for visual display while keeping the full text in title. */
+/** Truncate a string for display; keep full text in title. */
 function truncate(s, n) {
   const str = String(s || "");
   if (str.length <= n) return str;
   return str.slice(0, n - 1) + "…";
 }
 
-/** Cross-check a task's claim_state against claims/<id>/ existence. */
-function indicatorState(task, claimsSet) {
-  const tid = taskKey(task);
-  const state = task.claim_state || "open";
-  // If we have no claims signal at all, skip the cross-check.
-  if (!claimsSet) {
-    if (state === "claimed") return { kind: "claimed", symbol: "○", color: "var(--accent)" };
-    if (state === "done") return { kind: "done", symbol: "✓", color: "var(--stale-fresh)" };
-    return { kind: "open", symbol: "·", color: "var(--text-muted)" };
+// ---------------------------------------------------------------------------
+// Non-canonical claims helpers (carried over from v9.3)
+// ---------------------------------------------------------------------------
+
+/** Return a Set of claim dir names from the store. */
+function buildClaimsSet() {
+  const claims = store.get("claims");
+  if (!claims) return null;
+  const list = Array.isArray(claims) ? claims : (claims.list || claims.dirs || []);
+  if (!Array.isArray(list)) return null;
+  const set = new Set();
+  for (const c of list) {
+    if (!c) continue;
+    const d = typeof c === "string" ? c : (c.dirname || c.name || c.id || "");
+    if (d) set.add(d);
   }
-  const claimDirExists = claimsSet.has(tid);
-  if (state === "claimed" || state === "done") {
-    if (claimDirExists) {
-      return { kind: "green", symbol: "✓", color: "var(--stale-fresh)" };
-    }
-    return { kind: "red", symbol: "✗", color: "var(--sev-blocking)" };
-  }
-  // open
-  return { kind: "open", symbol: "·", color: "var(--text-muted)" };
+  return set;
 }
 
-/** Compute the set of non-canonical claim dirs (dirs not matching any TASKS id). */
+/** Collect claim dirs not matching any known task id. */
 function computeNonCanonical(claimsList, allTaskIds) {
   if (!Array.isArray(claimsList)) return [];
   const taskIdSet = new Set(allTaskIds);
@@ -84,217 +78,253 @@ function computeNonCanonical(claimsList, allTaskIds) {
     if (!c) continue;
     const dirname = typeof c === "string" ? c : (c.dirname || c.name || c.id || "");
     if (!dirname) continue;
-    if (!taskIdSet.has(dirname)) {
-      out.push({
-        dirname,
-        mtime: typeof c === "object" ? (c.mtime || c.utc || "") : "",
-      });
-    }
+    if (!taskIdSet.has(dirname)) out.push({ dirname, mtime: typeof c === "object" ? (c.mtime || c.utc || "") : "" });
   }
   return out;
 }
 
-/** Make a DOM element with attrs + textContent. No innerHTML. */
-function el(tag, opts) {
-  const node = document.createElement(tag);
-  if (opts) {
-    if (opts.class) node.className = opts.class;
-    if (opts.text != null) node.textContent = String(opts.text);
-    if (opts.title) node.setAttribute("title", String(opts.title));
-    if (opts.testid) node.setAttribute("data-testid", String(opts.testid));
-    if (opts.attrs) {
-      for (const k of Object.keys(opts.attrs)) {
-        node.setAttribute(k, String(opts.attrs[k]));
-      }
-    }
-  }
-  return node;
+function rawClaimsList() {
+  const claims = store.get("claims");
+  if (!claims) return [];
+  if (Array.isArray(claims)) return claims;
+  return claims.list || claims.dirs || [];
 }
 
-/** Build one task card. Returns the card element. */
-function renderTaskCard(task, indicator, onClick, drawerOpenFor) {
-  const tid = taskKey(task);
-  const card = el("article", {
-    class: "card",
-    testid: `task-card-${tid}`,
-    attrs: { tabindex: "0", role: "button", "aria-label": `Task ${tid}` },
-  });
+// ---------------------------------------------------------------------------
+// Card detail drawer
+// ---------------------------------------------------------------------------
 
-  // Header row: id + lane chip
-  const head = el("div", { class: "row" });
-  head.appendChild(el("span", { class: "mono", text: tid, attrs: { style: "font-weight:600" } }));
-  if (task.lane) {
-    head.appendChild(el("span", { class: `lane-chip ${task.lane}`, text: task.lane }));
-  }
-  // Claim-state indicator (right-aligned)
-  const spacer = el("span", { attrs: { style: "flex:1 1 auto" } });
-  head.appendChild(spacer);
-  const ind = el("span", {
-    class: "badge",
-    testid: `task-claim-indicator-${tid}`,
-    text: indicator.symbol,
+/** Build the full-detail drawer node (always rendered, visibility via display). */
+function renderDrawer(task, isOpen, onClose) {
+  const overlay = el("div", {
+    testid: "task-drawer-overlay",
     attrs: {
-      "data-claim-state": indicator.kind,
-      "aria-label": `claim state: ${indicator.kind}`,
-      style: `color:${indicator.color}; font-weight:700`,
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": `Task ${task.id} details`,
+      style: [
+        "position:fixed",
+        "inset:0",
+        "z-index:100",
+        "display:" + (isOpen ? "flex" : "none"),
+        "align-items:flex-start",
+        "justify-content:flex-end",
+        "background:rgba(0,0,0,0.45)",
+        "padding:var(--sp-4)",
+      ].join(";"),
     },
   });
-  head.appendChild(ind);
-  card.appendChild(head);
 
-  // Description (truncated; full in title)
+  const panel = el("div", {
+    testid: `task-drawer-${task.id}`,
+    attrs: {
+      style: [
+        "width:min(480px,90vw)",
+        "max-height:90vh",
+        "overflow-y:auto",
+        "background:var(--surface-1,#1a1a1a)",
+        "border-radius:var(--r-2,6px)",
+        "padding:var(--sp-4,16px)",
+        "display:flex",
+        "flex-direction:column",
+        "gap:var(--sp-3,12px)",
+      ].join(";"),
+    },
+  });
+
+  // Close button row
+  const closeRow = el("div", { attrs: { style: "display:flex; justify-content:space-between; align-items:center" } });
+  const titleNode = el("h2", {
+    class: "mono",
+    text: task.id,
+    attrs: { style: "font-size:var(--fs-lg,1.1rem); margin:0" },
+  });
+  const closeBtn = el("button", {
+    text: "✕",
+    title: "Close drawer (ESC)",
+    testid: "task-drawer-close",
+    attrs: {
+      type: "button",
+      "aria-label": "Close",
+      style: "background:none; border:none; cursor:pointer; font-size:1.2rem; color:var(--text-muted); padding:0 var(--sp-1)",
+    },
+  });
+  closeBtn.addEventListener("click", onClose);
+  closeRow.appendChild(titleNode);
+  closeRow.appendChild(closeBtn);
+  panel.appendChild(closeRow);
+
+  // Lane + state
+  const chipRow = el("div", { attrs: { style: "display:flex; gap:var(--sp-2,8px); flex-wrap:wrap" } });
+  if (task.lane) {
+    chipRow.appendChild(el("span", {
+      class: `lane-chip ${slugify(task.lane)}`,
+      text: task.lane,
+      title: `Lane: ${task.lane}`,
+    }));
+  }
+  const stateSlug = slugify(task.state || "open");
+  chipRow.appendChild(el("span", {
+    class: `badge badge--${stateSlug}`,
+    text: task.state || "open",
+    title: `State: ${task.state || "open"}`,
+    attrs: { "data-state": task.state || "open" },
+  }));
+  panel.appendChild(chipRow);
+
+  // Description
   const desc = task.description || "(no description)";
   const descNode = el("p", {
-    class: "truncate text-muted",
-    text: truncate(desc, 110),
-    title: desc,
-    attrs: { style: "margin-top:var(--sp-2)" },
+    attrs: { style: "white-space:pre-wrap; margin:0" },
+    text: desc,
   });
-  card.appendChild(descNode);
+  panel.appendChild(descNode);
 
-  // Claim metadata
-  if (task.claim_agent || task.claim_utc) {
-    const meta = el("p", {
-      class: "text-muted mono",
-      attrs: { style: "font-size:var(--fs-xs); margin-top:var(--sp-1)" },
-    });
-    const agent = task.claim_agent ? String(task.claim_agent) : "?";
-    const utc = task.claim_utc ? String(task.claim_utc) : "?";
-    meta.textContent = `${agent} @ ${utc}`;
-    card.appendChild(meta);
+  // Metadata
+  if (task.agent || task.utc) {
+    const meta = el("dl", { attrs: { style: "margin:0; display:grid; grid-template-columns:auto 1fr; gap:var(--sp-1) var(--sp-2)" } });
+    if (task.agent) {
+      meta.appendChild(el("dt", { class: "mono text-muted", text: "agent", attrs: { style: "margin:0" } }));
+      meta.appendChild(el("dd", { class: "mono", text: task.agent, attrs: { style: "margin:0" } }));
+    }
+    if (task.utc) {
+      meta.appendChild(el("dt", { class: "mono text-muted", text: "utc", attrs: { style: "margin:0" } }));
+      meta.appendChild(el("dd", { class: "mono", text: task.utc, attrs: { style: "margin:0" } }));
+    }
+    panel.appendChild(meta);
   }
 
-  // Finding link
-  if (task.finding_filename) {
-    const linkRow = el("p", { attrs: { style: "margin-top:var(--sp-1)" } });
-    const a = el("a", {
-      text: truncate(task.finding_filename, 60),
-      title: task.finding_filename,
-      attrs: { href: `/findings#${task.finding_filename}` },
-    });
-    linkRow.appendChild(a);
-    card.appendChild(linkRow);
-  }
+  // Close overlay on backdrop click
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) onClose();
+  });
 
-  // Drawer (full description + claim history)
-  const isOpen = drawerOpenFor === tid;
-  const drawer = el("div", {
-    testid: `task-drawer-${tid}`,
+  overlay.appendChild(panel);
+  return overlay;
+}
+
+// ---------------------------------------------------------------------------
+// Task card
+// ---------------------------------------------------------------------------
+
+/** Build one task card. */
+function renderTaskCard(task, onCardClick) {
+  const card = el("article", {
+    class: "card",
+    testid: `task-card-${task.id}`,
     attrs: {
-      "aria-expanded": isOpen ? "true" : "false",
-      style: `margin-top:var(--sp-2); padding:var(--sp-2); background:var(--surface-2); border-radius:var(--r-1); display:${isOpen ? "block" : "none"}`,
+      tabindex: "0",
+      role: "button",
+      "aria-label": `Task ${task.id}`,
+      "data-lane": task.lane || "",
+      "data-state": task.state || "open",
     },
   });
-  if (isOpen) {
-    drawer.appendChild(el("p", {
-      attrs: { style: "white-space:pre-wrap" },
-      text: desc,
-    }));
-    const history = el("ul", { attrs: { style: "margin-top:var(--sp-2)" } });
-    const items = [
-      `claim_state: ${task.claim_state || "open"}`,
-      task.claim_agent ? `claim_agent: ${task.claim_agent}` : "",
-      task.claim_utc ? `claim_utc: ${task.claim_utc}` : "",
-      task.phase ? `phase: ${task.phase}` : "",
-    ].filter(Boolean);
-    for (const item of items) {
-      history.appendChild(el("li", { class: "mono text-muted", text: item }));
-    }
-    drawer.appendChild(history);
-  }
-  card.appendChild(drawer);
 
-  // Card click toggles drawer
-  card.addEventListener("click", (ev) => {
-    // Allow link clicks to behave normally.
-    if (ev.target && (ev.target instanceof HTMLAnchorElement)) return;
-    onClick(tid);
-  });
+  // Header: id + lane chip
+  const head = el("div", { class: "row", attrs: { style: "gap:var(--sp-2,8px); align-items:center; flex-wrap:wrap" } });
+  head.appendChild(el("span", {
+    class: "mono",
+    text: task.id,
+    attrs: { style: "font-weight:600; flex-shrink:0" },
+    title: task.id,
+  }));
+  if (task.lane) {
+    head.appendChild(el("span", {
+      class: `lane-chip ${slugify(task.lane)}`,
+      text: task.lane,
+      title: `Lane: ${task.lane}`,
+    }));
+  }
+  // State badge (right side)
+  const stateSlug = slugify(task.state || "open");
+  const spacer = el("span", { attrs: { style: "flex:1 1 auto" } });
+  head.appendChild(spacer);
+  head.appendChild(el("span", {
+    class: `badge badge--${stateSlug}`,
+    text: task.state || "open",
+    title: `State: ${task.state || "open"}`,
+    attrs: { "data-state": task.state || "open" },
+  }));
+  card.appendChild(head);
+
+  // Description (truncated)
+  const desc = task.description || "";
+  if (desc) {
+    card.appendChild(el("p", {
+      class: "truncate text-muted",
+      text: truncate(desc, 100),
+      title: desc,
+      attrs: { style: "margin-top:var(--sp-2,8px)" },
+    }));
+  }
+
+  card.addEventListener("click", () => onCardClick(task.id));
   card.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" || ev.key === " ") {
       ev.preventDefault();
-      onClick(tid);
+      onCardClick(task.id);
     }
   });
 
   return card;
 }
 
-/** Build the phase tab bar. */
-function renderPhaseTabs(selectedPhase, onSelect) {
+// ---------------------------------------------------------------------------
+// Lane filter bar
+// ---------------------------------------------------------------------------
+
+/** Build lane filter chip bar. Returns {el, getSelected, setSelected} */
+function renderLaneFilter(allLanes, selectedLanes, onToggle) {
   const bar = el("div", {
-    class: "row",
+    testid: "lane-filter-bar",
     attrs: {
-      role: "tablist",
-      "aria-label": "Phase",
-      style: "margin-bottom:var(--sp-4)",
+      role: "group",
+      "aria-label": "Filter by lane",
+      title: "Click a lane chip to filter tasks by lane",
+      style: "display:flex; flex-wrap:wrap; gap:var(--sp-2,8px); margin-bottom:var(--sp-3,12px); align-items:center",
     },
   });
-  for (const tab of PHASE_TABS) {
-    const isActive = tab.id === selectedPhase;
-    const btn = el("button", {
-      class: "button" + (isActive ? " button--primary" : ""),
-      text: tab.label,
-      testid: `phase-tab-${tab.id}`,
+
+  const label = el("span", {
+    class: "text-muted",
+    text: "Lane:",
+    attrs: { style: "font-size:var(--fs-sm); flex-shrink:0" },
+  });
+  bar.appendChild(label);
+
+  for (const lane of allLanes) {
+    const isActive = selectedLanes.has(lane);
+    const chip = el("button", {
+      class: `lane-chip ${slugify(lane)}` + (isActive ? " active" : ""),
+      text: lane,
+      title: `Filter to ${lane} lane${isActive ? " (active)" : ""}`,
+      testid: `lane-filter-${slugify(lane)}`,
       attrs: {
-        role: "tab",
-        "aria-selected": isActive ? "true" : "false",
-        "data-phase": tab.id,
+        type: "button",
+        "aria-pressed": isActive ? "true" : "false",
+        "data-lane": lane,
+        style: isActive ? "outline:2px solid currentColor; outline-offset:1px" : "opacity:0.6",
       },
     });
-    btn.addEventListener("click", () => onSelect(tab.id));
-    bar.appendChild(btn);
+    chip.addEventListener("click", () => onToggle(lane));
+    bar.appendChild(chip);
   }
+
   return bar;
 }
 
-/** Build the kanban for a phase. */
-function renderKanban(tasksForPhase, claimsSet, openDrawerId, onCardClick, lanes) {
-  const laneList = lanes || LANES_FALLBACK;
-  const wrap = el("section", { attrs: { "aria-label": "Kanban" } });
-  const grid = el("div", {
-    attrs: {
-      style: `display:grid; grid-template-columns:repeat(${laneList.length}, minmax(0,1fr)); gap:var(--sp-3)`,
-    },
-  });
-  const byLane = {};
-  for (const lane of laneList) byLane[lane] = [];
-  for (const t of (tasksForPhase || [])) {
-    const lane = (t.lane || "").toUpperCase();
-    if (byLane[lane]) byLane[lane].push(t);
-  }
-  for (const lane of laneList) {
-    const col = el("div", { class: "stack-2", attrs: { "data-lane": lane } });
-    const header = el("h3", {
-      class: `lane-chip ${lane}`,
-      text: `${lane} (${byLane[lane].length})`,
-      attrs: { style: "width:100%; justify-content:flex-start" },
-    });
-    col.appendChild(header);
-    if (byLane[lane].length === 0) {
-      const empty = el("p", { class: "empty-state", text: "No tasks" });
-      col.appendChild(empty);
-    } else {
-      for (const task of byLane[lane]) {
-        const ind = indicatorState(task, claimsSet);
-        col.appendChild(renderTaskCard(task, ind, onCardClick, openDrawerId));
-      }
-    }
-    grid.appendChild(col);
-  }
-  wrap.appendChild(grid);
-  return wrap;
-}
+// ---------------------------------------------------------------------------
+// Non-canonical claims panel (retained from v9.3)
+// ---------------------------------------------------------------------------
 
-/** Build the non-canonical claims collapsible panel. */
 function renderNonCanonicalPanel(rows, expanded, onToggle) {
   const panel = el("section", {
     class: "card",
     testid: "panel-non-canonical-claims",
     attrs: {
-      style: "margin-top:var(--sp-4)",
+      style: "margin-top:var(--sp-4,16px)",
       "aria-expanded": expanded ? "true" : "false",
-      "data-testid-legacy": "non-canonical-claims-panel",
     },
   });
 
@@ -305,32 +335,25 @@ function renderNonCanonicalPanel(rows, expanded, onToggle) {
       "aria-controls": "non-canonical-claims-body",
       "aria-expanded": expanded ? "true" : "false",
       style: "width:100%; justify-content:space-between; cursor:pointer",
+      title: "Toggle non-canonical claims panel",
     },
   });
-  const title = el("span", {
+  header.appendChild(el("span", {
     text: `Non-canonical claims (potential protocol drift) — ${rows.length}`,
     attrs: { style: "font-weight:600" },
-  });
-  const chev = el("span", {
-    class: "text-muted mono",
-    text: expanded ? "▼" : "▶",
-  });
-  header.appendChild(title);
-  header.appendChild(chev);
+  }));
+  header.appendChild(el("span", { class: "text-muted mono", text: expanded ? "▼" : "▶" }));
   header.addEventListener("click", onToggle);
   panel.appendChild(header);
 
   const body = el("div", {
     attrs: {
       id: "non-canonical-claims-body",
-      style: `margin-top:var(--sp-2); display:${expanded ? "block" : "none"}`,
+      style: `margin-top:var(--sp-2,8px); display:${expanded ? "block" : "none"}`,
     },
   });
   if (rows.length === 0) {
-    body.appendChild(el("p", {
-      class: "empty-state",
-      text: "No non-canonical claim directories detected.",
-    }));
+    body.appendChild(el("p", { class: "empty-state", text: "No non-canonical claim directories detected." }));
   } else {
     const list = el("ul", { class: "stack-1" });
     for (const r of rows) {
@@ -338,15 +361,9 @@ function renderNonCanonicalPanel(rows, expanded, onToggle) {
       const li = el("li", {
         class: "row",
         testid: `non-canonical-claim-${slug}`,
-        attrs: {
-          style: "padding:var(--sp-2); background:var(--surface-2); border-radius:var(--r-1)",
-        },
+        attrs: { style: "padding:var(--sp-2,8px); background:var(--surface-2); border-radius:var(--r-1)" },
       });
-      li.appendChild(el("span", {
-        class: "badge",
-        text: "?",
-        attrs: { style: "color:var(--text-muted)" },
-      }));
+      li.appendChild(el("span", { class: "badge", text: "?", attrs: { style: "color:var(--text-muted)" } }));
       li.appendChild(el("span", { class: "mono", text: r.dirname }));
       if (r.mtime) {
         li.appendChild(el("span", {
@@ -363,97 +380,77 @@ function renderNonCanonicalPanel(rows, expanded, onToggle) {
   return panel;
 }
 
-/** Build the CROSS task pool section. */
-function renderCrossPool(crossTasks, claimsSet, openDrawerId, onCardClick) {
-  const section = el("section", { attrs: { style: "margin-top:var(--sp-4)" } });
-  const h = el("h2", {
-    text: `CROSS task pool (${(crossTasks || []).length})`,
-    attrs: { style: "font-size:var(--fs-lg); margin-bottom:var(--sp-2)" },
-  });
-  section.appendChild(h);
-  if (!crossTasks || crossTasks.length === 0) {
-    section.appendChild(el("p", { class: "empty-state", text: "No CROSS tasks." }));
-    return section;
-  }
-  const grid = el("div", {
-    attrs: {
-      style: "display:grid; grid-template-columns:repeat(auto-fill, minmax(280px,1fr)); gap:var(--sp-3)",
-    },
-  });
-  for (const t of crossTasks) {
-    const ind = indicatorState(t, claimsSet);
-    grid.appendChild(renderTaskCard(t, ind, onCardClick, openDrawerId));
-  }
-  section.appendChild(grid);
-  return section;
-}
+// ---------------------------------------------------------------------------
+// Main render
+// ---------------------------------------------------------------------------
 
 /**
- * Mount the /tasks page into the given root.
+ * Mount the /tasks page into root.
  * @param {HTMLElement} root
  * @returns {Promise<() => void>} cleanup
  */
-export async function render(root) {
-  // PM-2 mitigation: show a loading skeleton until config resolves.
-  const skeletonDiv = document.createElement("div");
-  skeletonDiv.className = "loading-skeleton";
-  skeletonDiv.textContent = "Loading mission config…";
-  root.appendChild(skeletonDiv);
+export async function render(root, _params) {
+  // Loading skeleton
+  const skeleton = el("div", { class: "loading-skeleton", text: "Loading tasks…" });
+  root.appendChild(skeleton);
 
-  // Load lane order from config; fall back to defaults on error.
-  let lanes = LANES_FALLBACK;
+  // Fetch from API
+  let phases = [];
   try {
-    const config = await loadConfig();
-    if (Array.isArray(config.lanes) && config.lanes.length > 0) {
-      lanes = config.lanes.map((l) => (typeof l === "string" ? l : String(l.name || l)));
+    const resp = await fetch("/api/v1/tasks");
+    if (resp.ok) {
+      const data = await resp.json();
+      if (Array.isArray(data.phases)) phases = data.phases;
     }
   } catch (err) {
-    console.warn("[tasks] config load failed, using fallback lanes:", err);
+    console.warn("[tasks] fetch failed:", err);
   }
 
-  // Clear skeleton before building real page structure.
   while (root.firstChild) root.removeChild(root.firstChild);
 
-  // View-local UI state. Persists across re-renders within this mount.
+  // Collect all known task ids (for non-canonical panel)
+  const allTaskIds = [];
+  for (const phase of phases) {
+    for (const t of (phase.tasks || [])) allTaskIds.push(t.id);
+  }
+
+  // Collect all lanes present
+  const laneSet = new Set();
+  for (const phase of phases) {
+    for (const t of (phase.tasks || [])) {
+      if (t.lane) laneSet.add(t.lane);
+    }
+  }
+  const allLanes = Array.from(laneSet).sort();
+
+  // UI state
   const ui = {
-    selectedPhase: store.get("mission.phase") || PHASE_TABS[1].id, // default to CHALLENGE if unset
     openDrawerId: null,
+    selectedLanes: new Set(), // empty = show all
     panelExpanded: false,
   };
 
-  function buildClaimsSet() {
-    const claims = store.get("claims");
-    if (!claims) return null; // signal "no cross-check available"
-    const list = Array.isArray(claims) ? claims : (claims.list || claims.dirs || []);
-    if (!Array.isArray(list)) return null;
-    const set = new Set();
-    for (const c of list) {
-      if (!c) continue;
-      const d = typeof c === "string" ? c : (c.dirname || c.name || c.id || "");
-      if (d) set.add(d);
+  // ESC handler (attached to document while mounted)
+  function onKeyDown(ev) {
+    if (ev.key === "Escape" && ui.openDrawerId !== null) {
+      ev.preventDefault();
+      ui.openDrawerId = null;
+      rerender();
     }
-    return set;
+  }
+  document.addEventListener("keydown", onKeyDown);
+
+  function onCardClick(taskId) {
+    ui.openDrawerId = ui.openDrawerId === taskId ? null : taskId;
+    rerender();
   }
 
-  function allTaskIdsForCrosscheck() {
-    const ids = [];
-    const phases = store.get("tasks.phases") || {};
-    for (const k of Object.keys(phases)) {
-      for (const t of (phases[k] || [])) ids.push(taskKey(t));
+  function onLaneToggle(lane) {
+    if (ui.selectedLanes.has(lane)) {
+      ui.selectedLanes.delete(lane);
+    } else {
+      ui.selectedLanes.add(lane);
     }
-    for (const t of (store.get("tasks.cross") || [])) ids.push(taskKey(t));
-    return ids.filter(Boolean);
-  }
-
-  function rawClaimsList() {
-    const claims = store.get("claims");
-    if (!claims) return [];
-    if (Array.isArray(claims)) return claims;
-    return claims.list || claims.dirs || [];
-  }
-
-  function onCardClick(tid) {
-    ui.openDrawerId = ui.openDrawerId === tid ? null : tid;
     rerender();
   }
 
@@ -462,93 +459,133 @@ export async function render(root) {
     rerender();
   }
 
-  function onSelectPhase(phaseId) {
-    ui.selectedPhase = phaseId;
-    ui.openDrawerId = null;
-    rerender();
-  }
-
   function rerender() {
     while (root.firstChild) root.removeChild(root.firstChild);
 
-    const claimsSet = buildClaimsSet();
-    const phases = store.get("tasks.phases") || {};
-    const tasksForPhase = phases[ui.selectedPhase] || [];
-    const crossTasks = store.get("tasks.cross") || [];
-
-    // Determine global empty-state: BE may briefly publish an empty phases dict
-    // before TASKS.md is parsed. Show a clear notice instead of silent empty.
-    const phaseKeys = Object.keys(phases || {});
-    const totalPhaseTasks = phaseKeys.reduce(
-      (n, k) => n + ((phases[k] && phases[k].length) || 0),
-      0,
-    );
-    const noTasksAtAll = totalPhaseTasks === 0 && (!crossTasks || crossTasks.length === 0);
-
-    // Phase header
-    const hdr = el("header", { attrs: { style: "margin-bottom:var(--sp-3)" } });
+    // Page header
+    const hdr = el("header", { attrs: { style: "margin-bottom:var(--sp-3,12px)" } });
     hdr.appendChild(el("h1", {
       text: "Tasks",
-      attrs: { style: "font-size:var(--fs-xl); margin-bottom:var(--sp-2)" },
+      attrs: { style: "font-size:var(--fs-xl,1.5rem); margin-bottom:var(--sp-3,12px)" },
     }));
-    hdr.appendChild(renderPhaseTabs(ui.selectedPhase, onSelectPhase));
     root.appendChild(hdr);
 
-    if (noTasksAtAll) {
-      const banner = el("section", {
+    // Lane filter bar (only if lanes exist)
+    if (allLanes.length > 0) {
+      root.appendChild(renderLaneFilter(allLanes, ui.selectedLanes, onLaneToggle));
+    }
+
+    // Kanban: one column per phase
+    if (phases.length === 0) {
+      const empty = el("section", {
         class: "card empty-state",
         testid: "tasks-empty-banner",
         attrs: {
           role: "status",
           "aria-live": "polite",
-          style: "margin-bottom:var(--sp-3); padding:var(--sp-3); text-align:center",
+          style: "padding:var(--sp-3,12px); text-align:center",
         },
       });
-      banner.appendChild(el("p", {
-        text: "No tasks loaded yet.",
-        attrs: { style: "font-weight:600; margin-bottom:var(--sp-1)" },
-      }));
-      banner.appendChild(el("p", {
+      empty.appendChild(el("p", { text: "No tasks loaded yet.", attrs: { style: "font-weight:600" } }));
+      empty.appendChild(el("p", {
         class: "text-muted",
-        text: "Waiting for the backend to parse TASKS.md. The kanban below will populate automatically.",
+        text: "Waiting for the backend to parse TASKS.md.",
       }));
-      root.appendChild(banner);
+      root.appendChild(empty);
+    } else {
+      const kanban = el("section", {
+        attrs: {
+          "aria-label": "Task kanban by phase",
+          style: [
+            "display:grid",
+            `grid-template-columns:repeat(${Math.min(phases.length, 4)}, minmax(0, 1fr))`,
+            "gap:var(--sp-3,12px)",
+            "align-items:start",
+          ].join(";"),
+        },
+      });
+
+      for (const phase of phases) {
+        const phaseName = phase.name || "(unnamed)";
+        const phaseSlug = slugify(phaseName);
+        const tasks = phase.tasks || [];
+
+        // Filter tasks by selected lanes
+        const visibleTasks = ui.selectedLanes.size === 0
+          ? tasks
+          : tasks.filter((t) => ui.selectedLanes.has(t.lane));
+
+        const col = el("div", {
+          class: "stack-2",
+          testid: `phase-col-${phaseSlug}`,
+          attrs: {
+            "data-phase-name": phaseName,
+            title: `Phase: ${phaseName}`,
+          },
+        });
+
+        // Column header
+        const colHeader = el("h2", {
+          class: "lane-chip",
+          text: phaseName,
+          title: `Phase: ${phaseName} (${tasks.length} task${tasks.length !== 1 ? "s" : ""})`,
+          attrs: {
+            style: "width:100%; justify-content:flex-start; font-size:var(--fs-sm,0.85rem); margin-bottom:var(--sp-2,8px)",
+          },
+        });
+        col.appendChild(colHeader);
+
+        if (visibleTasks.length === 0) {
+          col.appendChild(el("p", {
+            class: "empty-state",
+            text: "No tasks",
+            title: ui.selectedLanes.size > 0 ? "No tasks match the active lane filter" : "No tasks in this phase",
+          }));
+        } else {
+          for (const task of visibleTasks) {
+            col.appendChild(renderTaskCard(task, onCardClick));
+          }
+        }
+
+        kanban.appendChild(col);
+      }
+
+      root.appendChild(kanban);
     }
 
-    // Kanban — pass config-driven lane list so columns match the loaded config.
-    root.appendChild(renderKanban(tasksForPhase, claimsSet, ui.openDrawerId, onCardClick, lanes));
-
-    // Non-canonical panel
-    const ncRows = computeNonCanonical(rawClaimsList(), allTaskIdsForCrosscheck());
+    // Non-canonical claims panel
+    const ncRows = computeNonCanonical(rawClaimsList(), allTaskIds);
     root.appendChild(renderNonCanonicalPanel(ncRows, ui.panelExpanded, onTogglePanel));
 
-    // CROSS pool
-    root.appendChild(renderCrossPool(crossTasks, claimsSet, ui.openDrawerId, onCardClick));
+    // Detail drawer (outside kanban flow; fixed overlay)
+    if (ui.openDrawerId !== null) {
+      // Find the task
+      let openTask = null;
+      for (const phase of phases) {
+        for (const t of (phase.tasks || [])) {
+          if (t.id === ui.openDrawerId) { openTask = t; break; }
+        }
+        if (openTask) break;
+      }
+      if (openTask) {
+        const drawer = renderDrawer(openTask, true, () => {
+          ui.openDrawerId = null;
+          rerender();
+        });
+        root.appendChild(drawer);
+      }
+    }
   }
 
   // Initial render
   rerender();
 
-  // Subscribe to relevant slices; each callback triggers a re-render.
-  const unsubs = [
-    store.subscribe("tasks.phases", rerender),
-    store.subscribe("tasks.cross", rerender),
-    store.subscribe("mission.phase", (next) => {
-      // Only follow the mission phase if the user hasn't manually picked one
-      // that differs — but per spec the default-selected is the current phase,
-      // so we update only if user is on a known PHASE tab.
-      if (next && PHASE_TABS.some((p) => p.id === next)) {
-        ui.selectedPhase = next;
-        rerender();
-      }
-    }),
-    store.subscribe("claims", rerender),
-  ];
+  // Subscribe to claims changes only (no polling on tasks)
+  const unsub = store.subscribe("claims", () => rerender());
 
   return function cleanup() {
-    for (const u of unsubs) {
-      try { u(); } catch (_) { /* ignore */ }
-    }
+    document.removeEventListener("keydown", onKeyDown);
+    try { unsub(); } catch (_) { /* ignore */ }
     while (root.firstChild) root.removeChild(root.firstChild);
   };
 }

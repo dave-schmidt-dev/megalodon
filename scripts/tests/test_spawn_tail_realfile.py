@@ -54,7 +54,9 @@ def _make_config(shorts: list[str]) -> MissionConfig:
     )
 
 
-async def _drain_until(q: asyncio.Queue[bytes], expected_total: int, timeout: float = 4.0) -> bytes:
+async def _drain_until(
+    q: asyncio.Queue[bytes], expected_total: int, timeout: float = 4.0
+) -> bytes:
     """Read from q until ``expected_total`` bytes accumulated or timeout."""
     buf = b""
     deadline = asyncio.get_event_loop().time() + timeout
@@ -81,7 +83,9 @@ async def test_real_tail_delivers_appended_bytes(tmp_path: Path) -> None:
     adapter = MagicMock()
     adapter.build_argv = MagicMock(return_value=(["stub"], {}))
     adapter.session_log_dir = MagicMock(return_value=None)
-    spawner = FleetSpawner(mission_dir, _make_config(["A"]), MagicMock(return_value=adapter), SOCKET)
+    spawner = FleetSpawner(
+        mission_dir, _make_config(["A"]), MagicMock(return_value=adapter), SOCKET
+    )
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),

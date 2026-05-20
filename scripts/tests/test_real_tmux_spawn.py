@@ -76,6 +76,7 @@ def _make_3lane_config(mission_dir: Path) -> MissionConfig:
 
 def _stub_resolver(stub_script: Path):
     """Return an adapter_resolver that always returns a StubAdapter-like object."""
+
     # Inline stub to avoid import path complexity in the fixture dir
     class _InlineStubAdapter:
         name = "stub"
@@ -130,4 +131,6 @@ async def test_real_tmux_start_all_creates_sessions(tmp_path: Path):
         for short in ["A", "B", "C"]:
             session_name = f"lane-{short}"
             exists = await tmux.has_session(socket, session_name)
-            assert not exists, f"expected session {session_name} to be gone after stop_all"
+            assert not exists, (
+                f"expected session {session_name} to be gone after stop_all"
+            )

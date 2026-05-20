@@ -69,13 +69,16 @@ async def test_start_all_calls_pipe_pane_for_each_freshly_spawned_lane():
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
         patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)),
-        patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)) as mock_pipe,
+        patch(
+            "megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)
+        ) as mock_pipe,
     ):
         await spawner.start_all()
 
     assert mock_pipe.call_count == 2
     pipe_dests = {
-        (call.args + tuple(call.kwargs.values()))[-1] for call in mock_pipe.call_args_list
+        (call.args + tuple(call.kwargs.values()))[-1]
+        for call in mock_pipe.call_args_list
     }
     assert MISSION_DIR / ".fleet" / "A.stream.log" in pipe_dests
     assert MISSION_DIR / ".fleet" / "B.stream.log" in pipe_dests
@@ -126,8 +129,12 @@ async def test_reattach_skips_pipe_pane_when_pipe_already_active():
             "megalodon_ui.spawn.tmux.display_message_pane_pipe",
             new=AsyncMock(return_value=True),
         ),
-        patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)) as mock_new,
-        patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)) as mock_pipe,
+        patch(
+            "megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)
+        ) as mock_new,
+        patch(
+            "megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)
+        ) as mock_pipe,
     ):
         await spawner.start_all()
 
@@ -154,8 +161,12 @@ async def test_reattach_wires_pipe_pane_when_pipe_inactive():
             "megalodon_ui.spawn.tmux.display_message_pane_pipe",
             new=AsyncMock(return_value=False),
         ),
-        patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)) as mock_new,
-        patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)) as mock_pipe,
+        patch(
+            "megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)
+        ) as mock_new,
+        patch(
+            "megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)
+        ) as mock_pipe,
     ):
         await spawner.start_all()
 

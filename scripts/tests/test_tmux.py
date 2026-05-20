@@ -153,7 +153,9 @@ async def test_kill_session_argv():
 @pytest.mark.asyncio
 async def test_has_session_true_on_rc0():
     proc = _mock_proc(0)
-    with patch.object(asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+    with patch.object(
+        asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
+    ):
         result = await tmux.has_session(SOCKET, "lane-AUDIT")
     assert result is True
 
@@ -161,7 +163,9 @@ async def test_has_session_true_on_rc0():
 @pytest.mark.asyncio
 async def test_has_session_false_on_nonzero():
     proc = _mock_proc(1)
-    with patch.object(asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+    with patch.object(
+        asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
+    ):
         result = await tmux.has_session(SOCKET, "lane-AUDIT")
     assert result is False
 
@@ -249,7 +253,9 @@ async def test_respawn_pane_set_env_before_respawn():
         calls_log.append(args)
         return _mock_proc(0)
 
-    with patch.object(asyncio, "create_subprocess_exec", new=AsyncMock(side_effect=fake_exec)):
+    with patch.object(
+        asyncio, "create_subprocess_exec", new=AsyncMock(side_effect=fake_exec)
+    ):
         await tmux.respawn_pane(
             SOCKET, "lane-AUDIT", ["echo", "hi"], {"FOO": "bar", "BAZ": "qux"}
         )
@@ -320,7 +326,9 @@ async def test_list_sessions_returns_names():
     proc.communicate = AsyncMock(return_value=(b"lane-AUDIT\nlane-ARCH\n", b""))
     proc.returncode = 0
 
-    with patch.object(asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+    with patch.object(
+        asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
+    ):
         result = await tmux.list_sessions(SOCKET)
 
     assert result == ["lane-AUDIT", "lane-ARCH"]
@@ -332,7 +340,9 @@ async def test_list_sessions_empty_on_error():
     proc.communicate = AsyncMock(return_value=(b"", b"error"))
     proc.returncode = 1
 
-    with patch.object(asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+    with patch.object(
+        asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
+    ):
         result = await tmux.list_sessions(SOCKET)
 
     assert result == []
@@ -384,7 +394,9 @@ async def test_display_message_pane_pipe_true_on_1():
     proc = _mock_proc(0)
     proc.communicate = AsyncMock(return_value=(b"1\n", b""))
 
-    with patch.object(asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+    with patch.object(
+        asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
+    ):
         result = await tmux.display_message_pane_pipe(SOCKET, "lane-AUDIT")
 
     assert result is True
@@ -395,7 +407,9 @@ async def test_display_message_pane_pipe_false_on_0():
     proc = _mock_proc(0)
     proc.communicate = AsyncMock(return_value=(b"0\n", b""))
 
-    with patch.object(asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+    with patch.object(
+        asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
+    ):
         result = await tmux.display_message_pane_pipe(SOCKET, "lane-AUDIT")
 
     assert result is False

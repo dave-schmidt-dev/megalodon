@@ -60,13 +60,20 @@ def _build_spawner(tmp_path: Path) -> tuple[FleetSpawner, LaneSession]:
     adapter = MagicMock()
     adapter.session_log_dir = MagicMock(return_value=None)
     spawner = FleetSpawner(
-        mission_dir, config, MagicMock(return_value=adapter),
+        mission_dir,
+        config,
+        MagicMock(return_value=adapter),
         mission_dir / ".fleet" / "tmux.sock",
     )
     session = LaneSession(
-        lane="A", name="lane-A", cwd=mission_dir,
-        argv=["old"], env={}, stream_log=stream_log,
-        session_id="prior-sid", running=True,
+        lane="A",
+        name="lane-A",
+        cwd=mission_dir,
+        argv=["old"],
+        env={},
+        stream_log=stream_log,
+        session_id="prior-sid",
+        running=True,
     )
     spawner.sessions["A"] = session
     return spawner, session
@@ -77,8 +84,12 @@ async def test_respawn_calls_tmux_respawn_then_pipe_pane(tmp_path: Path):
     spawner, session = _build_spawner(tmp_path)
 
     with (
-        patch("megalodon_ui.spawn.tmux.respawn_pane", new=AsyncMock(return_value=0)) as resp,
-        patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)) as pipe,
+        patch(
+            "megalodon_ui.spawn.tmux.respawn_pane", new=AsyncMock(return_value=0)
+        ) as resp,
+        patch(
+            "megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)
+        ) as pipe,
         patch(
             "megalodon_ui.spawn.tmux.display_message_pane_pipe",
             new=AsyncMock(return_value=True),

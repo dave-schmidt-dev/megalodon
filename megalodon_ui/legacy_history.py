@@ -247,7 +247,12 @@ def parse_line(line: str) -> HistoryEntry | None:
     → Variant 2 (bare short, well-spaced) → Variant 3 (spacing drift fallback).
     Most-specific shapes first to avoid false matches.
     """
-    for parser in (_parse_variant_4, _parse_variant_1, _parse_variant_2, _parse_variant_3):
+    for parser in (
+        _parse_variant_4,
+        _parse_variant_1,
+        _parse_variant_2,
+        _parse_variant_3,
+    ):
         entry = parser(line)
         if entry is not None:
             return entry

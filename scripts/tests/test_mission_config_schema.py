@@ -15,6 +15,7 @@ from megalodon_ui.mission_config import (
 
 # ─── Helpers ─────────────────────────────────────────────────────────
 
+
 def _harness(**kwargs) -> HarnessBinding:
     defaults = dict(cli="claude", model="claude-opus-4-5")
     defaults.update(kwargs)
@@ -44,6 +45,7 @@ def _minimal_config(**kwargs) -> MissionConfig:
 
 
 # ─── Tests ───────────────────────────────────────────────────────────
+
 
 def test_valid_load_minimum_required():
     cfg = _minimal_config()

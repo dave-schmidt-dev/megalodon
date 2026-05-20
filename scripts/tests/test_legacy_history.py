@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from megalodon_ui.legacy_history import HistoryEntry, parse_file
 
@@ -27,10 +26,16 @@ class TestParseVariant1:
     def test_lane_short_normalized(self) -> None:
         entries = parse_file(FIXTURE_DIR / "variant_1.md")
         for e in entries:
-            assert len(e.lane_short) == 1, f"Expected single-char lane_short, got: {e.lane_short!r}"
-            assert e.lane_short.isupper(), f"Expected upper-case lane, got: {e.lane_short!r}"
+            assert len(e.lane_short) == 1, (
+                f"Expected single-char lane_short, got: {e.lane_short!r}"
+            )
+            assert e.lane_short.isupper(), (
+                f"Expected upper-case lane, got: {e.lane_short!r}"
+            )
             # LANE- prefix must have been stripped
-            assert not e.lane_short.startswith("LANE"), f"LANE- prefix not stripped: {e.lane_short!r}"
+            assert not e.lane_short.startswith("LANE"), (
+                f"LANE- prefix not stripped: {e.lane_short!r}"
+            )
 
     def test_specific_lanes(self) -> None:
         entries = parse_file(FIXTURE_DIR / "variant_1.md")
@@ -52,7 +57,9 @@ class TestParseVariant2:
     def test_notes_empty(self) -> None:
         entries = parse_file(FIXTURE_DIR / "variant_2.md")
         for e in entries:
-            assert e.notes == "", f"Expected empty notes for variant 2, got: {e.notes!r}"
+            assert e.notes == "", (
+                f"Expected empty notes for variant 2, got: {e.notes!r}"
+            )
 
     def test_specific_lanes(self) -> None:
         entries = parse_file(FIXTURE_DIR / "variant_2.md")

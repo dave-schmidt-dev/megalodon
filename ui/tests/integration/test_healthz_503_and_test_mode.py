@@ -13,10 +13,8 @@ Covers two uncovered branches in megalodon_ui/server.py:
 
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 

@@ -142,8 +142,11 @@ async def cas_modify(
     """
     if not path.exists():
         return CasOutcome(
-            ok=False, code="FILE_NOT_FOUND", error=f"{path} does not exist",
-            recoverable=False, attempts=0,
+            ok=False,
+            code="FILE_NOT_FOUND",
+            error=f"{path} does not exist",
+            recoverable=False,
+            attempts=0,
         )
     lock = await _get_lock(path.resolve())
     for attempt in range(1, retries + 1):
@@ -153,8 +156,11 @@ async def cas_modify(
             new = mutator(original)
         except Exception as exc:
             return CasOutcome(
-                ok=False, code="MUTATOR_ERROR", error=str(exc),
-                recoverable=False, attempts=attempt,
+                ok=False,
+                code="MUTATOR_ERROR",
+                error=str(exc),
+                recoverable=False,
+                attempts=attempt,
             )
         async with lock:
             # Re-read under lock; bail if hash drifted

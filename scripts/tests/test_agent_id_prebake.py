@@ -20,7 +20,9 @@ def test_generate_agent_id_format():
     # 2 hex bytes = 4 chars
     assert len(aid) == len("agent-") + 4
     # Two consecutive calls yield different ids
-    assert _generate_agent_id() != _generate_agent_id() or True  # 1-in-65536 collision tolerated
+    assert (
+        _generate_agent_id() != _generate_agent_id() or True
+    )  # 1-in-65536 collision tolerated
 
 
 def test_bake_substitutes_placeholder(tmp_path):

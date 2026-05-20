@@ -16,6 +16,7 @@ from ui.tests.integration.conftest import wait_for_queue_applied
 
 try:
     from megalodon_ui.server import make_app  # type: ignore[import-not-found]
+
     BACKEND_AVAILABLE = True
 except ImportError:
     make_app = None  # type: ignore[assignment]
@@ -40,7 +41,9 @@ def fix_failure_modes(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
-async def test_A_CH_inject_appends_task_and_creates_claim(async_client_with_lifespan, fix_medium):
+async def test_A_CH_inject_appends_task_and_creates_claim(
+    async_client_with_lifespan, fix_medium
+):
     """T-A-CH-int — POST /api/v1/challenge adds a CHALLENGE-* task to TASKS.md atomically.
 
     URL + body aligned with api-contract.md:55 (P3-E Stage 2c, agent-43d9).
@@ -49,12 +52,17 @@ async def test_A_CH_inject_appends_task_and_creates_claim(async_client_with_life
     The old `[CHALLENGE-…]` bracket variant was an artifact of fixture pollution
     from earlier runs (TASKS.md was committed dirty); the BE never wrote it.
     """
-    r = await async_client_with_lifespan.post("/api/v1/challenge", json={
-        "finding_filename": "agent-x-A-P1-A.md",
-    })
+    r = await async_client_with_lifespan.post(
+        "/api/v1/challenge",
+        json={
+            "finding_filename": "agent-x-A-P1-A.md",
+        },
+    )
     assert r.status_code == 202, f"got {r.status_code}: {r.text}"
     request_id = r.json()["request_id"]
-    await wait_for_queue_applied(async_client_with_lifespan, request_id, mission_dir=fix_medium)
+    await wait_for_queue_applied(
+        async_client_with_lifespan, request_id, mission_dir=fix_medium
+    )
     tasks = (fix_medium / "TASKS.md").read_text()
     assert "`CHALLENGE-" in tasks, tasks
 
@@ -64,7 +72,9 @@ async def test_A_CH_inject_appends_task_and_creates_claim(async_client_with_life
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
-async def test_A_RC_reclaim_stale_row_retroactive(async_client_with_lifespan, fix_medium):
+async def test_A_RC_reclaim_stale_row_retroactive(
+    async_client_with_lifespan, fix_medium
+):
     """T-A-RC-int(a) — finding exists → retroactive recovery path.
 
     URL + body aligned with api-contract.md:54 (P3-E Stage 2c, agent-43d9).
@@ -73,13 +83,17 @@ async def test_A_RC_reclaim_stale_row_retroactive(async_client_with_lifespan, fi
     r = await async_client_with_lifespan.post("/api/v1/reclaim", json={"lane": "AUDIT"})
     assert r.status_code == 202, f"got {r.status_code}: {r.text}"
     request_id = r.json()["request_id"]
-    final = await wait_for_queue_applied(async_client_with_lifespan, request_id, mission_dir=fix_medium)
+    final = await wait_for_queue_applied(
+        async_client_with_lifespan, request_id, mission_dir=fix_medium
+    )
     assert final["status"] == "applied", f"reclaim did not apply: {final}"
 
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
-async def test_A_RC_reclaim_stale_row_no_finding(async_client_with_lifespan, fix_medium):
+async def test_A_RC_reclaim_stale_row_no_finding(
+    async_client_with_lifespan, fix_medium
+):
     """T-A-RC-int(b) — no finding → STALE-RECLAIMED + rm -rf claim dir.
 
     Body filled-in by P3-E Stage 2c (agent-43d9); was `pass` placeholder.
@@ -97,7 +111,9 @@ async def test_A_RC_reclaim_stale_row_no_finding(async_client_with_lifespan, fix
     r = await async_client_with_lifespan.post("/api/v1/reclaim", json={"lane": "AUDIT"})
     assert r.status_code == 202, f"got {r.status_code}: {r.text}"
     request_id = r.json()["request_id"]
-    final = await wait_for_queue_applied(async_client_with_lifespan, request_id, mission_dir=fix_medium)
+    final = await wait_for_queue_applied(
+        async_client_with_lifespan, request_id, mission_dir=fix_medium
+    )
     assert final["status"] == "applied", f"no-finding reclaim did not apply: {final}"
 
 
@@ -121,18 +137,26 @@ async def test_A_SG_post_signal_requires_cite(async_client_with_lifespan, fix_me
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
-async def test_A_SG_post_signal_appends_to_notes(async_client_with_lifespan, fix_medium):
+async def test_A_SG_post_signal_appends_to_notes(
+    async_client_with_lifespan, fix_medium
+):
     """T-A-SG-int — successful signal appears in STATUS notes column.
 
     URL + body aligned with api-contract.md:53 (P3-E Stage 2c, agent-43d9).
     """
     r = await async_client_with_lifespan.post(
         "/api/v1/signal",
-        json={"to_lane": "META", "claim": "verify finding X", "evidence": "findings/X.md:42"},
+        json={
+            "to_lane": "META",
+            "claim": "verify finding X",
+            "evidence": "findings/X.md:42",
+        },
     )
     assert r.status_code == 202, f"got {r.status_code}: {r.text}"
     request_id = r.json()["request_id"]
-    await wait_for_queue_applied(async_client_with_lifespan, request_id, mission_dir=fix_medium)
+    await wait_for_queue_applied(
+        async_client_with_lifespan, request_id, mission_dir=fix_medium
+    )
     status = (fix_medium / "STATUS.md").read_text()
     assert "verify finding X" in status
     assert "findings/X.md:42" in status
@@ -151,7 +175,11 @@ async def test_R11_int_flip_via_api(async_client_with_lifespan, fix_medium):
     """
     r = await async_client_with_lifespan.post(
         "/api/v1/phase-flip",
-        json={"from": "PHASE-PLAN", "to": "PHASE-CHALLENGE", "reason": "integration test"},
+        json={
+            "from": "PHASE-PLAN",
+            "to": "PHASE-CHALLENGE",
+            "reason": "integration test",
+        },
     )
     assert r.status_code == 200
     events = (fix_medium / ".mission-events").read_text()
@@ -185,7 +213,9 @@ async def test_GET_findings_filters_by_severity(async_client_with_lifespan, fix_
     URL aligned with api-contract.md:38 (P3-E Stage 2c, agent-43d9).
     Response per api-contract is `{findings: Finding[]}`.
     """
-    r = await async_client_with_lifespan.get("/api/v1/findings", params={"severity": "MAJOR"})
+    r = await async_client_with_lifespan.get(
+        "/api/v1/findings", params={"severity": "MAJOR"}
+    )
     assert r.status_code == 200
     body = r.json()
     findings = body.get("findings", body) if isinstance(body, dict) else body
@@ -194,12 +224,16 @@ async def test_GET_findings_filters_by_severity(async_client_with_lifespan, fix_
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
-async def test_GET_findings_includes_scratch_files(async_client_with_lifespan, fix_medium):
+async def test_GET_findings_includes_scratch_files(
+    async_client_with_lifespan, fix_medium
+):
     """P2.5-E CHALLENGE-5 — scratch files in source set with scratch=True tag.
 
     URL aligned with api-contract.md:38 (P3-E Stage 2c, agent-43d9).
     """
-    r = await async_client_with_lifespan.get("/api/v1/findings", params={"scratch": "true"})
+    r = await async_client_with_lifespan.get(
+        "/api/v1/findings", params={"scratch": "true"}
+    )
     assert r.status_code == 200
     body = r.json()
     findings = body.get("findings", body) if isinstance(body, dict) else body

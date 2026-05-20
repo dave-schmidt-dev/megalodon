@@ -1,4 +1,5 @@
 """V9 M4 — codegen for ui/static/js/constants.js from megalodon_ui/constants.py."""
+
 from __future__ import annotations
 
 import importlib
@@ -53,7 +54,11 @@ def main(argv: list[str]) -> int:
     check_mode = "--check" in argv
     generated = generate_js()
     if check_mode:
-        existing = JS_OUTPUT_PATH.read_text(encoding="utf-8") if JS_OUTPUT_PATH.exists() else ""
+        existing = (
+            JS_OUTPUT_PATH.read_text(encoding="utf-8")
+            if JS_OUTPUT_PATH.exists()
+            else ""
+        )
         if existing != generated:
             print("constants.js OUT OF SYNC with constants.py", file=sys.stderr)
             print("Run: python3 scripts/gen_js_constants.py", file=sys.stderr)

@@ -9,6 +9,7 @@ The walltime suffix is optional (default 12 minutes). Expiry threshold is
 ``max(12, walltime + 5)`` minutes after the declared UTC. After expiry, peers
 listed in the task-assignment matrix MAY reclaim without RULE-6 ceremony.
 """
+
 from __future__ import annotations
 
 import re
@@ -46,11 +47,9 @@ def is_expired(intent: dict, now: datetime | None = None) -> bool:
     ``declared_utc``. Heartbeat-ACK absence (detected upstream) may also
     trigger reclaim, but is not modeled here.
     """
-    declared = datetime.strptime(
-        intent["declared_utc"], "%Y-%m-%dT%H:%M:%SZ"
-    ).replace(tzinfo=timezone.utc)
-    threshold = timedelta(
-        minutes=max(12, intent["walltime_minutes"] + 5)
+    declared = datetime.strptime(intent["declared_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
     )
+    threshold = timedelta(minutes=max(12, intent["walltime_minutes"] + 5))
     now = now or datetime.now(timezone.utc)
     return (now - declared) > threshold

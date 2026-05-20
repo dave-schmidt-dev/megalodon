@@ -39,7 +39,9 @@ def test_detect_status_fresh_returns_ok(tmp_path):
 
 
 def test_detect_jsonl_missing_skips_silently():
-    result = detectors.detect_jsonl_stale(Path("/nonexistent.jsonl"), threshold_seconds=300)
+    result = detectors.detect_jsonl_stale(
+        Path("/nonexistent.jsonl"), threshold_seconds=300
+    )
     assert result == "skip"
 
 

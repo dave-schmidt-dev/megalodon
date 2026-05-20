@@ -4,6 +4,7 @@ Reads ``<mission_dir>/.scratch/fleet-matrix-override.json`` if present, falls
 back to baked-in defaults documented in ``docs/v9/fleet-matrix.md``. Unknown
 lanes fall back to ``opus-4.7`` (safe default for code lanes).
 """
+
 from __future__ import annotations
 
 import json
@@ -32,11 +33,7 @@ def select(lane: str, mission_dir: Path) -> str:
     if override.exists():
         try:
             data = json.loads(override.read_text(encoding="utf-8"))
-            model = (
-                data.get("lanes", {})
-                .get(lane, {})
-                .get("model")
-            )
+            model = data.get("lanes", {}).get(lane, {}).get("model")
             if model:
                 return model
         except (json.JSONDecodeError, OSError):

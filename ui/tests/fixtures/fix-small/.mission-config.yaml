@@ -1,0 +1,46 @@
+schema_version: 1
+
+mission:
+  id: "fix-small-smoke-test"
+  utc_started: "2026-01-01T00:00:00Z"
+  type: "software-engineering"
+  description: "3-lane smoke-test fixture for grid page E2E tests"
+
+lanes:
+  - name: "LANE-A"
+    short: "A"
+    role: "Alpha lane"
+    harness:
+      cli: "claude"
+      model: "claude-sonnet-4-6"
+    cadence_seconds: 180
+
+  - name: "LANE-B"
+    short: "B"
+    role: "Beta lane"
+    harness:
+      cli: "claude"
+      model: "claude-sonnet-4-6"
+    cadence_seconds: 180
+
+  - name: "LANE-C"
+    short: "C"
+    role: "Gamma lane"
+    harness:
+      cli: "claude"
+      model: "claude-sonnet-4-6"
+    cadence_seconds: 180
+
+phases:
+  - "PHASE-PLAN"
+  - "PHASE-EXEC"
+  - "OPERATOR-ACCEPTANCE"
+
+task_id_patterns:
+  patterns:
+    - "^[A-Z][A-Za-z0-9\\-\\.]*$"
+  description: "Standard task ID format"
+
+task_sections:
+  - "PHASE-PLAN"
+  - "OPERATOR-ACCEPTANCE"

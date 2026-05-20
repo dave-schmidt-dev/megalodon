@@ -6,11 +6,13 @@ import { test, expect } from '@playwright/test';
 
 test.describe('STATUS view (T-V-STATUS-e2e)', () => {
 
-  test('renders one row per lane from fix-medium fixture', async ({ page }) => {
+  test('renders one pane per lane from fix-medium fixture', async ({ page }) => {
+    // v9.4: `/` now renders grid.js (terminal panes) not dashboard.js (lane-row cards).
+    // fix-medium has 6 lanes; grid renders one [data-pane-lane] wrapper per lane.
     await page.goto('/');
-    // Per P1-E F.1 testability requirement: stable data-testid hooks.
-    const rows = page.locator('[data-testid^="lane-row-"]');
-    await expect(rows).toHaveCount(6);
+    await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+    const panes = page.locator('[data-pane-lane]');
+    await expect(panes).toHaveCount(6);
   });
 
   test('stale row receives stale-color styling (T-R1-b)', async ({ page }) => {

@@ -63,9 +63,12 @@ class VibeAdapter(_FollowupArgvDefault):
         # See module docstring for the config.toml workaround.
         argv = [
             "vibe",
-            "--prompt", prompt_or_launch_path,
-            "--agent", "auto-approve",
-            "--output", "json",
+            "--prompt",
+            prompt_or_launch_path,
+            "--agent",
+            "auto-approve",
+            "--output",
+            "json",
         ]
         return argv, {}
 

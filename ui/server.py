@@ -35,8 +35,11 @@ def main() -> int:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("MEGALODON_PORT",
-                                   os.environ.get("MEGALODON_UI_PORT", "8080"))),
+        default=int(
+            os.environ.get(
+                "MEGALODON_PORT", os.environ.get("MEGALODON_UI_PORT", "8080")
+            )
+        ),
     )
     parser.add_argument(
         "--host",
@@ -53,8 +56,10 @@ def main() -> int:
     from megalodon_ui import make_app
 
     app = make_app(mission_dir=mission_dir, port=args.port)
-    print(f"[ui/server.py] V9 M1.6 shim → make_app(mission={mission_dir}, port={args.port})",
-          file=sys.stderr)
+    print(
+        f"[ui/server.py] V9 M1.6 shim → make_app(mission={mission_dir}, port={args.port})",
+        file=sys.stderr,
+    )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

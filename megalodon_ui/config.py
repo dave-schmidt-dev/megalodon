@@ -3,6 +3,7 @@
 Per BACKEND P2.5-C plan-v2 Δ3: `poll_interval_seconds` is `float` (tests pass
 0.05); `allowed_origins` derived from runtime port at make_app() time per FE C1.
 """
+
 from __future__ import annotations
 
 import os

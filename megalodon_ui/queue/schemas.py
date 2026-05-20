@@ -10,7 +10,7 @@ Q1 additions per S-8 §A Q1:
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 
 
 class StatusUpdatePayload(BaseModel):
@@ -68,7 +68,9 @@ class MissionEventCorrectionPayload(BaseModel):
     @classmethod
     def must_have_correction_prefix(cls, v: str) -> str:
         if "CORRECTION by " not in v:
-            raise ValueError("MISSION_EVENT_CORRECTION line must contain 'CORRECTION by '")
+            raise ValueError(
+                "MISSION_EVENT_CORRECTION line must contain 'CORRECTION by '"
+            )
         return v
 
 

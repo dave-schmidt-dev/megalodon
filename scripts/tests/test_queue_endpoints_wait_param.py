@@ -5,6 +5,7 @@ Why it matters: without ?wait=true, agents wrote `for i in 1..5; do curl /queue/
 polling loops. Compound bash trips the operator-approval prompt. The sync path
 eliminates polling so one curl per intent is the contract.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 try:
     from megalodon_ui.server import make_app  # type: ignore[import-not-found]
+
     BACKEND_AVAILABLE = True
 except ImportError:
     make_app = None  # type: ignore[assignment]
@@ -31,7 +33,11 @@ FIXTURES = Path(__file__).resolve().parents[2] / "ui" / "tests" / "fixtures"
 
 
 def _ignore_runtime_state(_src, names):
-    return [n for n in names if n.endswith(".stream.log") or n == "tmux.sock" or n == "dashboard.url"]
+    return [
+        n
+        for n in names
+        if n.endswith(".stream.log") or n == "tmux.sock" or n == "dashboard.url"
+    ]
 
 
 @pytest_asyncio.fixture
@@ -51,7 +57,8 @@ async def async_client(tmp_path, monkeypatch):
     app = make_app(mission_dir=mission)
     async with app.router.lifespan_context(app):
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test",
+            transport=ASGITransport(app=app),
+            base_url="http://test",
         ) as client:
             yield client, mission
 
@@ -88,8 +95,10 @@ async def test_status_update_wait_true(async_client):
     r = await client.post(
         "/api/v1/status/update?wait=true",
         json={
-            "lane": "AUDIT", "agent": "agent-test",
-            "new_state": "working: P1-A", "new_utc": "2026-05-19T22:30:00Z",
+            "lane": "AUDIT",
+            "agent": "agent-test",
+            "new_state": "working: P1-A",
+            "new_utc": "2026-05-19T22:30:00Z",
         },
     )
     # Status update may be 200 applied or 409 rejected (e.g. row-not-found);
@@ -103,7 +112,9 @@ async def test_history_append_wait_true(async_client):
     r = await client.post(
         "/api/v1/history/append?wait=true",
         json={
-            "lane": "AUDIT", "agent": "agent-test", "task_id": "P1-A",
+            "lane": "AUDIT",
+            "agent": "agent-test",
+            "task_id": "P1-A",
             "finding_path": "agent-test-A-P1-foo-2026-05-19T22-30Z.md",
             "severity": "INFO",
         },
@@ -122,10 +133,18 @@ async def test_mission_event_wait_true(async_client):
     assert r.json()["intent"] == "MISSION_EVENT_APPEND"
 
 
-@pytest.mark.parametrize("wait_value,expect_async", [
-    ("true", False), ("1", False), ("yes", False), ("TRUE", False),
-    ("false", True), ("0", True), ("", True),
-])
+@pytest.mark.parametrize(
+    "wait_value,expect_async",
+    [
+        ("true", False),
+        ("1", False),
+        ("yes", False),
+        ("TRUE", False),
+        ("false", True),
+        ("0", True),
+        ("", True),
+    ],
+)
 async def test_wait_param_parsing(async_client, wait_value, expect_async):
     client, _mission = async_client
     suffix = f"?wait={wait_value}" if wait_value else ""

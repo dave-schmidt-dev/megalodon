@@ -78,7 +78,9 @@ async def authed_teardown_client(
     token = "teardown-test-token"
     write_token_atomic(fleet / "ui.token", token)
     (fleet / "tmux.sock").write_bytes(b"")  # placeholder file
-    (fleet / "dashboard.url").write_text("http://127.0.0.1:8080/#t=teardown-test-token\n")
+    (fleet / "dashboard.url").write_text(
+        "http://127.0.0.1:8080/#t=teardown-test-token\n"
+    )
 
     socket = fleet / "tmux.sock"
     config = _make_config(["A", "B"])
@@ -90,8 +92,12 @@ async def authed_teardown_client(
     stream_log_a = fleet / "A.stream.log"
     stream_log_a.touch()
     spawner.sessions["A"] = LaneSession(
-        lane="A", name="lane-A", cwd=fix_medium,
-        argv=["stub"], env={}, stream_log=stream_log_a,
+        lane="A",
+        name="lane-A",
+        cwd=fix_medium,
+        argv=["stub"],
+        env={},
+        stream_log=stream_log_a,
         running=True,
     )
 
@@ -136,9 +142,7 @@ async def test_delete_fleet_idempotent_when_files_missing(authed_teardown_client
     """Calling twice — second call hits absent files, still returns 200."""
     client, app, spawner, fleet = authed_teardown_client
 
-    with patch(
-        "megalodon_ui.server.tmux.kill_server", new=AsyncMock(return_value=0)
-    ):
+    with patch("megalodon_ui.server.tmux.kill_server", new=AsyncMock(return_value=0)):
         r1 = await client.delete("/api/v1/fleet")
         r2 = await client.delete("/api/v1/fleet")
 
@@ -151,9 +155,7 @@ async def test_delete_fleet_tolerates_kill_server_nonzero_rc(authed_teardown_cli
     """kill_server returning non-zero (server already gone) is best-effort."""
     client, app, spawner, fleet = authed_teardown_client
 
-    with patch(
-        "megalodon_ui.server.tmux.kill_server", new=AsyncMock(return_value=1)
-    ):
+    with patch("megalodon_ui.server.tmux.kill_server", new=AsyncMock(return_value=1)):
         resp = await client.delete("/api/v1/fleet")
 
     assert resp.status_code == 200

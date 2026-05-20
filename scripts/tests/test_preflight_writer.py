@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import textwrap
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +21,7 @@ from megalodon_ui.preflight.writer import write_aborted_snapshot, write_atomic
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def minimal_config() -> MissionConfig:
@@ -51,6 +51,7 @@ def minimal_config() -> MissionConfig:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestWriteAtomic:
     def test_write_atomic_creates_file(self, tmp_path, minimal_config):
         """File appears at expected path; content parses back to the same MissionConfig."""
@@ -79,7 +80,11 @@ class TestWriteAtomic:
 
         # Modify the config slightly
         updated = minimal_config.model_copy(
-            update={"mission": minimal_config.mission.model_copy(update={"id": "updated-id"})}
+            update={
+                "mission": minimal_config.mission.model_copy(
+                    update={"id": "updated-id"}
+                )
+            }
         )
 
         second_path = write_atomic(updated, tmp_path, force=True)

@@ -15,8 +15,9 @@ test('M2 contract-trace — walks SPA, dumps fetched URLs', async ({ page }) => 
 
   await page.goto('/static/index.html');
 
-  // Wait for dashboard to render (proves /api/v1/state fired).
-  await page.waitForSelector('[data-testid^="lane-row-"]', { timeout: 15000 });
+  // v9.4: / now renders grid.js (terminal panes). Wait for grid-page to render
+  // (proves /api/v1/config fired, which is the primary config fetch).
+  await page.waitForSelector('[data-testid="grid-page"]', { timeout: 15000 });
 
   // Visit other SPA routes that trigger their own fetches. We can't use
   // waitForLoadState('networkidle') because the SSE stream keeps the

@@ -13,7 +13,9 @@ def _run(mission_dir, *args):
     env = {**os.environ, "PYTHONPATH": str(SCRIPT.resolve().parents[1])}
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--mission-dir", str(mission_dir), *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True,
+        text=True,
+        env=env,
     )
 
 
@@ -22,8 +24,15 @@ def test_full_emits_valid_json_with_required_keys(mission_dir):
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
     for key in [
-        "utc", "mission_dir", "phase", "phase_lock_owner",
-        "lanes", "claims", "events_tail", "findings_recent", "partial_journals",
+        "utc",
+        "mission_dir",
+        "phase",
+        "phase_lock_owner",
+        "lanes",
+        "claims",
+        "events_tail",
+        "findings_recent",
+        "partial_journals",
     ]:
         assert key in payload, f"missing key: {key}"
 
@@ -50,17 +59,30 @@ def test_invalid_mission_dir_exits_4(tmp_path):
 
 def test_full_includes_partial_journals_when_present(mission_dir, agent):
     import json as J
+
     jdir = mission_dir / ".scripts-journal"
     jdir.mkdir()
-    (jdir / "rid-test.json").write_text(J.dumps({
-        "schema_version": 1, "request_id": "rid-test",
-        "started_utc": "2026-05-16T22:00:00Z",
-        "last_updated_utc": "2026-05-16T22:00:00Z",
-        "status": "PARTIAL",
-        "task_id": "X", "lane": "AUDIT", "agent": agent,
-        "args": {"finding": "f", "severity": "DELTA", "notes": "n", "summary": "s"},
-        "steps": [{"step": "CLAIM_DIR_DONE", "ok": False, "error": "missing"}],
-    }))
+    (jdir / "rid-test.json").write_text(
+        J.dumps(
+            {
+                "schema_version": 1,
+                "request_id": "rid-test",
+                "started_utc": "2026-05-16T22:00:00Z",
+                "last_updated_utc": "2026-05-16T22:00:00Z",
+                "status": "PARTIAL",
+                "task_id": "X",
+                "lane": "AUDIT",
+                "agent": agent,
+                "args": {
+                    "finding": "f",
+                    "severity": "DELTA",
+                    "notes": "n",
+                    "summary": "s",
+                },
+                "steps": [{"step": "CLAIM_DIR_DONE", "ok": False, "error": "missing"}],
+            }
+        )
+    )
     res = _run(mission_dir, "--full")
     payload = json.loads(res.stdout)
     # rid-test may be > 24h old in real wall clock; just verify the field exists.

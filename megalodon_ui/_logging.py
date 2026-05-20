@@ -25,9 +25,11 @@ def get_logger(name: str, debug: bool = False) -> logging.Logger:
     handler = RotatingFileHandler(
         LOG_PATH, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT
     )
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s %(message)s",
-    ))
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+    )
     logger.addHandler(handler)
     logger.propagate = False
     return logger

@@ -39,8 +39,12 @@ def test_followup_matches_build_argv_for_default_inheriting_adapter() -> None:
 
 def test_followup_ignores_prior_session_id_for_gemini() -> None:
     adapter = GeminiAdapter()
-    a, _ = adapter.build_followup_argv("p", prior_session_id="sid-A", model=MODEL, cwd=CWD)
-    b, _ = adapter.build_followup_argv("p", prior_session_id="sid-B", model=MODEL, cwd=CWD)
+    a, _ = adapter.build_followup_argv(
+        "p", prior_session_id="sid-A", model=MODEL, cwd=CWD
+    )
+    b, _ = adapter.build_followup_argv(
+        "p", prior_session_id="sid-B", model=MODEL, cwd=CWD
+    )
     c, _ = adapter.build_followup_argv("p", prior_session_id=None, model=MODEL, cwd=CWD)
     assert a == b == c, "gemini ignores prior_session_id; argv must be identical"
 
@@ -48,22 +52,28 @@ def test_followup_ignores_prior_session_id_for_gemini() -> None:
 @pytest.mark.parametrize(
     "adapter_module,adapter_class,default_model",
     [
-        ("megalodon_ui.harnesses.gemini",  "GeminiAdapter",  "gemini-2.5-pro"),
+        ("megalodon_ui.harnesses.gemini", "GeminiAdapter", "gemini-2.5-pro"),
         ("megalodon_ui.harnesses.copilot", "CopilotAdapter", None),
-        ("megalodon_ui.harnesses.cursor",  "CursorAdapter",  None),
-        ("megalodon_ui.harnesses.vibe",    "VibeAdapter",    None),
+        ("megalodon_ui.harnesses.cursor", "CursorAdapter", None),
+        ("megalodon_ui.harnesses.vibe", "VibeAdapter", None),
     ],
 )
-def test_default_adapters_follow_build_argv_for_followup(adapter_module, adapter_class, default_model):
+def test_default_adapters_follow_build_argv_for_followup(
+    adapter_module, adapter_class, default_model
+):
     """Every non-claude / non-codex adapter must forward build_followup_argv to build_argv."""
     import importlib
+
     mod = importlib.import_module(adapter_module)
     AdapterCls = getattr(mod, adapter_class)
     adapter = AdapterCls()
     model = default_model or adapter.default_model
     fresh, _ = adapter.build_argv("ping", model=model, cwd=CWD)
     followup, _ = adapter.build_followup_argv(
-        "ping", prior_session_id="any-sid", model=model, cwd=CWD,
+        "ping",
+        prior_session_id="any-sid",
+        model=model,
+        cwd=CWD,
     )
     assert followup == fresh, (
         f"{adapter_class}.build_followup_argv diverged from build_argv: "

@@ -75,7 +75,9 @@ async def test_session_id_discovered_when_single_new_jsonl_appears(tmp_path: Pat
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
-        patch("megalodon_ui.spawn.tmux.new_session", side_effect=_new_session_writes_log),
+        patch(
+            "megalodon_ui.spawn.tmux.new_session", side_effect=_new_session_writes_log
+        ),
         patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
     ):
         await spawner.start_all()
@@ -151,7 +153,9 @@ async def test_session_id_none_on_ambiguous_diff_two_plus_entries(tmp_path: Path
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
-        patch("megalodon_ui.spawn.tmux.new_session", side_effect=_new_session_writes_two),
+        patch(
+            "megalodon_ui.spawn.tmux.new_session", side_effect=_new_session_writes_two
+        ),
         patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
         patch("megalodon_ui.spawn._SESSION_DISCOVERY_TIMEOUT", 0.2),
         patch("megalodon_ui.spawn._SESSION_DISCOVERY_INTERVAL", 0.05),

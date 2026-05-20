@@ -4,10 +4,18 @@
 // Spec: ~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md §6.5
 // Tests: ui/tests/e2e/dashboard-loads.spec.ts, auth-redirect.spec.ts (P5.3)
 //
-// Loaded unconditionally by index.html. NO-OP unless /api/v1/config returns
-// `v92_dashboard: true` (the MEGALODON_V92_DASHBOARD env var at server start).
+// Loaded by index.html (xterm.js + addon-fit.js are also loaded there; this
+// IIFE is a NO-OP unless /api/v1/config returns `v92_dashboard: true`).
 // This keeps v9.0 / v9.1 dashboards untouched while letting a v9.2-mode server
 // take over the `/` page.
+//
+// v9.4 refactor: xterm + pane-stream SSE logic has been lifted into
+// components/terminal_pane.js. This file uses createTerminalPane() instead
+// of carrying the decode + write loop inline.
+//
+// Prerequisite: window.createTerminalPane must be defined.
+// index.html loads components/terminal_pane.js as a module — this script
+// waits for DOMContentLoaded so the module is ready.
 
 (async () => {
   // Wait for the inline auth bootstrap in index.html so any `#t=<token>` URL
@@ -47,16 +55,23 @@
   // fetches don't queue behind streaming pane-streams. No-op in production
   // (nobody calls it).
   window.__v92_closeAllStreams = () => {
-    for (const [, entry] of _laneEventSources) {
-      try { entry.es && entry.es.close(); } catch {}
-      entry.es = null;
+    for (const [, entry] of _laneEntries) {
+      try { entry.cleanup && entry.cleanup(); } catch {}
+      entry.cleanup = null;
     }
   };
+
+  // Expose the paste-token modal show function globally so terminal_pane.js can
+  // surface it on 401 without importing the whole dashboard.
+  window.__v92_showPasteTokenModal = showPasteTokenModal;
 })();
 
 // --- helpers ---------------------------------------------------------------
 
-const _laneEventSources = new Map();
+// Maps lane.name → { lane, termHost, cleanup, statusEl, sendBtn, sawFirstByte,
+//                     _sendTimeoutId }
+// `cleanup` is what createTerminalPane() returned; null after __v92_closeAllStreams.
+const _laneEntries = new Map();
 
 function injectV92Styles(laneCount) {
   if (document.getElementById('v92-dashboard-style')) return;
@@ -159,6 +174,8 @@ function mountLane(grid, lane) {
   header.appendChild(label);
   header.appendChild(status);
 
+  // Terminal host: wraps the component element, carries the data-testid used
+  // by Playwright specs to find the pane's content.
   const termHost = document.createElement('div');
   termHost.className = 'v92-lane-term';
   termHost.setAttribute('data-testid', `lane-term-${lane.name}`);
@@ -181,18 +198,23 @@ function mountLane(grid, lane) {
   pane.appendChild(form);
   grid.appendChild(pane);
 
-  const term = new window.Terminal({
-    allowProposedApi: true,
-    convertEol: true,
-    cursorBlink: false,
+  // Mount the terminal component.  createTerminalPane() lives in
+  // components/terminal_pane.js (loaded as a module — window.createTerminalPane
+  // is set by that module for use here).
+  const termComponent = window.createTerminalPane({
+    lane: lane.short || lane.name,
     scrollback: 5000,
-    theme: { background: '#0b0d10' },
   });
-  term.open(termHost);
+  termHost.appendChild(termComponent.element);
 
-  const entry = { lane, term, es: null, sawFirstByte: false, sendBtn, statusEl: status };
-  _laneEventSources.set(lane.name, entry);
-  openEventSource(entry);
+  const entry = {
+    lane,
+    termHost,
+    cleanup: termComponent.cleanup,
+    statusEl: status,
+    sendBtn,
+  };
+  _laneEntries.set(lane.name, entry);
   startLaneStatePoll(entry);
 
   form.addEventListener('submit', async (ev) => {
@@ -200,9 +222,12 @@ function mountLane(grid, lane) {
     const prompt = (ta.value || '').trim();
     if (!prompt) return;
     sendBtn.disabled = true;
-    entry.sawFirstByte = false;
-    const timeoutId = window.setTimeout(() => { sendBtn.disabled = false; }, 3_000);
-    entry._sendTimeoutId = timeoutId;
+    // Release the send button after 3 s (timeout-only debounce; the v9.2
+    // sentinel early-release is handled by the component internals).
+    entry._sendTimeoutId = window.setTimeout(() => {
+      sendBtn.disabled = false;
+      entry._sendTimeoutId = null;
+    }, 3_000);
     try {
       const r = await authFetch(`/api/v1/lane/${encodeURIComponent(lane.short || lane.name)}/followup`, {
         method: 'POST',
@@ -213,7 +238,7 @@ function mountLane(grid, lane) {
         ta.value = '';
       }
     } catch (e) {
-      // ignore — debounce still releases on timeout or first-byte
+      // ignore — debounce still releases on timeout
     }
   });
 }
@@ -240,54 +265,6 @@ function startLaneStatePoll(entry) {
     window.setTimeout(tick, 2_000);
   };
   tick();
-}
-
-function openEventSource(entry) {
-  const { lane } = entry;
-  const es = new EventSource(`/api/v1/lane/${encodeURIComponent(lane.short || lane.name)}/pane-stream`, {
-    withCredentials: true,
-  });
-  entry.es = es;
-  es.onmessage = (ev) => {
-    try {
-      const bytes = base64ToUint8(ev.data);
-      // Send-button debounce (gap 4): release on first non-sentinel byte.
-      // Sentinel is `\x1bc` (0x1b 0x63) — terminal clear, sent on subscribe + on respawn.
-      const isPureSentinel =
-        bytes.length === 2 && bytes[0] === 0x1b && bytes[1] === 0x63;
-      if (!isPureSentinel && !entry.sawFirstByte) {
-        entry.sawFirstByte = true;
-        if (entry._sendTimeoutId) {
-          window.clearTimeout(entry._sendTimeoutId);
-          entry._sendTimeoutId = null;
-        }
-        if (entry.sendBtn) entry.sendBtn.disabled = false;
-      }
-      entry.term.write(bytes);
-    } catch (e) {
-      // malformed event — ignore
-    }
-  };
-  es.onerror = async () => {
-    if (es.readyState !== EventSource.CLOSED) return;
-    // The browser swallows the actual HTTP status on EventSource. Probe via
-    // a same-origin GET (which the middleware gates the same way) to learn
-    // whether the closure was a 401. Anything else means the endpoint is
-    // simply unavailable — leave the session alone.
-    try {
-      const probe = await fetch(`/api/v1/lane/${encodeURIComponent(lane.short || lane.name)}/pane-stream`, {
-        method: 'GET',
-        credentials: 'same-origin',
-        headers: { Accept: 'text/event-stream' },
-      });
-      if (probe.status === 401) {
-        showPasteTokenModal();
-      }
-      try { probe.body && probe.body.cancel(); } catch {}
-    } catch (e) {
-      // network error — leave silently
-    }
-  };
 }
 
 function ensurePasteTokenModal() {
@@ -340,7 +317,7 @@ function ensurePasteTokenModal() {
       });
       if (r.ok) {
         modal.close();
-        reconnectAllEventSources();
+        reconnectAllPaneStreams();
       } else {
         err.textContent = `Token rejected (HTTP ${r.status}).`;
         err.hidden = false;
@@ -364,10 +341,18 @@ function showPasteTokenModal() {
   }
 }
 
-function reconnectAllEventSources() {
-  for (const entry of _laneEventSources.values()) {
-    try { entry.es && entry.es.close(); } catch {}
-    openEventSource(entry);
+function reconnectAllPaneStreams() {
+  for (const [, entry] of _laneEntries) {
+    // Teardown old component.
+    try { entry.cleanup && entry.cleanup(); } catch {}
+    // Clear the terminal host and mount a fresh component.
+    while (entry.termHost.firstChild) entry.termHost.removeChild(entry.termHost.firstChild);
+    const newComponent = window.createTerminalPane({
+      lane: entry.lane.short || entry.lane.name,
+      scrollback: 5000,
+    });
+    entry.termHost.appendChild(newComponent.element);
+    entry.cleanup = newComponent.cleanup;
   }
 }
 
@@ -376,11 +361,4 @@ async function authFetch(url, init) {
   const resp = await fetch(url, opts);
   if (resp.status === 401) showPasteTokenModal();
   return resp;
-}
-
-function base64ToUint8(b64) {
-  const bin = atob(b64);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return arr;
 }

@@ -6,6 +6,7 @@ The contract doc is plain Markdown with strict structural conventions:
 each endpoint is a heading followed by a fenced ```yaml block. We extract
 the YAML blocks deterministically and ignore everything else.
 """
+
 from __future__ import annotations
 
 import re

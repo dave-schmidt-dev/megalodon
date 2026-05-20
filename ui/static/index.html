@@ -6,6 +6,12 @@
   <meta name="csrf-token" content="" />
   <title>Megalodon</title>
   <link rel="stylesheet" href="/static/css/base.css" />
+  <!-- xterm.js vendored assets — loaded as non-module scripts so window.Terminal
+       and window.FitAddon are available to both the legacy dashboard-v92.js IIFE
+       and the new v9.4 ES-module components (terminal_pane.js). -->
+  <link rel="stylesheet" href="/static/xterm/xterm.css" />
+  <script src="/static/xterm/xterm.js"></script>
+  <script src="/static/xterm/addon-fit.js"></script>
   <!-- V9 M2 — contract-trace wrapper. No-op unless window.__M9_CONTRACT_TRACE__ is set. -->
   <script src="/static/js/contract-trace.js"></script>
 </head>
@@ -100,5 +106,15 @@
   <script type="module" src="/static/js/store.js"></script>
   <script type="module" src="/static/js/sse.js"></script>
   <script type="module" src="/static/js/app.js"></script>
+  <!-- terminal_pane component — sets window.createTerminalPane for use by
+       both the new ES-module pages (grid.js, lane_detail.js) and the legacy
+       non-module dashboard-v92.js IIFE below. Must load before dashboard-v92.js. -->
+  <script type="module" src="/static/components/terminal_pane.js"></script>
+  <!-- v9.2 xterm dashboard — self-contained IIFE; NO-OP unless the server
+       sets MEGALODON_V92_DASHBOARD=1 (so /api/v1/config returns v92_dashboard:
+       true). Must load AFTER the auth-bootstrap <script> above AND after the
+       terminal_pane module above (the defer attribute ensures it runs after
+       DOMContentLoaded, by which time the module scripts have executed). -->
+  <script defer src="/static/pages/dashboard-v92.js"></script>
 </body>
 </html>

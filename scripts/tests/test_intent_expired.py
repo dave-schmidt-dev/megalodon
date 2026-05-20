@@ -1,4 +1,5 @@
 """V9 M6 — tests for intent-declared parsing + expiry detection."""
+
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,6 +68,8 @@ def test_is_expired_at_boundary():
 
 
 def test_parse_complex_task_ids():
-    notes = "intent-declared: REPAIR-MUTATIONS-E2E-3-ACTION-PANEL @ 2026-05-17T00:00:00Z"
+    notes = (
+        "intent-declared: REPAIR-MUTATIONS-E2E-3-ACTION-PANEL @ 2026-05-17T00:00:00Z"
+    )
     intent = parse_intent(notes)
     assert intent["task_id"] == "REPAIR-MUTATIONS-E2E-3-ACTION-PANEL"

@@ -7,6 +7,7 @@ docs/superpowers/specs/2026-05-16-v9-m2-contract-scan-design.md.
 Import-time drift assert ensures `SSEEventName` Literal stays in sync with
 `megalodon_ui.constants.SSE_EVENT_TYPES`. M4 dependency.
 """
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -17,9 +18,18 @@ from .constants import SSE_EVENT_TYPES
 
 
 SSEEventName = Literal[
-    "status-change", "task-change", "phase-flip", "finding-new",
-    "history-append", "claim-create", "claim-done", "signal-new",
-    "lagging", "heartbeat", "mission-status", "sync",
+    "status-change",
+    "task-change",
+    "phase-flip",
+    "finding-new",
+    "history-append",
+    "claim-create",
+    "claim-done",
+    "signal-new",
+    "lagging",
+    "heartbeat",
+    "mission-status",
+    "sync",
 ]
 # Import-time drift assert: schemas.py SSEEventName must match constants.SSE_EVENT_TYPES.
 _declared = frozenset(SSEEventName.__args__)
@@ -81,6 +91,7 @@ class FindingDetailResponse(BaseModel):
 
 class ActionResponse(BaseModel):
     """Generic POST-action acknowledgement (legacy v9 pre-M1.5)."""
+
     ok: bool
     message: str = ""
 
@@ -91,13 +102,15 @@ class QueueAcceptResponse(BaseModel):
     Returned by POST /api/v1/{reclaim,signal,challenge,inject-task}.
     Header `Location: /api/v1/queue/{request_id}` provided for polling.
     """
+
     request_id: str
-    intent: str       # e.g. "STATUS_UPDATE", "TASKS_INJECT"
-    status: str       # "pending"
+    intent: str  # e.g. "STATUS_UPDATE", "TASKS_INJECT"
+    status: str  # "pending"
 
 
 class QueueStatusResponse(BaseModel):
     """V9 M1.5 — GET /api/v1/queue/{request_id} response."""
+
     request_id: str
-    status: str       # "pending" | "applied" | "rejected"
+    status: str  # "pending" | "applied" | "rejected"
     rejection_reason: str | None = None

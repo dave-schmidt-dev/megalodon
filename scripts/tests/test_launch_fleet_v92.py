@@ -59,6 +59,7 @@ def _run(
 # test_default_mode_emits_print_output
 # ---------------------------------------------------------------------------
 
+
 def test_default_mode_emits_print_output(mission_3lane: Path) -> None:
     """Default (print) mode delegates to megalodon_ui.preview and emits lane= lines."""
     result = _run("--mission-dir", str(mission_3lane))
@@ -81,6 +82,7 @@ def test_default_mode_emits_print_output(mission_3lane: Path) -> None:
 # test_dry_run_includes_tmux_argv
 # ---------------------------------------------------------------------------
 
+
 def test_dry_run_includes_tmux_argv(mission_3lane: Path) -> None:
     """--dry-run delegates to preview with --include-tmux-argv."""
     result = _run("--dry-run", "--mission-dir", str(mission_3lane))
@@ -88,12 +90,16 @@ def test_dry_run_includes_tmux_argv(mission_3lane: Path) -> None:
     assert result.returncode == 0, f"stderr:\n{result.stderr}"
 
     stdout = result.stdout
-    lane_lines = [line for line in stdout.splitlines() if line.strip().startswith("lane=")]
+    lane_lines = [
+        line for line in stdout.splitlines() if line.strip().startswith("lane=")
+    ]
     assert len(lane_lines) == 3, (
         f"Expected 3 lane= lines, got {len(lane_lines)}:\n{stdout}"
     )
     # The --include-tmux-argv output contains tmux new-session lines.
-    assert "new-session" in stdout, f"Expected 'new-session' in dry-run output:\n{stdout}"
+    assert "new-session" in stdout, (
+        f"Expected 'new-session' in dry-run output:\n{stdout}"
+    )
     assert "tmux -S" in stdout, f"Expected 'tmux -S' socket reference:\n{stdout}"
 
 
@@ -104,6 +110,7 @@ def test_dry_run_includes_tmux_argv(mission_3lane: Path) -> None:
 # intended exec command instead of actually starting uvicorn.  This is the
 # simplest, most portable approach — no stub uv binary required.
 # ---------------------------------------------------------------------------
+
 
 def test_spawn_mode_invokes_uv_run(mission_3lane: Path) -> None:
     """--spawn with dry-exec env prints the intended exec command."""
@@ -166,6 +173,7 @@ def test_spawn_mode_custom_host_port(mission_3lane: Path) -> None:
 # test_no_launch_flag_rejected
 # ---------------------------------------------------------------------------
 
+
 def test_no_launch_flag_rejected(mission_3lane: Path) -> None:
     """--no-launch must exit 2 with a clear CV-4 removal message."""
     result = _run("--no-launch", "--mission-dir", str(mission_3lane))
@@ -181,6 +189,7 @@ def test_no_launch_flag_rejected(mission_3lane: Path) -> None:
 # ---------------------------------------------------------------------------
 # test_tmux_pre_flight
 # ---------------------------------------------------------------------------
+
 
 def test_tmux_pre_flight(mission_3lane: Path, tmp_path: Path) -> None:
     """Script exits 6 with a clear error when tmux is not on PATH (spawn mode)."""
@@ -224,6 +233,7 @@ def test_tmux_pre_flight(mission_3lane: Path, tmp_path: Path) -> None:
 # to signal), and wiring up a real uvicorn start in CI is out of scope here.
 # A proper integration test lives in test_real_tmux_spawn.py.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.nondestructive
 @pytest.mark.xfail(

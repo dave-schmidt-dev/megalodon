@@ -86,7 +86,9 @@ class _FakeProc:
 
 
 @pytest.mark.asyncio
-async def test_burst_subscribe_unsubscribe_during_fanout(tmp_path: Path, monkeypatch) -> None:
+async def test_burst_subscribe_unsubscribe_during_fanout(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Hammer subscribe / unsubscribe while the producer is fanning out chunks."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
@@ -96,7 +98,9 @@ async def test_burst_subscribe_unsubscribe_during_fanout(tmp_path: Path, monkeyp
     adapter = MagicMock()
     adapter.build_argv = MagicMock(return_value=(["stub"], {}))
     adapter.session_log_dir = MagicMock(return_value=None)
-    spawner = FleetSpawner(mission_dir, _make_config(["A"]), MagicMock(return_value=adapter), SOCKET)
+    spawner = FleetSpawner(
+        mission_dir, _make_config(["A"]), MagicMock(return_value=adapter), SOCKET
+    )
 
     fake_proc = _FakeProc()
 

@@ -13,25 +13,42 @@ from scripts._validation import (
 )
 
 
-@pytest.mark.parametrize("task_id", [
-    "P1-A", "P2.5-B", "P2-A-to-F", "P5-RUN-MUTATIONS-E2E",
-    "REPAIR-MUTATIONS-E2E-3-ACTION-PANEL", "OPERATOR-ACCEPTANCE-REQUEST",
-    "S-8",
-])
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "P1-A",
+        "P2.5-B",
+        "P2-A-to-F",
+        "P5-RUN-MUTATIONS-E2E",
+        "REPAIR-MUTATIONS-E2E-3-ACTION-PANEL",
+        "OPERATOR-ACCEPTANCE-REQUEST",
+        "S-8",
+    ],
+)
 def test_task_id_accepts_cr4_inventory(task_id):
     validate_task_id(task_id)  # raises if invalid
 
 
-@pytest.mark.parametrize("bad", [
-    "", "p1-a", "P1-Z", "P1-A; rm -rf /", "P1-A && echo",
-    "../etc/passwd", "P1-A`whoami`",
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "p1-a",
+        "P1-Z",
+        "P1-A; rm -rf /",
+        "P1-A && echo",
+        "../etc/passwd",
+        "P1-A`whoami`",
+    ],
+)
 def test_task_id_rejects_invalid(bad):
     with pytest.raises(ValueError):
         validate_task_id(bad)
 
 
-@pytest.mark.parametrize("lane", ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"])
+@pytest.mark.parametrize(
+    "lane", ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"]
+)
 def test_lane_accepts_valid(lane):
     validate_lane(lane)
 
@@ -44,26 +61,47 @@ def test_lane_rejects_invalid(bad):
 
 def test_lane_long_to_short_map_complete():
     assert LANE_LONG_TO_SHORT == {
-        "AUDIT": "A", "ARCHITECT": "B", "BACKEND": "C",
-        "FRONTEND": "D", "TEST": "E", "META": "F",
+        "AUDIT": "A",
+        "ARCHITECT": "B",
+        "BACKEND": "C",
+        "FRONTEND": "D",
+        "TEST": "E",
+        "META": "F",
     }
 
 
-@pytest.mark.parametrize("agent", ["agent-abcd", "agent-0123", "agent-dead", "agent-9bba"])
+@pytest.mark.parametrize(
+    "agent", ["agent-abcd", "agent-0123", "agent-dead", "agent-9bba"]
+)
 def test_agent_accepts_valid(agent):
     validate_agent(agent)
 
 
-@pytest.mark.parametrize("bad", ["agent-ABCD", "agent-12345", "agent-abc", "agent_abcd", ""])
+@pytest.mark.parametrize(
+    "bad", ["agent-ABCD", "agent-12345", "agent-abc", "agent_abcd", ""]
+)
 def test_agent_rejects_invalid(bad):
     with pytest.raises(ValueError):
         validate_agent(bad)
 
 
-@pytest.mark.parametrize("sev", [
-    "DELTA", "NIT", "MAJOR", "BLOCKING", "TIER-1", "TIER-2",
-    "MEDIUM", "MINOR", "TERMINAL", "RECOVERY", "EXEC-PASS", "BLOCKED-DEGRADED",
-])
+@pytest.mark.parametrize(
+    "sev",
+    [
+        "DELTA",
+        "NIT",
+        "MAJOR",
+        "BLOCKING",
+        "TIER-1",
+        "TIER-2",
+        "MEDIUM",
+        "MINOR",
+        "TERMINAL",
+        "RECOVERY",
+        "EXEC-PASS",
+        "BLOCKED-DEGRADED",
+    ],
+)
 def test_severity_accepts_valid(sev):
     validate_severity(sev)
 

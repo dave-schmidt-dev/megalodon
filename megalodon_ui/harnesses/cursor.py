@@ -64,7 +64,8 @@ class CursorAdapter(_FollowupArgvDefault):
         argv = [
             "cursor-agent",
             "-p",
-            "--model", model,
+            "--model",
+            model,
             "--force",
             "--trust",
             prompt_or_launch_path,

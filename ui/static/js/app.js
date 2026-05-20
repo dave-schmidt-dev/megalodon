@@ -12,13 +12,23 @@
 
 import { store } from "./store.js";
 
-const PAGE_LOADERS = {
-  "/": () => import("../pages/dashboard.js"),
-  "/tasks": () => import("../pages/tasks.js"),
-  "/findings": () => import("../pages/findings.js"),
-  "/signals": () => import("../pages/signals.js"),
-  "/mission": () => import("../pages/mission.js"),
-};
+const ROUTES = [
+  { pattern: /^\/$/, loader: () => import("../pages/grid.js"), params: () => ({}) },
+  { pattern: /^\/lane\/([A-Za-z0-9_-]+)$/, loader: () => import("../pages/lane_detail.js"), params: (m) => ({ short: m[1] }) },
+  { pattern: /^\/tasks$/, loader: () => import("../pages/tasks.js"), params: () => ({}) },
+  { pattern: /^\/findings$/, loader: () => import("../pages/findings.js"), params: () => ({}) },
+  { pattern: /^\/signals$/, loader: () => import("../pages/signals.js"), params: () => ({}) },
+  { pattern: /^\/mission$/, loader: () => import("../pages/mission.js"), params: () => ({}) },
+  { pattern: /^\/approval-rules$/, loader: () => import("../pages/approval_rules.js"), params: () => ({}) },
+];
+
+function matchRoute(path) {
+  for (const route of ROUTES) {
+    const m = path.match(route.pattern);
+    if (m) return { loader: route.loader, params: route.params(m) };
+  }
+  return { loader: ROUTES[0].loader, params: {} };
+}
 
 let currentPageCleanup = null;
 // Monotonic mount counter. Each mountPage() call bumps it. Stale in-flight
@@ -45,7 +55,7 @@ function emptyState(text) {
 }
 
 async function mountPage(path) {
-  const loader = PAGE_LOADERS[path] || PAGE_LOADERS["/"];
+  const { loader, params } = matchRoute(path);
   const root = getRoot();
   if (!root) return;
 
@@ -84,7 +94,7 @@ async function mountPage(path) {
     // gate the adoption on still being the current mount so a late-resolving
     // stale render can't (a) overwrite the visible page or (b) install its
     // cleanup as the page-cleanup-of-record.
-    const cleanup = await mod.render(root);
+    const cleanup = await mod.render(root, params);
     if (myId !== _mountSeq) {
       // A newer mountPage started while we were rendering. Discard our
       // cleanup by invoking it directly so its timers/subs don't leak.
@@ -208,4 +218,4 @@ if (document.readyState === "loading") {
   bootstrap();
 }
 
-export { mountPage };
+export { mountPage, matchRoute, ROUTES };

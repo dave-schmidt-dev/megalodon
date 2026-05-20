@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +50,65 @@ _AGENT_ID_PLACEHOLDER: str = "{{AGENT_ID}}"
 def _generate_agent_id() -> str:
     """Return a fresh per-lane agent identifier (``agent-XXXX`` hex form)."""
     return f"agent-{secrets.token_hex(2)}"
+
+
+# PM-8: approval-rules pattern format: Tool(specifier).  A bare word with no
+# parens is still valid (e.g. "Read"), but we warn on anything that looks
+# suspicious so the operator can catch typos early.
+_PATTERN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\(.*\))?$")
+
+
+def _load_approval_rule_patterns(mission_dir: Path) -> list[str]:
+    """Load operator-approved patterns from ``.fleet/approval-rules.json``.
+
+    Returns a list of pattern strings.  Returns [] — never raises — if the
+    file is absent, unreadable, or corrupt; a WARNING is logged in all error
+    cases so the operator knows something is wrong.
+
+    Pattern format sanity: we log a WARNING for entries that look malformed
+    (e.g. missing the expected ``Tool(...)`` shape or ``Tool`` bare word) but
+    still include them — ``--allowedTools`` silently no-ops on bad patterns,
+    which is the CLI's contract (T3.0 doc §4).
+    """
+    rules_file = mission_dir / ".fleet" / "approval-rules.json"
+    if not rules_file.exists():
+        return []
+    try:
+        raw = json.loads(rules_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        _log.warning(
+            "approval-rules: failed to load %s (%s) — proceeding with static allowlist only",
+            rules_file,
+            exc,
+        )
+        return []
+
+    # File is a raw JSON list of rule objects.
+    if not isinstance(raw, list):
+        _log.warning(
+            "approval-rules: unexpected format in %s (expected list, got %s) — "
+            "proceeding with static allowlist only",
+            rules_file,
+            type(raw).__name__,
+        )
+        return []
+
+    patterns: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        pattern = entry.get("pattern")
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        if not _PATTERN_RE.match(pattern):
+            _log.warning(
+                "approval-rules: pattern %r looks malformed (expected Tool(specifier) "
+                "or bare Tool name) — including anyway, Claude CLI will silently no-op "
+                "if invalid",
+                pattern,
+            )
+        patterns.append(pattern)
+    return patterns
 
 
 def _bake_agent_id_in_launch_file(launch_file: Path, agent_id: str) -> bool:
@@ -104,13 +165,16 @@ async def _discover_session_id(
             _log.warning(
                 "ambiguous session-id discovery in %s: %d new entries (%s); "
                 "leaving session_id=None for follow-up no-resume",
-                log_dir, len(new_entries), sorted(new_entries),
+                log_dir,
+                len(new_entries),
+                sorted(new_entries),
             )
             return None
         if asyncio.get_event_loop().time() >= deadline:
             _log.warning(
                 "session-id discovery timed out (%.1fs) in %s — no new entries",
-                t, log_dir,
+                t,
+                log_dir,
             )
             return None
         await asyncio.sleep(i)
@@ -125,7 +189,11 @@ async def _spawn_tail_subprocess(path: Path) -> asyncio.subprocess.Process:
     """
     create = asyncio.create_subprocess_exec
     return await create(
-        "tail", "-c", "+1", "-F", str(path),
+        "tail",
+        "-c",
+        "+1",
+        "-F",
+        str(path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -249,12 +317,26 @@ class FleetSpawner:
                 lane_cfg = self._lane_cfg_by_short(short)
                 if lane_cfg is not None:
                     adapter = self.adapter_resolver(lane_cfg.harness.cli)
-                    prompt = prompt_override if prompt_override is not None else (lane_cfg.role or "")
+                    prompt = (
+                        prompt_override
+                        if prompt_override is not None
+                        else (lane_cfg.role or "")
+                    )
+                    # PM-8: load operator-approved patterns and pass to build_argv
+                    # (ClaudeAdapter only; other adapters ignore unknown kwargs via
+                    # their own signatures — we only call it for live_repl lanes
+                    # since non-live_repl ignores extra_allowed_tools anyway).
+                    _extra = (
+                        _load_approval_rule_patterns(self.mission_dir)
+                        if lane_cfg.live_repl
+                        else None
+                    )
                     argv, env = adapter.build_argv(
                         prompt,
                         model=lane_cfg.harness.model,
                         cwd=self.mission_dir,
                         **({"live_repl": True} if lane_cfg.live_repl else {}),
+                        **({"extra_allowed_tools": _extra} if _extra else {}),
                     )
                     stream_log = self.mission_dir / ".fleet" / f"{short}.stream.log"
                     ls = LaneSession(
@@ -298,15 +380,30 @@ class FleetSpawner:
             # preserves the existing identity.
             if lane_cfg.live_repl:
                 launch_file = self.mission_dir / f"launch-{lane_cfg.name}.md"
-                if launch_file.exists() and _AGENT_ID_PLACEHOLDER in launch_file.read_text(encoding="utf-8"):
+                if (
+                    launch_file.exists()
+                    and _AGENT_ID_PLACEHOLDER in launch_file.read_text(encoding="utf-8")
+                ):
                     _bake_agent_id_in_launch_file(launch_file, _generate_agent_id())
             adapter = self.adapter_resolver(lane_cfg.harness.cli)
-            prompt = prompt_override if prompt_override is not None else (lane_cfg.role or "")
+            prompt = (
+                prompt_override
+                if prompt_override is not None
+                else (lane_cfg.role or "")
+            )
+            # PM-8: merge operator-approved patterns into the allowlist at spawn time.
+            # Only live_repl lanes use --allowedTools; non-live_repl lanes ignore it.
+            _extra = (
+                _load_approval_rule_patterns(self.mission_dir)
+                if lane_cfg.live_repl
+                else None
+            )
             argv, env = adapter.build_argv(
                 prompt,
                 model=lane_cfg.harness.model,
                 cwd=self.mission_dir,
                 **({"live_repl": True} if lane_cfg.live_repl else {}),
+                **({"extra_allowed_tools": _extra} if _extra else {}),
             )
             session_name = f"lane-{short}"
             ls = LaneSession(
@@ -340,10 +437,7 @@ class FleetSpawner:
                 *(self._spawn_one(s, a, b, ld, spawned) for s, a, b, ld in spawn_jobs)
             )
         except BaseException:
-            cleanup_tasks = [
-                tmux.kill_session(self.socket, s.name)
-                for s in spawned
-            ]
+            cleanup_tasks = [tmux.kill_session(self.socket, s.name) for s in spawned]
             if cleanup_tasks:
                 await asyncio.gather(*cleanup_tasks, return_exceptions=True)
             raise
@@ -354,7 +448,8 @@ class FleetSpawner:
         # kill the tmux sessions (avoids spurious EOF chunks landing on the
         # very last subscribers).
         tail_tasks = [
-            s.tail_task for s in self.sessions.values()
+            s.tail_task
+            for s in self.sessions.values()
             if s.tail_task is not None and not s.tail_task.done()
         ]
         for t in tail_tasks:
@@ -441,14 +536,10 @@ class FleetSpawner:
 
         rc = await tmux.respawn_pane(self.socket, session.name, argv, env)
         if rc != 0:
-            raise RuntimeError(
-                f"respawn-pane failed for {session.name} (rc={rc})"
-            )
+            raise RuntimeError(f"respawn-pane failed for {session.name} (rc={rc})")
 
         await tmux.pipe_pane(self.socket, session.name, session.stream_log)
-        pipe_active = await tmux.display_message_pane_pipe(
-            self.socket, session.name
-        )
+        pipe_active = await tmux.display_message_pane_pipe(self.socket, session.name)
         if not pipe_active:
             raise RuntimeError(
                 f"pipe-pane did not attach for {session.name} after respawn"
@@ -597,13 +688,12 @@ class FleetSpawner:
         try:
             await asyncio.sleep(_LIVE_REPL_PROMPT_DELAY_SECONDS)
             assert session.initial_prompt is not None
-            rc = await tmux.send_keys(
-                self.socket, session.name, session.initial_prompt
-            )
+            rc = await tmux.send_keys(self.socket, session.name, session.initial_prompt)
             if rc != 0:
                 _log.warning(
                     "send-keys initial_prompt failed for %s (rc=%d)",
-                    session.name, rc,
+                    session.name,
+                    rc,
                 )
         except asyncio.CancelledError:
             raise
@@ -614,8 +704,11 @@ class FleetSpawner:
         """Return True if the session carries MEGALODON_FLEET_OWNED=1."""
         proc = await asyncio.create_subprocess_exec(
             "tmux",
-            "-S", str(self.socket),
-            "show-environment", "-t", session_name,
+            "-S",
+            str(self.socket),
+            "show-environment",
+            "-t",
+            session_name,
             "MEGALODON_FLEET_OWNED",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,

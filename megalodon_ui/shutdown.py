@@ -20,7 +20,7 @@ from pathlib import Path
 from . import tmux
 
 
-_ARTIFACTS = ("ui.token", "tmux.sock", "dashboard.url")
+_ARTIFACTS = ("ui.token", "tmux.sock", "dashboard.url", "approval-rules.json")
 
 
 async def _run(mission_dir: Path) -> int:
@@ -32,6 +32,9 @@ async def _run(mission_dir: Path) -> int:
         pass
     for name in _ARTIFACTS:
         (fleet / name).unlink(missing_ok=True)
+    # Clean daily-rotated inject log files (glob pattern)
+    for p in fleet.glob("inject-log-*.jsonl"):
+        p.unlink(missing_ok=True)
     return 0
 
 

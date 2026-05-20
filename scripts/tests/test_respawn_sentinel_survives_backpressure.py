@@ -64,13 +64,20 @@ async def test_respawn_sentinel_is_first_chunk_after_drain(tmp_path: Path, monke
     adapter = MagicMock()
     adapter.session_log_dir = MagicMock(return_value=None)
     spawner = FleetSpawner(
-        mission_dir, config, MagicMock(return_value=adapter),
+        mission_dir,
+        config,
+        MagicMock(return_value=adapter),
         mission_dir / ".fleet" / "tmux.sock",
     )
     spawner.sessions["A"] = LaneSession(
-        lane="A", name="lane-A", cwd=mission_dir,
-        argv=["old"], env={}, stream_log=stream_log,
-        session_id="prior-sid", running=True,
+        lane="A",
+        name="lane-A",
+        cwd=mission_dir,
+        argv=["old"],
+        env={},
+        stream_log=stream_log,
+        session_id="prior-sid",
+        running=True,
     )
 
     # Slow consumer: subscriber queue full of stale bytes.
@@ -108,13 +115,20 @@ async def test_respawn_drain_clears_queue_even_for_idle_subscriber(tmp_path: Pat
     adapter = MagicMock()
     adapter.session_log_dir = MagicMock(return_value=None)
     spawner = FleetSpawner(
-        mission_dir, config, MagicMock(return_value=adapter),
+        mission_dir,
+        config,
+        MagicMock(return_value=adapter),
         mission_dir / ".fleet" / "tmux.sock",
     )
     spawner.sessions["A"] = LaneSession(
-        lane="A", name="lane-A", cwd=mission_dir,
-        argv=["old"], env={}, stream_log=stream_log,
-        session_id="prior-sid", running=True,
+        lane="A",
+        name="lane-A",
+        cwd=mission_dir,
+        argv=["old"],
+        env={},
+        stream_log=stream_log,
+        session_id="prior-sid",
+        running=True,
     )
     q = await spawner.subscribe("A")
     assert q.empty()

@@ -9,6 +9,7 @@ line does not abort the whole parse.
 Pricing is documented per million tokens; cost is reported as "estimated"
 (not authoritative). Operator can update the ``PRICING`` dict.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -65,10 +66,9 @@ def parse(jsonl_path: Path) -> dict:
             n_turns += 1
 
     pricing = PRICING.get(model_seen or "", {"in": 0.0, "out": 0.0})
-    cost = (
-        (total_in + total_cache_create) * pricing["in"] / 1_000_000
-        + total_out * pricing["out"] / 1_000_000
-    )
+    cost = (total_in + total_cache_create) * pricing[
+        "in"
+    ] / 1_000_000 + total_out * pricing["out"] / 1_000_000
     return {
         "jsonl_path": str(jsonl_path),
         "model": model_seen,
@@ -99,6 +99,7 @@ def main(argv: list[str]) -> int:
     if args.project_glob:
         import glob
         import os
+
         results = []
         for path in glob.glob(os.path.expanduser(args.project_glob)):
             try:

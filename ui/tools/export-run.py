@@ -108,7 +108,12 @@ def parse_status(project_root: Path) -> list[LaneRow]:
             continue
         lane = cells[0]
         if lane.upper() not in (
-            "AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"
+            "AUDIT",
+            "ARCHITECT",
+            "BACKEND",
+            "FRONTEND",
+            "TEST",
+            "META",
         ):
             continue
         agent = None if cells[1] in ("unclaimed", "—", "") else cells[1]
@@ -151,13 +156,13 @@ def parse_tasks(project_root: Path) -> list[Task]:
         done_utc = None
         if bracket.startswith("claimed:"):
             state = "claimed"
-            parts = bracket[len("claimed:"):].split("@", 1)
+            parts = bracket[len("claimed:") :].split("@", 1)
             if len(parts) == 2:
                 claimer = parts[0].strip()
                 claim_utc = parts[1].strip()
         elif bracket.startswith("done:"):
             state = "done"
-            parts = bracket[len("done:"):].split("@", 1)
+            parts = bracket[len("done:") :].split("@", 1)
             if len(parts) == 2:
                 claimer = parts[0].strip()
                 done_utc = parts[1].strip()
@@ -252,7 +257,9 @@ def parse_finding(path: Path) -> Finding:
         if ln.startswith("# "):
             title = ln[2:].strip()
             break
-    return Finding(filename=path.name, frontmatter=frontmatter, title=title, body_md=body)
+    return Finding(
+        filename=path.name, frontmatter=frontmatter, title=title, body_md=body
+    )
 
 
 def list_findings(project_root: Path) -> list[Finding]:
@@ -304,7 +311,8 @@ def md_to_html(text: str) -> str:
     for raw in lines:
         line = raw.rstrip()
         if line.startswith("```"):
-            flush_para(); close_list()
+            flush_para()
+            close_list()
             if in_code:
                 out.append("</code></pre>")
                 in_code = False
@@ -317,18 +325,22 @@ def md_to_html(text: str) -> str:
             out.append(html.escape(raw) + "\n")
             continue
         if not line.strip():
-            flush_para(); close_list()
+            flush_para()
+            close_list()
             continue
         if line.startswith("# "):
-            flush_para(); close_list()
+            flush_para()
+            close_list()
             out.append(f"<h2>{_inline_md(line[2:].strip())}</h2>")
             continue
         if line.startswith("## "):
-            flush_para(); close_list()
+            flush_para()
+            close_list()
             out.append(f"<h3>{_inline_md(line[3:].strip())}</h3>")
             continue
         if line.startswith("### "):
-            flush_para(); close_list()
+            flush_para()
+            close_list()
             out.append(f"<h4>{_inline_md(line[4:].strip())}</h4>")
             continue
         if line.startswith("- ") or line.startswith("* "):
@@ -341,7 +353,8 @@ def md_to_html(text: str) -> str:
         # Treat as paragraph fragment
         close_list()
         para.append(line)
-    flush_para(); close_list()
+    flush_para()
+    close_list()
     if in_code:
         out.append("</code></pre>")
     return "\n".join(out)
@@ -468,7 +481,7 @@ def render_html(project_root: Path) -> str:
         '<li><a href="#tasks">Task queue</a></li>'
         '<li><a href="#findings">Findings</a></li>'
         '<li><a href="#history">History log</a></li>'
-        '</ul></nav>'
+        "</ul></nav>"
     )
 
     # Lane status
@@ -492,10 +505,10 @@ def render_html(project_root: Path) -> str:
     for ev in events:
         parts.append(
             f'<div class="timeline-item">'
-            f'<strong>{html.escape(ev.from_phase)} → {html.escape(ev.to_phase)}</strong> '
+            f"<strong>{html.escape(ev.from_phase)} → {html.escape(ev.to_phase)}</strong> "
             f'<span class="muted">at {html.escape(ev.utc)} by {html.escape(ev.by_agent)}</span><br>'
             f'<span class="muted">{html.escape(ev.reason)}</span>'
-            f'</div>'
+            f"</div>"
         )
     parts.append("</div>")
 
@@ -535,21 +548,21 @@ def render_html(project_root: Path) -> str:
             anchor = f.filename.replace(".", "-")
             parts.append(
                 f'<div class="finding-card" id="{html.escape(anchor)}">'
-                f'<details>'
-                f'<summary>'
+                f"<details>"
+                f"<summary>"
                 f'<span class="tag sev-{html.escape(severity)}">{html.escape(severity)}</span> '
-                f'<strong>{html.escape(f.title or f.filename)}</strong> '
+                f"<strong>{html.escape(f.title or f.filename)}</strong> "
                 f'<span class="muted">{html.escape(f.filename)}</span>'
-                f'</summary>'
+                f"</summary>"
                 f'<dl class="kv">'
-                f'<dt>Agent</dt><dd>{html.escape(str(fm.get("agent", "—")))}</dd>'
-                f'<dt>Task</dt><dd><code>{html.escape(str(fm.get("task", "—")))}</code></dd>'
-                f'<dt>UTC</dt><dd>{html.escape(str(fm.get("utc", "—")))}</dd>'
-                f'<dt>Artifact</dt><dd>{html.escape(str(fm.get("artifact", "—"))[:200])}</dd>'
-                f'</dl>'
+                f"<dt>Agent</dt><dd>{html.escape(str(fm.get('agent', '—')))}</dd>"
+                f"<dt>Task</dt><dd><code>{html.escape(str(fm.get('task', '—')))}</code></dd>"
+                f"<dt>UTC</dt><dd>{html.escape(str(fm.get('utc', '—')))}</dd>"
+                f"<dt>Artifact</dt><dd>{html.escape(str(fm.get('artifact', '—'))[:200])}</dd>"
+                f"</dl>"
                 f"<div>{md_to_html(f.body_md)}</div>"
-                f'</details>'
-                f'</div>'
+                f"</details>"
+                f"</div>"
             )
 
     # History log

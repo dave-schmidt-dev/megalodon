@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -59,7 +58,8 @@ def test_build_argv_text_default():
     assert argv == [
         "cursor-agent",
         "-p",
-        "--model", "auto",
+        "--model",
+        "auto",
         "--force",
         "--trust",
         "hello",

@@ -1,10 +1,9 @@
-> **Active plan (v9.4 — pickup tomorrow):** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (v2 — warp-complete: self-contrarian + 3 reviewers + pre-mortem). **Status: APPROVED, READY TO IMPLEMENT.**
-> **Active task file:** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19-tasks.md` — 30 tasks across 5 phases (MVP day 1-3, Iter2 day 4-5, Iter3 day 6-7, Dogfood day 7-8, Docs).
-> **Synthesis:** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19-synthesis.md`
-> **Reviews archived:** 4 JSON files + 4 prompt files in the same `.plans/megalodon/` dir (Codex contrarian, Gemini auditor, Claude constructive, Kimi pre-mortem).
-> **Start tomorrow with Task 1.1 (router upgrade) — nothing else ships until that lands.** Tasks 1.1 + 1.2 are parallelizable (FE router + BE auth gate).
+> **Active plan (v9.4 — IMPLEMENTATION COMPLETE 2026-05-20):** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (v2 — warp-complete). **Status: 30 of 31 tasks shipped.**
+> **Status**: IMPLEMENTATION COMPLETE. T4.3 (4-hour operator dogfood) is the remaining gate before final docs (T5.1).
+> **Next action**: Operator runs dogfood: re-run 6-lane mission with v9.4 dashboard, capture findings into `docs/v9/dogfood-2026-MM-DD/`. After dogfood completion, T5.1 updates README + HISTORY + TASKS.md with final entries.
+> **Plan artifacts:** Implementation plan + tasks at `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19*.md`. Synthesis + reviews also archived in same directory.
 >
-> **Plan summary:** Full FE rewrite (`pages/grid.js`, `lane_detail.js`, `approval_rules.js` + 6 rewritten existing pages + 6 new components) + 5 new BE endpoints (`inject`, `restart-loop`, `activity-wall` + snapshot, `approval-rules` CRUD, `lanes/stale`). Reuses existing `pane-stream` endpoint (server.py:1127) and CSRF infrastructure. Adds `PermissionWatcher.on_change` callback. Extends `_V92_GATED_PATH_RE` with lock-in enumeration test. ~7 working days to dogfood-ready.
+> **Shipped:** Full FE rewrite (grid.js, lane_detail.js, approval_rules.js + 6 page rewrites + new components) + 5 new BE endpoints + activity wall + approval rules + stale-lanes detection. See HISTORY.md "V9.4 SHIPPED" for full manifest.
 >
 > ---
 >

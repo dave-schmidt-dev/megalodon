@@ -1,4 +1,5 @@
 """V9 A1 watchdog CLI."""
+
 from __future__ import annotations
 
 import argparse

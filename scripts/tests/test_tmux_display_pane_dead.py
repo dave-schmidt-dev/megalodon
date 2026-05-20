@@ -39,7 +39,10 @@ class _FakeProc:
 @pytest.mark.asyncio
 async def test_display_message_pane_dead_returns_dead_true_with_status():
     fake = _FakeProc(stdout=b"1|17\n", rc=0)
-    with patch("megalodon_ui.tmux.asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake)):
+    with patch(
+        "megalodon_ui.tmux.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=fake),
+    ):
         dead, status = await tmux.display_message_pane_dead(SOCKET, "lane-A")
     assert dead is True
     assert status == 17
@@ -48,7 +51,10 @@ async def test_display_message_pane_dead_returns_dead_true_with_status():
 @pytest.mark.asyncio
 async def test_display_message_pane_dead_returns_dead_false_when_running():
     fake = _FakeProc(stdout=b"0|\n", rc=0)
-    with patch("megalodon_ui.tmux.asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake)):
+    with patch(
+        "megalodon_ui.tmux.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=fake),
+    ):
         dead, status = await tmux.display_message_pane_dead(SOCKET, "lane-A")
     assert dead is False
     assert status is None
@@ -57,7 +63,10 @@ async def test_display_message_pane_dead_returns_dead_false_when_running():
 @pytest.mark.asyncio
 async def test_display_message_pane_dead_returns_dead_true_with_zero_status():
     fake = _FakeProc(stdout=b"1|0\n", rc=0)
-    with patch("megalodon_ui.tmux.asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake)):
+    with patch(
+        "megalodon_ui.tmux.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=fake),
+    ):
         dead, status = await tmux.display_message_pane_dead(SOCKET, "lane-A")
     assert dead is True
     assert status == 0
@@ -68,7 +77,10 @@ async def test_display_message_pane_dead_handles_unknown_session():
     """Non-zero rc (e.g., session not found) returns (False, None) — caller
     interprets this as 'pane not dead, just not queryable right now'."""
     fake = _FakeProc(stdout=b"", rc=1)
-    with patch("megalodon_ui.tmux.asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake)):
+    with patch(
+        "megalodon_ui.tmux.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=fake),
+    ):
         dead, status = await tmux.display_message_pane_dead(SOCKET, "lane-Z")
     assert dead is False
     assert status is None

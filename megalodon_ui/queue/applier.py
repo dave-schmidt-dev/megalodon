@@ -73,6 +73,7 @@ def _setup_applier_logger(mission_dir: Path) -> None:
     # off in EDT and flagged active lanes as 200+ min stale. Switch the
     # converter to gmtime so the `Z` suffix matches reality.
     import time as _t
+
     _fmt = logging.Formatter(
         "%(asctime)sZ | %(levelname)s | %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
@@ -84,10 +85,10 @@ def _setup_applier_logger(mission_dir: Path) -> None:
     # Don't propagate to root; we want a dedicated stream.
     _log.propagate = False
 
+
 from .journal import Journal
 from .schemas import validate_payload
 from megalodon_ui.mission_config import load_mission_config
-from megalodon_ui.mission_config.schema import validate_task_id_with_config
 from megalodon_ui.mission_config.regex_builder import build_lane_short_charclass
 
 SCHEMA_VERSION = 1
@@ -162,8 +163,12 @@ class AtomicFile:
 
 
 class Applier:
-    def __init__(self, mission_dir: Path, poll_seconds: float = DEFAULT_POLL_SECONDS,
-                 debug: bool = False):
+    def __init__(
+        self,
+        mission_dir: Path,
+        poll_seconds: float = DEFAULT_POLL_SECONDS,
+        debug: bool = False,
+    ):
         self.mission_dir = Path(mission_dir).resolve()
         self.queue_dir = self.mission_dir / "queue"
         self.pending_dir = self.queue_dir / "pending"
@@ -195,8 +200,12 @@ class Applier:
     # ---- setup ----
 
     def setup_dirs(self) -> None:
-        for d in (self.queue_dir, self.pending_dir, self.applied_dir,
-                  self.rejected_dir):
+        for d in (
+            self.queue_dir,
+            self.pending_dir,
+            self.applied_dir,
+            self.rejected_dir,
+        ):
             d.mkdir(parents=True, exist_ok=True)
 
     def _replay_journal_state(self) -> None:
@@ -309,7 +318,10 @@ class Applier:
             try:
                 # S-8 §B B2: write PENDING to journal BEFORE applying.
                 self.journal.write_pending(
-                    rid, req["intent"], req["target_file"], req.get("payload", {}),
+                    rid,
+                    req["intent"],
+                    req["target_file"],
+                    req.get("payload", {}),
                 )
                 self._apply(req)
                 self.journal.write_applied(rid, "ok")
@@ -318,8 +330,11 @@ class Applier:
                 count += 1
                 _log.info(
                     "APPLIED rid=%s agent=%s lane=%s intent=%s target=%s",
-                    rid, req.get("agent", "?"), req.get("submitting_lane", "?"),
-                    req.get("intent", "?"), req.get("target_file", "?"),
+                    rid,
+                    req.get("agent", "?"),
+                    req.get("submitting_lane", "?"),
+                    req.get("intent", "?"),
+                    req.get("target_file", "?"),
                 )
             except ValueError as e:
                 # Apply-time validation/precondition (B4 strict-owner, etc.).
@@ -328,8 +343,12 @@ class Applier:
                 self._reject(req_path, req, f"apply-failed: {e}")
                 _log.warning(
                     "REJECTED rid=%s agent=%s lane=%s intent=%s target=%s reason=%s",
-                    rid, req.get("agent", "?"), req.get("submitting_lane", "?"),
-                    req.get("intent", "?"), req.get("target_file", "?"), str(e),
+                    rid,
+                    req.get("agent", "?"),
+                    req.get("submitting_lane", "?"),
+                    req.get("intent", "?"),
+                    req.get("target_file", "?"),
+                    str(e),
                 )
             except Exception as e:
                 # Unexpected (I/O, etc.) — record REJECTED but re-raise so
@@ -341,8 +360,12 @@ class Applier:
                 self._reject(req_path, req, f"apply-failed: {e!r}")
                 _log.error(
                     "EXCEPTION rid=%s agent=%s lane=%s intent=%s target=%s err=%r",
-                    rid, req.get("agent", "?"), req.get("submitting_lane", "?"),
-                    req.get("intent", "?"), req.get("target_file", "?"), e,
+                    rid,
+                    req.get("agent", "?"),
+                    req.get("submitting_lane", "?"),
+                    req.get("intent", "?"),
+                    req.get("target_file", "?"),
+                    e,
                 )
                 raise
 
@@ -388,7 +411,9 @@ class Applier:
             return False, f"schema-version:{req['schema_version']}"
         if req["intent"] not in INTENTS:
             return False, f"unknown-intent:{req['intent']}"
-        if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", req["submitted_utc"]):
+        if not re.match(
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", req["submitted_utc"]
+        ):
             return False, "submitted_utc-format"
         # Pydantic payload validation (Q1 intent prefix etc.).
         try:
@@ -407,7 +432,10 @@ class Applier:
             events_path = self.mission_dir / ".mission-events"
             current_phase = self._current_phase(events_path)
             if current_phase != required_phase:
-                return False, f"phase-mismatch:want={required_phase}:got={current_phase}"
+                return (
+                    False,
+                    f"phase-mismatch:want={required_phase}:got={current_phase}",
+                )
 
         return True, ""
 
@@ -448,10 +476,18 @@ class Applier:
         target_file = req.get("target_file", "")
         target = self.mission_dir / target_file if target_file else None
 
-        if intent in ("HISTORY_APPEND", "MISSION_EVENT_APPEND",
-                      "MISSION_EVENT_CORRECTION"):
+        if intent in (
+            "HISTORY_APPEND",
+            "MISSION_EVENT_APPEND",
+            "MISSION_EVENT_CORRECTION",
+        ):
             line = (payload.get("line") or "").rstrip("\n")
-            if target and target.exists() and line and line in target.read_text(encoding="utf-8"):
+            if (
+                target
+                and target.exists()
+                and line
+                and line in target.read_text(encoding="utf-8")
+            ):
                 return "APPLIED"
             return "NOT_APPLIED"
         return "NOT_APPLIED"
@@ -465,7 +501,9 @@ class Applier:
         handler = getattr(self, f"_apply_{intent.lower()}")
         handler(target, payload, req)
 
-    def _apply_status_update(self, target: Path, payload: dict[str, Any], req: dict[str, Any]) -> None:
+    def _apply_status_update(
+        self, target: Path, payload: dict[str, Any], req: dict[str, Any]
+    ) -> None:
         lane = payload["lane"]
         with AtomicFile(target) as f:
             content = f.read()
@@ -481,7 +519,9 @@ class Applier:
             )
             f.write(content.replace(matches[0], new_row))
 
-    def _apply_tasks_bracket(self, target: Path, payload: dict[str, Any], req: dict[str, Any]) -> None:
+    def _apply_tasks_bracket(
+        self, target: Path, payload: dict[str, Any], req: dict[str, Any]
+    ) -> None:
         task_id = payload["task_id"]
         new_bracket = payload["new_bracket"]
         with AtomicFile(target) as f:
@@ -490,15 +530,15 @@ class Applier:
             pattern = rf"^(-\s+)\[[^\]]+\]\s+(\[LANE-{self._lane_short_charclass}\]\s+`{re.escape(task_id)}`.*)$"
             matches = re.findall(pattern, content, re.MULTILINE)
             if len(matches) != 1:
-                raise ValueError(
-                    f"task-not-unique:id={task_id}:matches={len(matches)}"
-                )
+                raise ValueError(f"task-not-unique:id={task_id}:matches={len(matches)}")
             old_line = re.search(pattern, content, re.MULTILINE).group(0)
             prefix, rest = matches[0]
             new_line = f"{prefix}{new_bracket} {rest}"
             f.write(content.replace(old_line, new_line))
 
-    def _apply_history_append(self, target: Path, payload: dict[str, Any], req: dict[str, Any]) -> None:
+    def _apply_history_append(
+        self, target: Path, payload: dict[str, Any], req: dict[str, Any]
+    ) -> None:
         line = payload["line"].rstrip("\n") + "\n"
         if not re.match(
             r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \| agent-[a-f0-9]+ \| [A-Za-z]+ \| ",
@@ -510,7 +550,9 @@ class Applier:
                 return
             f.append(line)
 
-    def _apply_mission_event_append(self, target: Path, payload: dict[str, Any], req: dict[str, Any]) -> None:
+    def _apply_mission_event_append(
+        self, target: Path, payload: dict[str, Any], req: dict[str, Any]
+    ) -> None:
         line = payload["line"].rstrip("\n") + "\n"
         if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z ", line):
             raise ValueError(f"event-line-format:{line[:80]}")
@@ -519,7 +561,9 @@ class Applier:
                 return
             f.append(line)
 
-    def _apply_claim_dir_create(self, target: Path, payload: dict[str, Any], req: dict[str, Any]) -> None:
+    def _apply_claim_dir_create(
+        self, target: Path, payload: dict[str, Any], req: dict[str, Any]
+    ) -> None:
         claims_dir = self.mission_dir / "claims" / payload["task_id"]
         owner_file = claims_dir / "owner.txt"
         try:
@@ -540,7 +584,9 @@ class Applier:
             f"{req['submitted_utc']}\n"
         )
 
-    def _apply_claim_dir_done(self, target: Path, payload: dict[str, Any], req: dict[str, Any]) -> None:
+    def _apply_claim_dir_done(
+        self, target: Path, payload: dict[str, Any], req: dict[str, Any]
+    ) -> None:
         claims_dir = self.mission_dir / "claims" / payload["task_id"]
         owner_file = claims_dir / "owner.txt"
         if not owner_file.exists():
@@ -554,7 +600,9 @@ class Applier:
 
     # ---- Q1 intents ----
 
-    def _apply_status_row_insert(self, target: Path, payload: dict[str, Any], req: dict[str, Any]) -> None:
+    def _apply_status_row_insert(
+        self, target: Path, payload: dict[str, Any], req: dict[str, Any]
+    ) -> None:
         lane = payload["lane"]
         with AtomicFile(target) as f:
             content = f.read()
@@ -570,7 +618,9 @@ class Applier:
                 content += "\n"
             f.write(content + new_row)
 
-    def _apply_tasks_inject(self, target: Path, payload: dict[str, Any], req: dict[str, Any]) -> None:
+    def _apply_tasks_inject(
+        self, target: Path, payload: dict[str, Any], req: dict[str, Any]
+    ) -> None:
         task_id = payload["task_id"]
         with AtomicFile(target) as f:
             content = f.read()
@@ -586,14 +636,16 @@ class Applier:
                 m = re.search(pattern, content, re.MULTILINE)
                 if not m:
                     raise ValueError(f"after-task-not-found:id={after}")
-                new_content = content[:m.end()] + new_line + content[m.end():]
+                new_content = content[: m.end()] + new_line + content[m.end() :]
                 f.write(new_content)
             else:
                 if content and not content.endswith("\n"):
                     content += "\n"
                 f.write(content + new_line)
 
-    def _apply_mission_event_correction(self, target: Path, payload: dict[str, Any], req: dict[str, Any]) -> None:
+    def _apply_mission_event_correction(
+        self, target: Path, payload: dict[str, Any], req: dict[str, Any]
+    ) -> None:
         line = payload["line"].rstrip("\n") + "\n"
         # Schema already enforced "CORRECTION by " prefix.
         with AtomicFile(target) as f:
@@ -603,7 +655,9 @@ class Applier:
 
     # ---- archive ----
 
-    def _archive(self, req_path: Path, kind: str, rid: str, idempotent: bool = False) -> None:
+    def _archive(
+        self, req_path: Path, kind: str, rid: str, idempotent: bool = False
+    ) -> None:
         dest_dir = self.applied_dir if kind == "applied" else self.rejected_dir
         dest = dest_dir / f"{rid or req_path.stem}.json"
         try:
@@ -616,9 +670,7 @@ class Applier:
     def _reject(self, req_path: Path, req: dict[str, Any] | None, reason: str) -> None:
         rid = (req or {}).get("request_id", req_path.stem)
         self._archive(req_path, "rejected", rid)
-        (self.rejected_dir / f"{rid}-reason.txt").write_text(
-            f"{utc_now()}\n{reason}\n"
-        )
+        (self.rejected_dir / f"{rid}-reason.txt").write_text(f"{utc_now()}\n{reason}\n")
 
     @staticmethod
     def _read_field(path: Path, field: str) -> str | None:
@@ -638,8 +690,7 @@ def main() -> int:
     p.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS)
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
-    Applier(args.mission_dir, poll_seconds=args.poll_seconds,
-            debug=args.debug).run()
+    Applier(args.mission_dir, poll_seconds=args.poll_seconds, debug=args.debug).run()
     return 0
 
 

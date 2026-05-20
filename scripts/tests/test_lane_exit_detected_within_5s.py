@@ -77,7 +77,9 @@ def _stub_error_resolver(stub_script: Path):
 
 
 @pytest_asyncio.fixture
-async def authed_client_with_real_spawn(tmp_path: Path, monkeypatch) -> AsyncGenerator[tuple, None]:
+async def authed_client_with_real_spawn(
+    tmp_path: Path, monkeypatch
+) -> AsyncGenerator[tuple, None]:
     if shutil.which("tmux") is None:
         pytest.skip("tmux not installed")
     if not _STUB.is_file() or not os.access(_STUB, os.X_OK):
@@ -98,7 +100,9 @@ async def authed_client_with_real_spawn(tmp_path: Path, monkeypatch) -> AsyncGen
     async with app.router.lifespan_context(app):
         await spawner.start_all()
         app.state.spawner = spawner
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://t"
+        ) as client:
             exch = await client.post("/api/v1/auth/exchange", json={"token": token})
             assert exch.status_code == 200, exch.text
             try:

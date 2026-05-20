@@ -18,7 +18,6 @@ build on top live under ``ui/tests/e2e/``.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 from pathlib import Path
 from typing import AsyncGenerator
@@ -61,22 +60,38 @@ async def test_fake_spawner_constructs_per_lane_sessions():
     """Direct unit test on FakeFleetSpawner — every mission_config lane → one session."""
     from megalodon_ui.mission_config.schema import MissionConfig
 
-    config = MissionConfig.model_validate({
-        "mission": {"id": "t", "utc_started": "2026-01-01T00:00:00Z"},
-        "lanes": [
-            {"name": "ALPHA", "short": "A", "role": "r",
-             "harness": {"cli": "claude", "model": "sonnet"},
-             "cadence_seconds": 300, "tick_offset_seconds": 0},
-            {"name": "BRAVO", "short": "B", "role": "r",
-             "harness": {"cli": "claude", "model": "sonnet"},
-             "cadence_seconds": 300, "tick_offset_seconds": 0},
-        ],
-        "phases": ["INIT"],
-    })
+    config = MissionConfig.model_validate(
+        {
+            "mission": {"id": "t", "utc_started": "2026-01-01T00:00:00Z"},
+            "lanes": [
+                {
+                    "name": "ALPHA",
+                    "short": "A",
+                    "role": "r",
+                    "harness": {"cli": "claude", "model": "sonnet"},
+                    "cadence_seconds": 300,
+                    "tick_offset_seconds": 0,
+                },
+                {
+                    "name": "BRAVO",
+                    "short": "B",
+                    "role": "r",
+                    "harness": {"cli": "claude", "model": "sonnet"},
+                    "cadence_seconds": 300,
+                    "tick_offset_seconds": 0,
+                },
+            ],
+            "phases": ["INIT"],
+        }
+    )
     import tempfile
+
     with tempfile.TemporaryDirectory() as tmp:
         spawner = FakeFleetSpawner(
-            Path(tmp), config, lambda cli: None, Path(tmp) / ".fleet" / "tmux.sock",
+            Path(tmp),
+            config,
+            lambda cli: None,
+            Path(tmp) / ".fleet" / "tmux.sock",
         )
         assert set(spawner.sessions.keys()) == {"A", "B"}
         for s in spawner.sessions.values():

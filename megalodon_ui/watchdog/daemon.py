@@ -10,6 +10,7 @@ lane.  S1 (process-alive) and S2 (STATUS-row stale) continue to apply to ALL
 lanes regardless of harness.  A SIGHUP-driven config reload is deferred; see
 CV-8.
 """
+
 from __future__ import annotations
 
 import signal
@@ -29,7 +30,7 @@ from .detectors import (
 )
 
 if TYPE_CHECKING:
-    from megalodon_ui.mission_config import LaneConfig, MissionConfig
+    from megalodon_ui.mission_config import LaneConfig
 
 PID_DIR = Path.home() / ".megalodon-pids"
 
@@ -59,6 +60,7 @@ def _find_jsonl(pid: int) -> Path | None:
 def _load_lanes(mission_dir: Path) -> list[LaneConfig]:
     """Load lane list from mission config, falling back to default v9.0 shape."""
     from megalodon_ui.mission_config import load_mission_config
+
     config = load_mission_config(mission_dir)
     return list(config.lanes)
 

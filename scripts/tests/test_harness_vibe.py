@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -53,9 +52,12 @@ def test_build_argv_text_default():
     )
     assert argv == [
         "vibe",
-        "--prompt", "hello",
-        "--agent", "auto-approve",
-        "--output", "json",
+        "--prompt",
+        "hello",
+        "--agent",
+        "auto-approve",
+        "--output",
+        "json",
     ]
     assert env == {}
     # vibe ignores the model arg — no --model flag must appear in argv

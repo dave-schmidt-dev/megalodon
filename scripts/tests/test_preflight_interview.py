@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import textwrap
 
-import pytest
 import yaml
 
 from megalodon_ui.mission_config.schema import MissionConfig
@@ -94,6 +93,7 @@ def _make_mock_runner(yaml_responses: list[str]):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestRunInterviewApprovePath:
     def test_repl_approve_path(self, monkeypatch):

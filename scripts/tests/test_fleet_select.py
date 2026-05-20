@@ -1,4 +1,5 @@
 """V9 A3 — tests for per-lane model selection with override support."""
+
 import json
 import sys
 from pathlib import Path

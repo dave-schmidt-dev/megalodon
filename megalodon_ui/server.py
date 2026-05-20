@@ -10,12 +10,16 @@ The endpoint surface here covers the integration-test contract; the legacy
 `/api/v1/*` surface in `ui/server.py` remains the live dashboard server
 until the migration is complete.
 """
+
 from __future__ import annotations
 
 import asyncio
+import collections
+import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
 import time
@@ -28,6 +32,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .config import AppConfig
 from . import primitives
@@ -40,9 +45,18 @@ from .mission_config.regex_builder import (
     build_phase_header_re,
 )
 from .constants import (
-    API_CHALLENGE, API_CONFIG, API_EVENTS, API_FINDINGS, API_INJECT_TASK,
-    API_MISSION_STATUS, API_PHASE_FLIP, API_RECLAIM, API_SIGNAL, API_STATE,
-    SSE_STATUS_CHANGE, SSE_SYNC,
+    API_CHALLENGE,
+    API_CONFIG,
+    API_EVENTS,
+    API_FINDINGS,
+    API_INJECT_TASK,
+    API_MISSION_STATUS,
+    API_PHASE_FLIP,
+    API_RECLAIM,
+    API_SIGNAL,
+    API_STATE,
+    SSE_STATUS_CHANGE,
+    SSE_SYNC,
     STALE_THRESHOLD_SECONDS,
 )
 from ._v92_constants import (
@@ -62,15 +76,195 @@ from .harnesses import get_adapter
 # ---------------------------------------------------------------------------
 
 #: Path prefixes that ALWAYS require a valid mui_session cookie. Any method.
-_V92_GATED_PATH_RE = re.compile(r"^/api/v1/(lane/[^/]+|__fake__|permission_prompts)(/|$)")
+_V92_GATED_PATH_RE = re.compile(
+    r"^/api/v1/(lane/[^/]+|__fake__|permission_prompts|activity-wall|approval-rules|lanes/stale|_test)(/|$)"
+)
 
 #: Exact (method, path) pairs that require a cookie.
-_V92_GATED_EXACT: frozenset[tuple[str, str]] = frozenset({
-    ("DELETE", "/api/v1/fleet"),
-})
+_V92_GATED_EXACT: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("DELETE", "/api/v1/fleet"),
+    }
+)
 
 #: Cookie name used to carry the session id after exchange.
 SESSION_COOKIE_NAME = "mui_session"
+
+
+# ---------------------------------------------------------------------------
+# v9.4 GET /api/v1/lanes/stale — module-level cache + test-override hook
+# ---------------------------------------------------------------------------
+
+# Per-app cache keyed by id(app). Each value: {"response": dict, "computed_at": float}.
+# Module-level so concurrent requests within the TTL window get a single
+# computation. Keys are cleaned up lazily — they accumulate only across
+# make_app() calls within a process (negligible for production; fine for tests).
+_stale_cache: dict[int, dict] = {}
+
+#: One-shot per-lane silent_seconds override, populated ONLY by the
+#: ``_test/stale_override`` endpoint. Consumed once on the next
+#: ``GET /api/v1/lanes/stale`` call and then cleared. Setting
+#: ``_TEST_STALE_OVERRIDES["A"] = 1200.0`` makes lane "A" appear 1200 s
+#: stale in the next response.
+_TEST_STALE_OVERRIDES: dict[str, float] = {}
+
+_STALE_THRESHOLD_SECONDS: float = 900.0
+_STALE_CACHE_TTL_SECONDS: float = 5.0
+
+# Regex to extract the UTC timestamp from an applier log line:
+# Format: 2026-05-16T22:00:00Z | INFO | APPLIED rid=... agent=agent-xxxx lane=... ...
+_APPLIER_LOG_TS_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z", re.MULTILINE
+)
+# Parse agent= field from an applier log line.
+_APPLIER_LOG_AGENT_RE = re.compile(r"\bagent=(\S+)")
+# Parse lane= (submitting_lane) field from an applier log line — matches lane=X NOT submitting_lane=.
+_APPLIER_LOG_LANE_RE = re.compile(r"(?<!\w)lane=(\S+)")
+
+
+def _stale_latest_applier_ts(mission_dir: Path, agent_id: str) -> datetime | None:
+    """Return the most-recent applier-log timestamp for *agent_id*.
+
+    Scans ``.fleet/queue-applier.log`` from the end (lines reversed) to find
+    the latest entry where ``agent=<agent_id>`` appears. Returns a UTC-aware
+    datetime, or None if the file is missing / no matching entry.
+    """
+    log_path = mission_dir / ".fleet" / "queue-applier.log"
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    best: datetime | None = None
+    for line in text.splitlines():
+        am = _APPLIER_LOG_AGENT_RE.search(line)
+        if am is None or am.group(1) != agent_id:
+            continue
+        ts_m = _APPLIER_LOG_TS_RE.search(line)
+        if ts_m is None:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_m.group(1) + "+00:00")
+        except ValueError:
+            continue
+        if best is None or ts > best:
+            best = ts
+    return best
+
+
+def _compute_stale_response(
+    mission_dir: Path,
+    lane_rows: list[dict[str, Any]],
+    mission_config: "MissionConfig",
+    permission_watcher: Any,
+) -> dict:
+    """Compute the full stale-lanes payload (no caching here).
+
+    *Source priority* (all three are considered; the newest wins):
+      1. status-md  — ``last_utc`` parsed from STATUS.md row.
+      2. stream-log — mtime of ``.fleet/<short>.stream.log``.
+      3. applier-log — newest line in ``.fleet/queue-applier.log`` matching
+                       the lane's agent_id from the STATUS.md ``agent`` column.
+
+    Tie-break: when two sources share the same second-level precision we prefer
+    in order: applier-log > stream-log > status-md (i.e. last wins on a
+    ``max()`` over ``(ts, source_priority)`` tuples).
+    """
+    now = datetime.now(timezone.utc)
+    now_mono = time.monotonic()
+
+    # parse_status returns "LANE-A" form; mission_config.lanes.short is "A".
+    def _row_short(row: dict) -> str:
+        lane = row.get("lane", "")
+        return lane[len("LANE-") :] if lane.startswith("LANE-") else lane
+
+    short_to_agent: dict[str, str] = {
+        _row_short(r): r.get("agent", "") for r in lane_rows
+    }
+
+    short_set: set[str] = {lc.short for lc in mission_config.lanes if lc.short}
+
+    pending_lanes: set[str] = set()
+    if permission_watcher is not None:
+        try:
+            pending_lanes = {p.lane_short for p in permission_watcher.pending()}
+        except Exception:
+            pass
+
+    stale_lanes: list[dict] = []
+    for lc in mission_config.lanes:
+        short = lc.short
+        if not short:
+            continue
+
+        # --- source 1: STATUS.md last_utc ---
+        status_ts: datetime | None = None
+        row = next((r for r in lane_rows if _row_short(r) == short), None)
+        if row is not None:
+            raw = row.get("last_utc", "")
+            try:
+                status_ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                pass
+
+        # --- source 2: stream-log mtime ---
+        stream_ts: datetime | None = None
+        stream_log = mission_dir / ".fleet" / f"{short}.stream.log"
+        try:
+            mtime = stream_log.stat().st_mtime
+            stream_ts = datetime.fromtimestamp(mtime, tz=timezone.utc)
+        except OSError:
+            pass
+
+        # --- source 3: applier-log latest matching entry ---
+        applier_ts: datetime | None = None
+        agent_id = short_to_agent.get(short)
+        if agent_id:
+            applier_ts = _stale_latest_applier_ts(mission_dir, agent_id)
+
+        # --- max of sources with priority tie-break ---
+        # Priority order (highest last so max picks it on equal timestamps):
+        # 0=status-md, 1=stream-log, 2=applier-log
+        candidates: list[tuple[datetime, int, str]] = []
+        if status_ts is not None:
+            candidates.append((status_ts, 0, "status-md"))
+        if stream_ts is not None:
+            candidates.append((stream_ts, 1, "stream-log"))
+        if applier_ts is not None:
+            candidates.append((applier_ts, 2, "applier-log"))
+
+        if candidates:
+            best_ts, _, best_source = max(candidates, key=lambda t: (t[0], t[1]))
+            silent_seconds = (now - best_ts).total_seconds()
+            last_activity_source = best_source
+        else:
+            silent_seconds = float("inf")
+            last_activity_source = "none"
+
+        # --- test-override hook (one-shot) ---
+        # Note: caller (_compute_stale_response's caller) uses the return value
+        # to detect which lanes had overrides consumed and invalidate the cache.
+        if short in _TEST_STALE_OVERRIDES:
+            silent_seconds = _TEST_STALE_OVERRIDES.pop(short)
+
+        pending_approval = short in pending_lanes
+        is_stale = silent_seconds >= _STALE_THRESHOLD_SECONDS and not pending_approval
+
+        if is_stale:
+            stale_lanes.append(
+                {
+                    "lane": short,
+                    "silent_seconds": silent_seconds
+                    if silent_seconds != float("inf")
+                    else None,
+                    "pending_approval": pending_approval,
+                    "last_activity_source": last_activity_source,
+                }
+            )
+
+    return {
+        "stale_lanes": stale_lanes,
+        "checked_at_utc": now.isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +297,9 @@ class MissionContext:
 # ---------------------------------------------------------------------------
 
 
-def parse_status(mission_dir: Path, ctx: "MissionContext | None" = None) -> list[dict[str, Any]]:
+def parse_status(
+    mission_dir: Path, ctx: "MissionContext | None" = None
+) -> list[dict[str, Any]]:
     """Parse STATUS.md table into a list of lane dicts.
 
     REPAIR-MUTATIONS-E2E-5-STATUS-VIEW: each row gets `staleness_seconds`
@@ -115,7 +311,11 @@ def parse_status(mission_dir: Path, ctx: "MissionContext | None" = None) -> list
         return []
     text = path.read_text()
     now = datetime.now(timezone.utc)
-    status_re = ctx.status_row_re if ctx is not None else build_status_row_re(load_mission_config(mission_dir))
+    status_re = (
+        ctx.status_row_re
+        if ctx is not None
+        else build_status_row_re(load_mission_config(mission_dir))
+    )
     rows: list[dict[str, Any]] = []
     for m in status_re.finditer(text):
         lane = m.group("lane").strip()
@@ -133,15 +333,17 @@ def parse_status(mission_dir: Path, ctx: "MissionContext | None" = None) -> list
             is_stale = staleness_seconds > STALE_THRESHOLD_SECONDS  # RULE-1: 15 min
         except (ValueError, AttributeError):
             pass
-        rows.append({
-            "lane": lane,
-            "agent": agent,
-            "state": m.group("state").strip(),
-            "last_utc": last_utc,
-            "notes": m.group("notes").strip(),
-            "staleness_seconds": staleness_seconds,
-            "is_stale": is_stale,
-        })
+        rows.append(
+            {
+                "lane": lane,
+                "agent": agent,
+                "state": m.group("state").strip(),
+                "last_utc": last_utc,
+                "notes": m.group("notes").strip(),
+                "staleness_seconds": staleness_seconds,
+                "is_stale": is_stale,
+            }
+        )
     return rows
 
 
@@ -161,7 +363,9 @@ def _parse_yaml_frontmatter(text: str) -> dict[str, Any]:
     return out
 
 
-def parse_tasks(mission_dir: Path, ctx: "MissionContext | None" = None) -> list[dict[str, Any]]:
+def parse_tasks(
+    mission_dir: Path, ctx: "MissionContext | None" = None
+) -> list[dict[str, Any]]:
     """Parse TASKS.md into a list of phase dicts.
 
     REPAIR-MUTATIONS-E2E-5-STATUS-VIEW: shape `[{name, tasks: [...]}]`.
@@ -202,13 +406,13 @@ def parse_tasks(mission_dir: Path, ctx: "MissionContext | None" = None) -> list[
                 utc = None
             elif state_block.startswith("done:"):
                 state = "done"
-                rest = state_block[len("done:"):].strip()
+                rest = state_block[len("done:") :].strip()
                 agent, _, utc = rest.partition("@")
                 agent = agent.strip()
                 utc = utc.strip()
             elif state_block.startswith("claimed:"):
                 state = "claimed"
-                rest = state_block[len("claimed:"):].strip()
+                rest = state_block[len("claimed:") :].strip()
                 agent, _, utc = rest.partition("@")
                 agent = agent.strip()
                 utc = utc.strip()
@@ -217,19 +421,23 @@ def parse_tasks(mission_dir: Path, ctx: "MissionContext | None" = None) -> list[
                 agent = None
                 utc = None
             short = m.group("lane")
-            tasks.append({
-                "id": m.group("task_id").strip(),
-                "lane": short_to_name.get(short, f"LANE-{short}"),
-                "state": state,
-                "agent": agent,
-                "utc": utc,
-                "description": (m.group("description") or "").strip(),
-            })
+            tasks.append(
+                {
+                    "id": m.group("task_id").strip(),
+                    "lane": short_to_name.get(short, f"LANE-{short}"),
+                    "state": state,
+                    "agent": agent,
+                    "utc": utc,
+                    "description": (m.group("description") or "").strip(),
+                }
+            )
         phases.append({"name": hdr.group("phase").strip(), "tasks": tasks})
     return phases
 
 
-def parse_findings(mission_dir: Path, *, include_scratch: bool = False) -> list[dict[str, Any]]:
+def parse_findings(
+    mission_dir: Path, *, include_scratch: bool = False
+) -> list[dict[str, Any]]:
     """Parse findings/ directory; return list of dicts with YAML metadata."""
     findings_dir = mission_dir / "findings"
     out = []
@@ -259,7 +467,9 @@ def parse_findings(mission_dir: Path, *, include_scratch: bool = False) -> list[
 
 
 _LANE_CANONICAL_RE = re.compile(r"^LANE-[A-Z]$")
-_PHASE_FLIP_LOCK_DIRNAME_RE = re.compile(r"^(?P<from>[A-Z][A-Z0-9-]*)-to-(?P<to>[A-Z][A-Z0-9-]*)$")
+_PHASE_FLIP_LOCK_DIRNAME_RE = re.compile(
+    r"^(?P<from>[A-Z][A-Z0-9-]*)-to-(?P<to>[A-Z][A-Z0-9-]*)$"
+)
 
 
 def _detect_stuck_flip_lock(mission_dir: Path) -> dict[str, Any] | None:
@@ -319,11 +529,13 @@ def _list_claim_dirs(mission_dir: Path) -> list[dict[str, Any]]:
             mtime = p.stat().st_mtime
         except OSError:
             mtime = 0.0
-        out.append({
-            "dirname": p.name,
-            "has_done": (p / "done").is_file(),
-            "mtime": mtime,
-        })
+        out.append(
+            {
+                "dirname": p.name,
+                "has_done": (p / "done").is_file(),
+                "mtime": mtime,
+            }
+        )
     return out
 
 
@@ -360,19 +572,18 @@ def _parse_history_entries(mission_dir: Path) -> list[dict[str, Any]]:
         task_id = parts[3]
         finding = parts[4] if len(parts) > 4 else ""
         severity = parts[5] if len(parts) > 5 else ""
-        drift = (
-            not _LANE_CANONICAL_RE.match(lane)
-            or task_id.startswith("DRIFT-")
+        drift = not _LANE_CANONICAL_RE.match(lane) or task_id.startswith("DRIFT-")
+        out.append(
+            {
+                "utc": utc,
+                "agent": agent,
+                "lane": lane,
+                "task_id": task_id,
+                "finding": finding,
+                "severity": severity,
+                "drift": drift,
+            }
         )
-        out.append({
-            "utc": utc,
-            "agent": agent,
-            "lane": lane,
-            "task_id": task_id,
-            "finding": finding,
-            "severity": severity,
-            "drift": drift,
-        })
     return out
 
 
@@ -481,9 +692,7 @@ def parse_tasks_fe_shape(
     # "PHASE 2" prefix-match. Escape to handle / — ( ) literally.
     section_titles.sort(key=len, reverse=True)
     section_re = re.compile(
-        r"^##\s+(?P<title>"
-        + "|".join(re.escape(t) for t in section_titles)
-        + r")\s*$",
+        r"^##\s+(?P<title>" + "|".join(re.escape(t) for t in section_titles) + r")\s*$",
         re.MULTILINE,
     )
     section_hdrs = list(section_re.finditer(text))
@@ -520,13 +729,13 @@ def parse_tasks_fe_shape(
                 utc = None
             elif state_block.startswith("done:"):
                 claim_state = "done"
-                rest = state_block[len("done:"):].strip()
+                rest = state_block[len("done:") :].strip()
                 agent, _, utc = rest.partition("@")
                 agent = agent.strip() or None
                 utc = utc.strip() or None
             elif state_block.startswith("claimed:"):
                 claim_state = "claimed"
-                rest = state_block[len("claimed:"):].strip()
+                rest = state_block[len("claimed:") :].strip()
                 agent, _, utc = rest.partition("@")
                 agent = agent.strip() or None
                 utc = utc.strip() or None
@@ -650,7 +859,9 @@ def _read_mission_md_fields(mission_dir: Path) -> dict[str, Any]:
     return out
 
 
-def _read_mission_events_tail(mission_dir: Path, limit: int = 50) -> list[dict[str, Any]]:
+def _read_mission_events_tail(
+    mission_dir: Path, limit: int = 50
+) -> list[dict[str, Any]]:
     """Return last `limit` entries from `<mission>/.mission-events`, newest-first.
 
     Format-tolerant: each line is parsed as JSON when possible (per the v9.3
@@ -721,7 +932,9 @@ def _validate_contract(app: FastAPI, contract_path: Path) -> None:
     from .contract_loader import load_contract
 
     if not contract_path.exists():
-        warnings.warn(f"api-contract.md not found at {contract_path} — skipping validation")
+        warnings.warn(
+            f"api-contract.md not found at {contract_path} — skipping validation"
+        )
         return
 
     contract = load_contract(contract_path)
@@ -884,7 +1097,11 @@ def make_app(
 
         # 1. Socket path length guard.
         socket = mission_dir / ".fleet" / "tmux.sock"
-        if not test_mode and not fake_spawner and len(str(socket).encode()) > SOCKET_PATH_LIMIT_BYTES:
+        if (
+            not test_mode
+            and not fake_spawner
+            and len(str(socket).encode()) > SOCKET_PATH_LIMIT_BYTES
+        ):
             print(f"socket path too long: {socket}", file=sys.stderr)
             sys.exit(10)
 
@@ -892,13 +1109,32 @@ def make_app(
             from .spawn_fake import FakeFleetSpawner
 
             app.state.spawner = FakeFleetSpawner(
-                mission_dir, ctx.mission_config, get_adapter, socket,
+                mission_dir,
+                ctx.mission_config,
+                get_adapter,
+                socket,
             )
             app.state.startup_complete = True
+            # Start PermissionWatcher in fake-spawner mode so smoke tests can
+            # seed permission prompts via stream-log writes and exercise the
+            # approval event path end-to-end.
+            from .permission_watcher import PermissionWatcher
+            from .activity_wall import ActivityWall
+
+            _fake_lane_pairs = [
+                (lane.short, lane.name) for lane in ctx.mission_config.lanes
+            ]
+            _perm_watcher_fake = PermissionWatcher(mission_dir, _fake_lane_pairs)
+            await _perm_watcher_fake.start()
+            app.state.permission_watcher = _perm_watcher_fake
+            _aw_fake = ActivityWall(mission_dir, _perm_watcher_fake)
+            await _aw_fake.start()
+            app.state.activity_wall = _aw_fake
             try:
                 yield
             finally:
-                pass
+                await _aw_fake.stop()
+                await _perm_watcher_fake.stop()
             return
 
         if test_mode:
@@ -923,9 +1159,16 @@ def make_app(
                         await asyncio.sleep(0.2)
 
                 applier_task = asyncio.create_task(_drain_loop())
+            # Activity wall (test mode — no perm_watcher)
+            from .activity_wall import ActivityWall
+
+            _aw_test = ActivityWall(mission_dir, None)
+            await _aw_test.start()
+            app.state.activity_wall = _aw_test
             try:
                 yield
             finally:
+                await _aw_test.stop()
                 if applier_task is not None:
                     applier_task.cancel()
                     try:
@@ -940,7 +1183,9 @@ def make_app(
         app.state.startup_complete = False
 
         timeout = float(
-            os.environ.get("MEGALODON_LIFESPAN_TIMEOUT_S", LIFESPAN_STARTUP_TIMEOUT_SECONDS)
+            os.environ.get(
+                "MEGALODON_LIFESPAN_TIMEOUT_S", LIFESPAN_STARTUP_TIMEOUT_SECONDS
+            )
         )
         sleep_s_raw = os.environ.get("MEGALODON_LIFESPAN_SLEEP_S")
 
@@ -970,12 +1215,18 @@ def make_app(
         # 4. Start permission_watcher (v9.3): surfaces Claude REPL approval
         #    prompts from each lane's pipe-pane stream to the dashboard.
         from .permission_watcher import PermissionWatcher
-        lane_pairs = [
-            (lane.short, lane.name) for lane in ctx.mission_config.lanes
-        ]
+
+        lane_pairs = [(lane.short, lane.name) for lane in ctx.mission_config.lanes]
         perm_watcher = PermissionWatcher(mission_dir, lane_pairs)
         await perm_watcher.start()
         app.state.permission_watcher = perm_watcher
+
+        # 5a. Start activity wall: fan-in from 6 sources into ring buffer.
+        from .activity_wall import ActivityWall
+
+        activity_wall = ActivityWall(mission_dir, perm_watcher)
+        await activity_wall.start()
+        app.state.activity_wall = activity_wall
 
         # 5. Start in-process queue applier (v9.3): drains pending intents from
         #    agents' POST /api/v1/{task/claim,task/done,status/update,...} so the
@@ -983,6 +1234,7 @@ def make_app(
         #    poll /api/v1/queue/<rid> forever — each retry is a curl that, in a
         #    for-loop, becomes a compound-bash prompt the operator has to approve.
         from .queue.applier import Applier
+
         _live_applier = Applier(mission_dir, poll_seconds=1.0)
         _have_applier_lock = _live_applier.acquire_singleton()
         if not _have_applier_lock:
@@ -1017,6 +1269,7 @@ def make_app(
                     _live_applier.release_singleton()
                 except Exception:
                     pass
+            await activity_wall.stop()
             await perm_watcher.stop()
             df_task.cancel()
             try:
@@ -1056,7 +1309,9 @@ def make_app(
         response = await call_next(request)
         path = request.url.path
         if path == "/" or path.startswith("/static/"):
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Cache-Control"] = (
+                "no-store, no-cache, must-revalidate, max-age=0"
+            )
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
         return response
@@ -1079,10 +1334,31 @@ def make_app(
     # fully cross-checked across all factory callers; flip to default-on once
     # we're confident no surprise drift exists.
     if os.environ.get("M9_VALIDATE_CONTRACT") == "1":
-        contract_path = Path(__file__).resolve().parents[1] / "docs" / "v9" / "api-contract.md"
+        contract_path = (
+            Path(__file__).resolve().parents[1] / "docs" / "v9" / "api-contract.md"
+        )
         _validate_contract(app, contract_path)
 
     return app
+
+
+# ---------------------------------------------------------------------------
+# Request body schemas
+# ---------------------------------------------------------------------------
+
+
+class InjectBody(BaseModel):
+    """Body schema for POST /api/v1/lane/{short}/inject."""
+
+    text: str
+    enter: bool = True
+
+
+class ApprovalRuleBody(BaseModel):
+    """Body schema for POST /api/v1/approval-rules."""
+
+    pattern: str
+    added_by_session: str
 
 
 # ---------------------------------------------------------------------------
@@ -1108,9 +1384,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         supplied = str(body.get("token", "")) if isinstance(body, dict) else ""
         stored = auth.read_token(ctx.mission_dir / ".fleet" / "ui.token")
         if not auth.compare_token(supplied, stored):
-            return JSONResponse(
-                status_code=401, content={"detail": "invalid token"}
-            )
+            return JSONResponse(status_code=401, content={"detail": "invalid token"})
         sid = ctx.session_store.create()
         resp = JSONResponse(status_code=200, content={"ok": True})
         resp.set_cookie(
@@ -1293,6 +1567,183 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             content={"lane": lane, "status": "respawned"},
         )
 
+    # Per-lane rate-limit state for /inject. Keyed by lane short-code; each
+    # value is a deque of UTC epoch floats for calls within the last 60 s.
+    _inject_rl: dict[str, collections.deque] = {}
+    _INJECT_RL_WINDOW = 60.0
+    _INJECT_RL_MAX = 10
+    _INJECT_TEXT_LIMIT = 16384  # bytes
+
+    @app.post("/api/v1/lane/{short}/inject")
+    async def lane_inject(short: str, body: InjectBody, request: Request):  # noqa: ANN201
+        """Inject keystrokes into a lane's tmux pane.
+
+        Body: ``{text: str, enter: bool}``
+        Required header: ``X-CSRF-Token`` — must match ``ctx.csrf_token``.
+
+        Rejection paths:
+          * 401 — middleware (cookie gate, handled before this handler runs).
+          * 403 — missing or mismatched X-CSRF-Token header.
+          * 404 — unknown lane or spawner not initialized.
+          * 413 — text exceeds 16384 bytes (UTF-8 encoded).
+          * 429 — rate limit exceeded (10 calls / 60 s per lane).
+          * 500 — tmux send-keys failed.
+
+        On success: calls ``tmux.send_keys`` and appends a JSON audit-log line
+        to ``.fleet/inject-log-YYYY-MM-DD.jsonl`` (UTC date, SHA-256 of text).
+        Returns 202 Accepted with ``{ok: true}``.
+        """
+        # CSRF verification (timing-safe compare per QA T1.3 follow-up)
+        csrf = request.headers.get("X-CSRF-Token", "")
+        if not csrf or not secrets.compare_digest(csrf, ctx.csrf_token):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token missing or invalid"},
+            )
+
+        # Lane / spawner resolution
+        spawner = getattr(app.state, "spawner", None)
+        if spawner is None or short not in spawner.sessions:
+            return JSONResponse(
+                status_code=404, content={"detail": f"unknown lane {short}"}
+            )
+
+        # Text size guard
+        text_bytes = body.text.encode("utf-8")
+        if len(text_bytes) > _INJECT_TEXT_LIMIT:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"text exceeds {_INJECT_TEXT_LIMIT} bytes"},
+            )
+
+        # Per-lane rate limit: 10 calls per 60 s
+        now = time.time()
+        if short not in _inject_rl:
+            _inject_rl[short] = collections.deque()
+        dq = _inject_rl[short]
+        cutoff = now - _INJECT_RL_WINDOW
+        while dq and dq[0] <= cutoff:
+            dq.popleft()
+        if len(dq) >= _INJECT_RL_MAX:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "rate limit exceeded (10 calls/60 s per lane)"},
+            )
+        dq.append(now)
+
+        # Tmux keystroke injection.
+        # Fake-spawner short-circuit: FakeFleetSpawner has no real tmux socket;
+        # skip send_keys and fall through to the audit log.  The fake_emit
+        # attribute is the canonical marker that distinguishes FakeFleetSpawner
+        # from the real FleetSpawner.
+        if not hasattr(spawner, "fake_emit"):
+            session_name = spawner.sessions[short].name
+            rc = await tmux.send_keys(
+                spawner.socket, session_name, body.text, enter=body.enter
+            )
+            if rc != 0:
+                return JSONResponse(
+                    status_code=500,
+                    content={"detail": f"tmux send-keys failed (rc={rc})"},
+                )
+
+        # Audit log: append JSON line to .fleet/inject-log-YYYY-MM-DD.jsonl
+        fleet_dir = ctx.mission_dir / ".fleet"
+        fleet_dir.mkdir(parents=True, exist_ok=True)
+        ts_now = datetime.now(timezone.utc)
+        date_str = ts_now.strftime("%Y-%m-%d")
+        log_path = fleet_dir / f"inject-log-{date_str}.jsonl"
+        entry = {
+            "ts": ts_now.isoformat(),
+            "lane": short,
+            "text_sha256": hashlib.sha256(text_bytes).hexdigest(),
+            "byte_count": len(text_bytes),
+            "enter": body.enter,
+        }
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+
+        return JSONResponse(status_code=202, content={"ok": True})
+
+    @app.post("/api/v1/lane/{short}/restart-loop")
+    async def lane_restart_loop(short: str, request: Request):  # noqa: ANN201
+        """Restart a lane's /loop cycle using its initial_prompt.
+
+        Body: empty ``{}``
+        Required header: ``X-CSRF-Token`` — must match ``ctx.csrf_token``.
+
+        Rejection paths:
+          * 401 — middleware (cookie gate, handled before this handler runs).
+          * 403 — missing or mismatched X-CSRF-Token header.
+          * 404 — unknown lane or spawner not initialized.
+          * 409 — no initial_prompt recorded for this lane.
+          * 500 — tmux send-keys failed.
+
+        On success: calls ``tmux.send_keys`` with the lane's initial_prompt
+        and appends a JSON audit-log line to ``.fleet/inject-log-YYYY-MM-DD.jsonl``
+        (UTC date, SHA-256 of initial_prompt, source="restart-loop").
+        Returns 202 Accepted with ``{ok: true}``.
+        """
+        # CSRF verification (timing-safe compare per QA T1.3 follow-up)
+        csrf = request.headers.get("X-CSRF-Token", "")
+        if not csrf or not secrets.compare_digest(csrf, ctx.csrf_token):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token missing or invalid"},
+            )
+
+        # Lane / spawner resolution
+        spawner = getattr(app.state, "spawner", None)
+        if spawner is None or short not in spawner.sessions:
+            return JSONResponse(
+                status_code=404, content={"detail": f"unknown lane {short}"}
+            )
+
+        # Check initial_prompt exists
+        session = spawner.sessions[short]
+        if not session.initial_prompt:
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "no initial_prompt recorded"},
+            )
+
+        text = session.initial_prompt
+        text_bytes = text.encode("utf-8")
+
+        # Tmux keystroke injection.
+        # Fake-spawner short-circuit: FakeFleetSpawner has no real tmux socket;
+        # skip send_keys and fall through to the audit log.  The fake_emit
+        # attribute is the canonical marker that distinguishes FakeFleetSpawner
+        # from the real FleetSpawner.
+        if not hasattr(spawner, "fake_emit"):
+            session_name = session.name
+            rc = await tmux.send_keys(spawner.socket, session_name, text, enter=True)
+            if rc != 0:
+                return JSONResponse(
+                    status_code=500,
+                    content={"detail": f"tmux send-keys failed (rc={rc})"},
+                )
+
+        # Audit log: append JSON line to .fleet/inject-log-YYYY-MM-DD.jsonl
+        # Reuse the same file as inject; add source="restart-loop" to distinguish
+        fleet_dir = ctx.mission_dir / ".fleet"
+        fleet_dir.mkdir(parents=True, exist_ok=True)
+        ts_now = datetime.now(timezone.utc)
+        date_str = ts_now.strftime("%Y-%m-%d")
+        log_path = fleet_dir / f"inject-log-{date_str}.jsonl"
+        entry = {
+            "ts": ts_now.isoformat(),
+            "lane": short,
+            "text_sha256": hashlib.sha256(text_bytes).hexdigest(),
+            "byte_count": len(text_bytes),
+            "enter": True,
+            "source": "restart-loop",
+        }
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+
+        return JSONResponse(status_code=202, content={"ok": True})
+
     @app.delete("/api/v1/fleet")
     async def delete_fleet(request: Request):  # noqa: ANN201
         """Destructive teardown — kill the tmux server + unlink bootstrap files (Task 7.1).
@@ -1301,8 +1752,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
         * ``tmux.kill_server(socket)`` — non-zero rc is tolerated (server may
           already be gone if the operator killed it manually).
-        * Unlinks ``ui.token``, ``tmux.sock``, ``dashboard.url`` from
-          ``<mission>/.fleet/``; ``missing_ok=True`` keeps the call idempotent.
+        * Unlinks ``ui.token``, ``tmux.sock``, ``dashboard.url``,
+          ``approval-rules.json`` from ``<mission>/.fleet/``; removes all
+          ``inject-log-*.jsonl`` files (daily-rotated); ``missing_ok=True``
+          keeps the call idempotent.
 
         After the response is sent, the surrounding lifespan sees
         ``app.state.shutdown_requested = True`` and the uvicorn process exits 0.
@@ -1313,8 +1766,11 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             await tmux.kill_server(socket)
         except FileNotFoundError:
             pass
-        for name in ("ui.token", "tmux.sock", "dashboard.url"):
+        for name in ("ui.token", "tmux.sock", "dashboard.url", "approval-rules.json"):
             (fleet_dir / name).unlink(missing_ok=True)
+        # Clean daily-rotated inject log files (glob pattern)
+        for p in fleet_dir.glob("inject-log-*.jsonl"):
+            p.unlink(missing_ok=True)
         request.app.state.shutdown_requested = True
         return JSONResponse(status_code=200, content={"status": "shutdown"})
 
@@ -1328,9 +1784,12 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             ``_V92_GATED_PATH_RE``. Body: ``{lane, data_b64}``.
             """
             import base64
+
             spawner = getattr(app.state, "spawner", None)
             if spawner is None or not hasattr(spawner, "fake_emit"):
-                return JSONResponse(status_code=404, content={"detail": "no fake spawner"})
+                return JSONResponse(
+                    status_code=404, content={"detail": "no fake spawner"}
+                )
             body = await request.json()
             lane = body.get("lane")
             data_b64 = body.get("data_b64", "")
@@ -1339,7 +1798,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             except Exception:
                 return JSONResponse(status_code=422, content={"detail": "bad base64"})
             if lane not in spawner.sessions:
-                return JSONResponse(status_code=404, content={"detail": f"unknown lane {lane}"})
+                return JSONResponse(
+                    status_code=404, content={"detail": f"unknown lane {lane}"}
+                )
             await spawner.fake_emit(lane, data)
             return JSONResponse(status_code=200, content={"emitted": len(data)})
 
@@ -1348,11 +1809,15 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             """Test-only — flip a lane to running=False+exited_rc=<rc>, or alive."""
             spawner = getattr(app.state, "spawner", None)
             if spawner is None or not hasattr(spawner, "set_pane_dead"):
-                return JSONResponse(status_code=404, content={"detail": "no fake spawner"})
+                return JSONResponse(
+                    status_code=404, content={"detail": "no fake spawner"}
+                )
             body = await request.json()
             lane = body.get("lane")
             if lane not in spawner.sessions:
-                return JSONResponse(status_code=404, content={"detail": f"unknown lane {lane}"})
+                return JSONResponse(
+                    status_code=404, content={"detail": f"unknown lane {lane}"}
+                )
             if body.get("running") is False:
                 spawner.set_pane_dead(lane, int(body.get("rc", 0)))
             else:
@@ -1385,7 +1850,8 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             # Support CSV list of severities (e.g., "MAJOR,BLOCKING").
             wanted = {s.strip().upper() for s in severity.split(",")}
             findings = [
-                f for f in findings
+                f
+                for f in findings
                 if (str(f.get("severity", "")).strip().upper() in wanted)
             ]
         return JSONResponse(content=findings)
@@ -1438,7 +1904,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         else:
             text = text.rstrip("\n") + "\n" + task_line
         tasks_path.write_text(text)
-        return JSONResponse(content={"ok": True, "task_line": task_line.strip()}, status_code=201)
+        return JSONResponse(
+            content={"ok": True, "task_line": task_line.strip()}, status_code=201
+        )
 
     @app.post("/api/lanes/{lane}/reclaim")
     async def post_reclaim(lane: str):
@@ -1474,21 +1942,25 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         status_text = status_path.read_text()
 
         # Find the target lane's row line; append a SIG token to its Notes cell.
-        sig_token = f" [SIG from=orchestrator to={lane} text=\"{text}\" cite={cite}]"
+        sig_token = f' [SIG from=orchestrator to={lane} text="{text}" cite={cite}]'
         # Simplest: append the signal text + cite to the Notes column (last cell).
         lines = status_text.splitlines(keepends=True)
         new_lines = []
         appended = False
         lane_upper = lane.upper()
         for line in lines:
-            if not appended and line.lstrip().startswith("|") and lane_upper in line.upper():
+            if (
+                not appended
+                and line.lstrip().startswith("|")
+                and lane_upper in line.upper()
+            ):
                 # Skip header/separator rows (they don't contain agent IDs).
                 if "Agent" in line or "---" in line:
                     new_lines.append(line)
                     continue
                 # Insert before trailing pipe (and any whitespace/newline).
                 stripped = line.rstrip("\n")
-                trailing = line[len(stripped):]
+                trailing = line[len(stripped) :]
                 # Find last "|" in the row to insert before it
                 if stripped.endswith("|"):
                     new_line = stripped[:-1] + sig_token + " |" + trailing
@@ -1514,13 +1986,16 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             ctx.mission_dir, from_phase, to_phase, "orchestrator"
         )
         if not won:
-            raise HTTPException(status_code=409, detail="phase-flip lock held by another worker")
+            raise HTTPException(
+                status_code=409, detail="phase-flip lock held by another worker"
+            )
         return {"ok": True, "from": from_phase, "to": to_phase}
 
     # Helper to call other handlers from /api/v1/* aliases.
     class _FakeReq:
         def __init__(self, body):
             self._body = body
+
         async def json(self):
             return self._body
 
@@ -1611,11 +2086,23 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         findings = parse_findings(ctx.mission_dir, include_scratch=include_scratch)
         if severity:
             wanted = {s.strip().upper() for s in severity.split(",")}
-            findings = [f for f in findings if str(f.get("severity", "")).strip().upper() in wanted]
+            findings = [
+                f
+                for f in findings
+                if str(f.get("severity", "")).strip().upper() in wanted
+            ]
         if lane:
-            findings = [f for f in findings if str(f.get("lane", "")).strip().upper() == lane.upper()]
+            findings = [
+                f
+                for f in findings
+                if str(f.get("lane", "")).strip().upper() == lane.upper()
+            ]
         if task:
-            findings = [f for f in findings if task in str(f.get("task", "")) or task in str(f.get("task-id", ""))]
+            findings = [
+                f
+                for f in findings
+                if task in str(f.get("task", "")) or task in str(f.get("task-id", ""))
+            ]
         return {"findings": findings}
 
     @app.get(API_FINDINGS + "/{filename}")
@@ -1668,7 +2155,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         if not target:
             raise HTTPException(status_code=404, detail=f"lane {to_lane!r} not found")
 
-        sig_token = f"[SIG from=orchestrator to={to_lane} text=\"{claim}\" cite={evidence}]"
+        sig_token = (
+            f'[SIG from=orchestrator to={to_lane} text="{claim}" cite={evidence}]'
+        )
         new_notes = f"{target['notes']} {sig_token}".strip()
         rid = _qc.status_update(
             ctx.mission_dir,
@@ -1708,7 +2197,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         # E2E spec T-A-RC-e2e asserts the row text contains "STALE-RECLAIMED"
         # after a no-finding reclaim, matching the canonical fix-large fixture.
         task_id = m.group(1)
-        has_finding = primitives._finding_exists_for_task(ctx.mission_dir, task_id) is not None
+        has_finding = (
+            primitives._finding_exists_for_task(ctx.mission_dir, task_id) is not None
+        )
         if has_finding:
             new_state = "idle"
             new_notes = f"retroactive recovery for {task_id} by orchestrator"
@@ -1801,7 +2292,12 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                 status_code=422,
                 detail="task_text must match `- [bracket] [LANE-X] `id` — desc`",
             )
-        bracket, lane, task_id, desc = m.group(1), m.group(2), m.group(3), (m.group(4) or "")
+        bracket, lane, task_id, desc = (
+            m.group(1),
+            m.group(2),
+            m.group(3),
+            (m.group(4) or ""),
+        )
         rid = _qc.tasks_inject(
             ctx.mission_dir,
             agent="orchestrator",
@@ -1828,17 +2324,26 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         """
         mission = ctx.mission_dir
         if (mission / "queue" / "applied" / f"{request_id}.json").exists():
-            return {"request_id": request_id, "status": "applied",
-                    "rejection_reason": None}
+            return {
+                "request_id": request_id,
+                "status": "applied",
+                "rejection_reason": None,
+            }
         rejected = mission / "queue" / "rejected" / f"{request_id}.json"
         if rejected.exists():
             reason_file = mission / "queue" / "rejected" / f"{request_id}-reason.txt"
             reason = reason_file.read_text() if reason_file.exists() else None
-            return {"request_id": request_id, "status": "rejected",
-                    "rejection_reason": reason}
+            return {
+                "request_id": request_id,
+                "status": "rejected",
+                "rejection_reason": reason,
+            }
         if (mission / "queue" / "pending" / f"{request_id}.json").exists():
-            return {"request_id": request_id, "status": "pending",
-                    "rejection_reason": None}
+            return {
+                "request_id": request_id,
+                "status": "pending",
+                "rejection_reason": None,
+            }
         raise HTTPException(404, "request_id not found")
 
     # ----- V9 M2: introspection endpoint for contract scan -----
@@ -1897,21 +2402,152 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         if action not in ("approve", "approve_remember", "deny"):
             return JSONResponse(
                 status_code=422,
-                content={"detail": "action must be 'approve', 'approve_remember', or 'deny'"},
+                content={
+                    "detail": "action must be 'approve', 'approve_remember', or 'deny'"
+                },
             )
 
-        from . import tmux
-        # Claude REPL menu: 1=Yes, 2=Yes-and-remember-pattern, 3=No
-        keys = {"approve": "1", "approve_remember": "2", "deny": "3"}[action]
-        session_name = spawner.sessions[lane].name
-        rc = await tmux.send_keys(spawner.socket, session_name, keys)
-        if rc != 0:
-            return JSONResponse(
-                status_code=500,
-                content={"detail": f"tmux send-keys failed (rc={rc})"},
-            )
-        watcher.clear_lane(lane)
+        # Fake-spawner short-circuit: FakeFleetSpawner has no real tmux socket;
+        # skip send_keys and fall through to clear_lane + audit.  The fake_emit
+        # attribute is the canonical marker that distinguishes FakeFleetSpawner
+        # from the real FleetSpawner (same pattern as inject and restart-loop).
+        if not hasattr(spawner, "fake_emit"):
+            from . import tmux
+
+            # Claude REPL menu: 1=Yes, 2=Yes-and-remember-pattern, 3=No
+            keys = {"approve": "1", "approve_remember": "2", "deny": "3"}[action]
+            session_name = spawner.sessions[lane].name
+            rc = await tmux.send_keys(spawner.socket, session_name, keys)
+            if rc != 0:
+                return JSONResponse(
+                    status_code=500,
+                    content={"detail": f"tmux send-keys failed (rc={rc})"},
+                )
+        watcher.clear_lane(lane, action=action)
         return JSONResponse(status_code=202, content={"action": action, "lane": lane})
+
+    # ----- v9.4 stale-lane detection ----------------------------------------
+
+    @app.get("/api/v1/lanes/stale")
+    async def get_stale_lanes():  # noqa: ANN201
+        """Return lanes that have been silent for ≥ 900 s and are NOT pending approval.
+
+        Cookie-gated via ``_V92_GATED_PATH_RE``. Cached for 5 s (serves
+        concurrent operator polls without recomputing).
+
+        Response shape::
+
+            {
+              "stale_lanes": [
+                {"lane": "A", "silent_seconds": 1234.5,
+                 "pending_approval": false, "last_activity_source": "stream-log"},
+                ...
+              ],
+              "checked_at_utc": "2026-05-20T15:00:00+00:00"
+            }
+
+        ``last_activity_source`` is one of ``"status-md"``, ``"stream-log"``,
+        ``"applier-log"``, or ``"none"`` (when all data sources are missing for
+        the lane).
+
+        ``silent_seconds`` is null when no source provided any timestamp (the
+        lane is treated as infinitely stale).
+        """
+        now_mono = time.monotonic()
+        app_key = id(app)
+        cached = _stale_cache.get(app_key)
+        # Use cache if it exists, is fresh, and there are no pending test overrides.
+        # Pending overrides trigger fresh computation.
+        override_count_before = len(_TEST_STALE_OVERRIDES)
+        if (
+            cached is not None
+            and (now_mono - cached["computed_mono"]) < _STALE_CACHE_TTL_SECONDS
+            and override_count_before == 0
+        ):
+            return JSONResponse(content=cached["response"])
+
+        watcher = getattr(app.state, "permission_watcher", None)
+        lane_rows = parse_status(ctx.mission_dir, ctx)
+        response = _compute_stale_response(
+            ctx.mission_dir,
+            lane_rows,
+            ctx.mission_config,
+            watcher,
+        )
+        override_count_after = len(_TEST_STALE_OVERRIDES)
+        # Cache only if no overrides were consumed in this computation.
+        # If any were consumed (override_count_after < override_count_before),
+        # don't cache so the next call recomputes with the override gone.
+        if override_count_after >= override_count_before:
+            _stale_cache[app_key] = {"response": response, "computed_mono": now_mono}
+        else:
+            # Clear cache so next call recomputes.
+            _stale_cache.pop(app_key, None)
+        return JSONResponse(content=response)
+
+    if os.environ.get("MEGALODON_FAKE_SPAWNER") == "1":
+
+        @app.post("/api/v1/_test/stale_override")
+        async def post_stale_override(request: Request):  # noqa: ANN201
+            """Test-only — populate _TEST_STALE_OVERRIDES for the next stale check.
+
+            Registered ONLY when ``MEGALODON_FAKE_SPAWNER=1``. Cookie-gated via
+            ``_V92_GATED_PATH_RE``. Query params: ``lane`` (str), ``seconds``
+            (float). Body: empty or `{}`. CSRF-protected via ``X-CSRF-Token``.
+
+            On success: sets ``_TEST_STALE_OVERRIDES[lane] = seconds`` and
+            returns 200 with ``{ok: true, lane, seconds}``. The next call to
+            ``GET /api/v1/lanes/stale`` will pop this override and use it as
+            the ``silent_seconds`` for the lane (one-shot).
+
+            Rejection paths:
+              * 401 — middleware (cookie gate, handled before this handler runs).
+              * 403 — missing or mismatched X-CSRF-Token header.
+              * 422 — missing lane, missing seconds, or seconds not a valid float.
+            """
+            # CSRF verification (timing-safe compare per T1.3)
+            csrf = request.headers.get("X-CSRF-Token", "")
+            if not csrf or not secrets.compare_digest(csrf, ctx.csrf_token):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF token missing or invalid"},
+                )
+
+            # Parse query params
+            lane = request.query_params.get("lane", "").strip()
+            seconds_str = request.query_params.get("seconds", "").strip()
+
+            if not lane:
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": "lane query param is required"},
+                )
+            if not seconds_str:
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": "seconds query param is required"},
+                )
+
+            try:
+                seconds = float(seconds_str)
+            except ValueError:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "detail": f"seconds must be a valid float, got {seconds_str!r}"
+                    },
+                )
+
+            # Set the override (one-shot, consumed by next GET /api/v1/lanes/stale).
+            # Clear the stale-lanes cache so the next GET request recomputes
+            # with the new override applied.
+            _TEST_STALE_OVERRIDES[lane] = seconds
+            _stale_cache.pop(id(app), None)
+
+            return JSONResponse(
+                status_code=200,
+                content={"ok": True, "lane": lane, "seconds": seconds},
+            )
 
     # ----- v9.3 agent-side queue endpoints (all shared-doc mutations) ------
     #
@@ -1932,7 +2568,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     # ever need more than one curl per intent.
 
     async def _wait_for_resolution(
-        request_id: str, *, timeout_s: float = 5.0, poll_s: float = 0.15,
+        request_id: str,
+        *,
+        timeout_s: float = 5.0,
+        poll_s: float = 0.15,
     ) -> dict:
         """Block up to ``timeout_s`` for ``request_id`` to land in applied/
         rejected. Returns the same shape as GET /api/v1/queue/{rid}.
@@ -1946,15 +2585,24 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         reason_file = mission / "queue" / "rejected" / f"{request_id}-reason.txt"
         while True:
             if applied.exists():
-                return {"request_id": request_id, "status": "applied",
-                        "rejection_reason": None}
+                return {
+                    "request_id": request_id,
+                    "status": "applied",
+                    "rejection_reason": None,
+                }
             if rejected.exists():
                 reason = reason_file.read_text() if reason_file.exists() else None
-                return {"request_id": request_id, "status": "rejected",
-                        "rejection_reason": reason}
+                return {
+                    "request_id": request_id,
+                    "status": "rejected",
+                    "rejection_reason": reason,
+                }
             if asyncio.get_event_loop().time() >= deadline:
-                return {"request_id": request_id, "status": "pending",
-                        "rejection_reason": None}
+                return {
+                    "request_id": request_id,
+                    "status": "pending",
+                    "rejection_reason": None,
+                }
             await asyncio.sleep(poll_s)
 
     def _wait_param(req: Request) -> bool:
@@ -1968,6 +2616,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         (FE poll loop, integration tests, the legacy v9 protocol). Only when
         the caller opts in with ``?wait=true`` does it switch to synchronous.
         """
+
         async def _build():
             if not wait:
                 return JSONResponse(
@@ -1977,18 +2626,20 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                 )
             result = await _wait_for_resolution(rid)
             status = result.get("status", "pending")
-            http_code = 200 if status == "applied" else (
-                409 if status == "rejected" else 202
+            http_code = (
+                200 if status == "applied" else (409 if status == "rejected" else 202)
             )
             return JSONResponse(
                 status_code=http_code,
                 content={
-                    "request_id": rid, "intent": intent,
+                    "request_id": rid,
+                    "intent": intent,
                     "status": status,
                     "rejection_reason": result.get("rejection_reason"),
                 },
                 headers={"Location": f"/api/v1/queue/{rid}"},
             )
+
         return _build()
 
     @app.post("/api/v1/task/claim")
@@ -2035,7 +2686,8 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             raise HTTPException(status_code=422, detail="lane and agent required")
         rid = _qc.status_update(
             ctx.mission_dir,
-            agent=agent, lane=lane,
+            agent=agent,
+            lane=lane,
             new_state=body.get("new_state"),
             new_utc=body.get("new_utc"),
             new_notes=body.get("new_notes"),
@@ -2058,8 +2710,11 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             )
         rid = _qc.history_append(
             ctx.mission_dir,
-            agent=agent, lane=lane,
-            task_id=task_id, finding_path=finding_path, severity=severity,
+            agent=agent,
+            lane=lane,
+            task_id=task_id,
+            finding_path=finding_path,
+            severity=severity,
         )
         return await _queue_response(rid, "HISTORY_APPEND", _wait_param(req))
 
@@ -2072,10 +2727,14 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         event_text = str(body.get("event_text", "")).strip()
         if not (lane and agent and event_text):
             raise HTTPException(
-                status_code=422, detail="lane, agent, event_text required",
+                status_code=422,
+                detail="lane, agent, event_text required",
             )
         rid = _qc.mission_event(
-            ctx.mission_dir, agent=agent, lane=lane, line=event_text,
+            ctx.mission_dir,
+            agent=agent,
+            lane=lane,
+            line=event_text,
         )
         return await _queue_response(rid, "MISSION_EVENT_APPEND", _wait_param(req))
 
@@ -2123,6 +2782,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         feedback_dir.mkdir(parents=True, exist_ok=True)
         path = feedback_dir / f"{lane_cfg.name}.md"
         from datetime import datetime, timezone
+
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"\n## {ts} — operator\n\n{msg.strip()}\n")
@@ -2155,6 +2815,251 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                 seen.add((method, path))
         return {"registered": sorted([[m, p] for (m, p) in seen])}
 
+    # ----- activity wall endpoints --------------------------------------------
+
+    _AW_LIMIT_MAX = 500
+    _AW_LIMIT_MIN = 1
+    _AW_LIMIT_DEFAULT = 100
+
+    @app.get("/api/v1/activity-wall/snapshot")
+    async def activity_wall_snapshot(request: Request):  # noqa: ANN201
+        """Return recent activity-wall events as JSON, newest-first.
+
+        Cookie-gated via ``_V92_GATED_PATH_RE``.
+
+        Query params
+        ------------
+        limit : int, default 100
+            Number of events to return.  Silently clipped to [1, 500];
+            callers asking for > 500 receive 500 events (no 400 error).
+
+        Response shape::
+
+            {
+              "events": [
+                {
+                  "type": "finding"|"signal"|"history"|"queue"
+                         |"inject"|"restart-loop"|"approval",
+                  "lane": "A" | null,
+                  "ts": "2026-05-20T15:00:00Z",
+                  "summary": "...",
+                  "payload": { ... source-specific fields ... }
+                },
+                ...
+              ]
+            }
+
+        Events are newest-first. The list may be empty if no events have been
+        ingested since server startup.
+        """
+        try:
+            raw = request.query_params.get("limit", str(_AW_LIMIT_DEFAULT))
+            limit = int(raw)
+        except (ValueError, TypeError):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "limit must be an integer"},
+            )
+        # Silently clip to valid range.
+        limit = max(_AW_LIMIT_MIN, min(_AW_LIMIT_MAX, limit))
+
+        wall = getattr(app.state, "activity_wall", None)
+        if wall is None:
+            return JSONResponse(content={"events": []})
+        return JSONResponse(content={"events": wall.snapshot(limit)})
+
+    @app.get("/api/v1/activity-wall")
+    async def activity_wall_sse(request: Request):  # noqa: ANN201
+        """SSE stream of NEW activity-wall events as they arrive.
+
+        Cookie-gated via ``_V92_GATED_PATH_RE``. Emits no backlog — the client
+        must hydrate history via ``GET /api/v1/activity-wall/snapshot`` first.
+
+        Each SSE data payload is a JSON-encoded event dict::
+
+            data: {"type": ..., "lane": ..., "ts": ..., "summary": ..., "payload": ...}
+
+        On client disconnect the per-connection asyncio.Queue is removed from
+        the subscriber list and eligible for GC.
+        """
+        from sse_starlette.sse import EventSourceResponse
+
+        wall = getattr(app.state, "activity_wall", None)
+        if wall is None:
+            return JSONResponse(
+                status_code=503, content={"detail": "activity wall not initialized"}
+            )
+
+        q = wall.subscribe()
+
+        async def _event_generator():
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        event = await asyncio.wait_for(q.get(), timeout=15.0)
+                        yield {"data": json.dumps(event)}
+                    except asyncio.TimeoutError:
+                        # Keep-alive: send a comment so the connection stays open.
+                        yield {"comment": "ka"}
+            finally:
+                wall.unsubscribe(q)
+
+        return EventSourceResponse(_event_generator())
+
+    # ----- v9.4 approval-rules (T3.1) ----------------------------------------
+    #
+    # Persistence: .fleet/approval-rules.json — a flat JSON list.
+    # No schema version field; §2 non-goals explicitly exclude schema versioning.
+    # Each entry: {pattern: str, added_at_utc: ISO8601, added_by_session: str}
+    #
+    # Dedup policy: POST with an already-existing pattern returns 200 with the
+    # existing entry (not 409) — idempotent for operator retry safety.
+    #
+    # Corrupt-file policy: GET returns {rules: []} with a WARNING log line rather
+    # than 500 — a corrupt file should not hard-block the dashboard.
+    #
+    # File writes are atomic: write to a .tmp sibling then os.replace() to avoid
+    # partial writes on crash.
+
+    _APPROVAL_RULES_FILE = ".fleet/approval-rules.json"
+
+    def _approval_rules_path() -> Path:
+        return ctx.mission_dir / _APPROVAL_RULES_FILE
+
+    def _read_approval_rules() -> list[dict]:
+        """Read the approval-rules file; return [] if missing or corrupt."""
+        import logging as _logging
+
+        path = _approval_rules_path()
+        if not path.exists():
+            return []
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            _logging.getLogger(__name__).warning(
+                "approval-rules: corrupt file %s (%s) — returning empty list",
+                path,
+                exc,
+            )
+            return []
+
+    def _write_approval_rules(rules: list[dict]) -> None:
+        """Atomically write rules list to .fleet/approval-rules.json."""
+        path = _approval_rules_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rules, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
+    @app.post("/api/v1/approval-rules")
+    async def post_approval_rule(body: ApprovalRuleBody, request: Request):  # noqa: ANN201
+        """Add an approval-rule pattern.
+
+        Body: ``{pattern: str, added_by_session: str}``
+        Required header: ``X-CSRF-Token`` — must match ``ctx.csrf_token``.
+
+        Rejection paths:
+          * 401 — middleware (cookie gate).
+          * 403 — missing or mismatched X-CSRF-Token header.
+
+        Dedup: if an entry with the same ``pattern`` already exists, return
+        200 with the existing entry (idempotent — operator retry safe).
+        Otherwise append and return 201 with the new entry.
+        """
+        # CSRF verification (timing-safe compare per T1.3 pattern)
+        csrf = request.headers.get("X-CSRF-Token", "")
+        if not csrf or not secrets.compare_digest(csrf, ctx.csrf_token):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token missing or invalid"},
+            )
+
+        rules = _read_approval_rules()
+        for existing in rules:
+            if existing.get("pattern") == body.pattern:
+                # Dedup hit — return 200 with existing entry
+                return JSONResponse(status_code=200, content=existing)
+
+        entry: dict = {
+            "pattern": body.pattern,
+            "added_at_utc": datetime.now(timezone.utc).isoformat(),
+            "added_by_session": body.added_by_session,
+        }
+        rules.append(entry)
+        _write_approval_rules(rules)
+        return JSONResponse(status_code=201, content=entry)
+
+    @app.get("/api/v1/approval-rules")
+    async def get_approval_rules():  # noqa: ANN201
+        """Return all approval-rule patterns.
+
+        Cookie-gated via ``_V92_GATED_PATH_RE``.
+
+        Response shape: ``{rules: [{pattern, added_at_utc, added_by_session}, ...]}``
+
+        Returns ``{rules: []}`` if the file is missing or corrupt (see
+        corrupt-file policy comment above).
+        """
+        return JSONResponse(content={"rules": _read_approval_rules()})
+
+    @app.delete("/api/v1/approval-rules")
+    async def delete_approval_rule(request: Request):  # noqa: ANN201
+        """Remove an approval-rule pattern.
+
+        Query param: ``pattern`` (exact match, required).
+        Required header: ``X-CSRF-Token`` — must match ``ctx.csrf_token``.
+
+        Rejection paths:
+          * 401 — middleware (cookie gate).
+          * 403 — missing or mismatched X-CSRF-Token header.
+          * 404 — pattern not found in the rules list.
+
+        On success: removes the entry, writes the file atomically, returns 204.
+        """
+        # CSRF verification (timing-safe compare per T1.3 pattern)
+        csrf = request.headers.get("X-CSRF-Token", "")
+        if not csrf or not secrets.compare_digest(csrf, ctx.csrf_token):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token missing or invalid"},
+            )
+
+        pattern = request.query_params.get("pattern")
+        if not pattern:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "query param 'pattern' is required"},
+            )
+
+        rules = _read_approval_rules()
+        new_rules = [r for r in rules if r.get("pattern") != pattern]
+        if len(new_rules) == len(rules):
+            return JSONResponse(
+                status_code=404,
+                content={"detail": f"pattern not found: {pattern}"},
+            )
+        _write_approval_rules(new_rules)
+        return Response(status_code=204)
+
+    @app.get("/api/v1/approval-rules/extract")
+    async def get_approval_rules_extract(request: Request):  # noqa: ANN201
+        """Extract an --allowedTools pattern from a raw command string.
+
+        Query param: ``command`` (URL-encoded shell command string).
+        Cookie-gated via ``_V92_GATED_PATH_RE`` (``approval-rules`` prefix).
+        No CSRF required — safe GET method.
+
+        Response: ``{pattern: str | null}``
+        ``null`` is returned for compound commands, redirects, empty input, etc.
+        """
+        from .approval_rules import extract_pattern as _extract_pattern
+
+        command = request.query_params.get("command", "")
+        pattern = _extract_pattern(command) if command else None
+        return JSONResponse(content={"pattern": pattern})
+
     # ----- SSE stream (MISSION exit-criterion #4 / TEST signal @19:41Z) -----
 
     @app.get(API_EVENTS)
@@ -2180,10 +3085,12 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         async def event_generator():
-            sync_payload = json.dumps({
-                "utc": _now_iso(),
-                "mission_dir": str(ctx.mission_dir),
-            })
+            sync_payload = json.dumps(
+                {
+                    "utc": _now_iso(),
+                    "mission_dir": str(ctx.mission_dir),
+                }
+            )
             yield {"event": SSE_SYNC, "data": sync_payload}
 
             try:
@@ -2206,10 +3113,12 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                     continue
                 if current_mtime != last_mtime:
                     last_mtime = current_mtime
-                    payload = json.dumps({
-                        "utc": _now_iso(),
-                        "lanes": parse_status(ctx.mission_dir, ctx),
-                    })
+                    payload = json.dumps(
+                        {
+                            "utc": _now_iso(),
+                            "lanes": parse_status(ctx.mission_dir, ctx),
+                        }
+                    )
                     yield {"event": SSE_STATUS_CHANGE, "data": payload}
 
         return EventSourceResponse(event_generator())

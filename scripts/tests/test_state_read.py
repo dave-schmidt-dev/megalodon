@@ -1,8 +1,5 @@
 """Tests for scripts/_state_read.py."""
 
-from datetime import timezone
-
-import pytest
 from freezegun import freeze_time
 
 from scripts._state_read import read_lanes, read_phase
@@ -38,7 +35,10 @@ def test_read_phase_returns_init_phase(mission_dir):
 
 
 from scripts._state_read import (
-    read_claims, read_events_tail, read_findings_recent, read_partial_journals,
+    read_claims,
+    read_events_tail,
+    read_findings_recent,
+    read_partial_journals,
 )
 
 
@@ -71,29 +71,54 @@ def test_read_partial_journals_returns_only_partial_within_window(mission_dir, a
     assert read_partial_journals(mission_dir) == []
     # Create journals with status=PARTIAL.
     import json
+
     jdir = mission_dir / ".scripts-journal"
     jdir.mkdir()
-    (jdir / "rid-old.json").write_text(json.dumps({
-        "schema_version": 1, "request_id": "rid-old",
-        "started_utc": "2026-05-15T00:00:00Z",
-        "last_updated_utc": "2026-05-15T00:00:00Z",
-        "status": "PARTIAL",
-        "task_id": "X-1", "lane": "AUDIT", "agent": agent,
-        "args": {"finding": "f", "severity": "DELTA", "notes": "n", "summary": "s"},
-        "steps": [{"step": "CLAIM_DIR_DONE", "ok": True, "error": None}],
-    }))
-    (jdir / "rid-new.json").write_text(json.dumps({
-        "schema_version": 1, "request_id": "rid-new",
-        "started_utc": "2026-05-16T22:00:00Z",
-        "last_updated_utc": "2026-05-16T22:00:00Z",
-        "status": "PARTIAL",
-        "task_id": "X-2", "lane": "AUDIT", "agent": agent,
-        "args": {"finding": "f", "severity": "DELTA", "notes": "n", "summary": "s"},
-        "steps": [
-            {"step": "CLAIM_DIR_DONE", "ok": True, "error": None},
-            {"step": "TASKS_BRACKET", "ok": False, "error": "missing"},
-        ],
-    }))
+    (jdir / "rid-old.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "request_id": "rid-old",
+                "started_utc": "2026-05-15T00:00:00Z",
+                "last_updated_utc": "2026-05-15T00:00:00Z",
+                "status": "PARTIAL",
+                "task_id": "X-1",
+                "lane": "AUDIT",
+                "agent": agent,
+                "args": {
+                    "finding": "f",
+                    "severity": "DELTA",
+                    "notes": "n",
+                    "summary": "s",
+                },
+                "steps": [{"step": "CLAIM_DIR_DONE", "ok": True, "error": None}],
+            }
+        )
+    )
+    (jdir / "rid-new.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "request_id": "rid-new",
+                "started_utc": "2026-05-16T22:00:00Z",
+                "last_updated_utc": "2026-05-16T22:00:00Z",
+                "status": "PARTIAL",
+                "task_id": "X-2",
+                "lane": "AUDIT",
+                "agent": agent,
+                "args": {
+                    "finding": "f",
+                    "severity": "DELTA",
+                    "notes": "n",
+                    "summary": "s",
+                },
+                "steps": [
+                    {"step": "CLAIM_DIR_DONE", "ok": True, "error": None},
+                    {"step": "TASKS_BRACKET", "ok": False, "error": "missing"},
+                ],
+            }
+        )
+    )
     # At 2026-05-16T22:30Z, rid-old is > 24h old, rid-new is 30 min old.
     with freeze_time("2026-05-16T22:30:00Z"):
         entries = read_partial_journals(mission_dir, max_age_seconds=86400)

@@ -20,11 +20,11 @@ import argparse
 import os
 import signal
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
+
 
 def _load_preamble(context_dir: Path) -> str:
     """Load README.md + tasks.md (or TASKS.md) from context_dir.
@@ -59,6 +59,7 @@ def _load_preamble(context_dir: Path) -> str:
 
 
 # ─── main ─────────────────────────────────────────────────────────────────────
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -145,8 +146,11 @@ def main(argv: list[str] | None = None) -> int:
         yaml_text = _state.get("current_yaml")
         if yaml_text:
             from megalodon_ui.preflight.writer import write_aborted_snapshot
+
             snapshot = write_aborted_snapshot(yaml_text, mission_dir)
-            print(f"\nInterrupted — draft snapshot written to {snapshot}", file=sys.stderr)
+            print(
+                f"\nInterrupted — draft snapshot written to {snapshot}", file=sys.stderr
+            )
         # Clean up any leftover .tmp
         tmp = mission_dir / ".mission-config.yaml.tmp"
         try:
@@ -183,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         # Operator abandoned — write snapshot if we have a draft
         if last_yaml:
             from megalodon_ui.preflight.writer import write_aborted_snapshot
+
             snapshot = write_aborted_snapshot(last_yaml, mission_dir)
             print(f"Abandoned — draft snapshot written to {snapshot}", file=sys.stderr)
         return 1

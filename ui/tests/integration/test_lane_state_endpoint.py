@@ -70,15 +70,22 @@ async def authed_client_with_lane_A(
     adapter.session_log_dir = MagicMock(return_value=None)
     spawner = FleetSpawner(fix_medium, config, MagicMock(return_value=adapter), socket)
     spawner.sessions["A"] = LaneSession(
-        lane="A", name="lane-A", cwd=fix_medium,
-        argv=["stub"], env={}, stream_log=stream_log,
-        session_id="sid-A", running=True,
+        lane="A",
+        name="lane-A",
+        cwd=fix_medium,
+        argv=["stub"],
+        env={},
+        stream_log=stream_log,
+        session_id="sid-A",
+        running=True,
     )
 
     app = make_app(mission_dir=fix_medium)
     async with app.router.lifespan_context(app):
         app.state.spawner = spawner
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://t"
+        ) as client:
             exch = await client.post("/api/v1/auth/exchange", json={"token": token})
             assert exch.status_code == 200
             yield client, spawner
@@ -139,6 +146,8 @@ async def test_state_without_cookie_returns_401(fix_medium: Path, monkeypatch):
     monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
     app = make_app(mission_dir=fix_medium)
     async with app.router.lifespan_context(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://t"
+        ) as client:
             r = await client.get("/api/v1/lane/A/state")
     assert r.status_code == 401

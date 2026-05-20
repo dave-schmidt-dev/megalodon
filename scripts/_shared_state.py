@@ -72,14 +72,23 @@ def _run_step(
         return _backend.tasks_bracket(mission, task_id, agent, utc)
     if step == "HISTORY_APPEND":
         return _backend.history_append(
-            mission, agent=agent, lane_short=LANE_LONG_TO_SHORT[lane],
-            task_id=task_id, finding_path=finding_path, severity=severity,
-            notes=notes, utc=utc,
+            mission,
+            agent=agent,
+            lane_short=LANE_LONG_TO_SHORT[lane],
+            task_id=task_id,
+            finding_path=finding_path,
+            severity=severity,
+            notes=notes,
+            utc=utc,
         )
     if step == "STATUS_UPDATE":
         return _backend.status_update(
-            mission, lane=lane, agent=agent, task_id=task_id,
-            summary=summary, utc=utc,
+            mission,
+            lane=lane,
+            agent=agent,
+            task_id=task_id,
+            summary=summary,
+            utc=utc,
         )
     raise ValueError(f"unknown step: {step}")
 
@@ -100,8 +109,10 @@ def execute_close(
     mission = Path(mission_dir)
     started = _utc_now()
     args = {
-        "finding": finding_path, "severity": severity,
-        "notes": notes, "summary": summary,
+        "finding": finding_path,
+        "severity": severity,
+        "notes": notes,
+        "summary": summary,
     }
     journal_payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -123,10 +134,16 @@ def execute_close(
 
     for step in _STEPS_IN_ORDER:
         result = _run_step(
-            step, mission,
-            task_id=task_id, lane=lane, agent=agent, utc=utc,
-            finding_path=finding_path, severity=severity,
-            notes=notes, summary=summary,
+            step,
+            mission,
+            task_id=task_id,
+            lane=lane,
+            agent=agent,
+            utc=utc,
+            finding_path=finding_path,
+            severity=severity,
+            notes=notes,
+            summary=summary,
         )
         step_results.append({**result, "completed_utc": _utc_now()})
         if result["ok"]:
@@ -164,9 +181,11 @@ def resume_close(mission_dir: Path, request_id: str) -> dict[str, Any]:
     journal = _read_journal(mission, request_id)
     if journal["status"] in ("COMPLETE", "RESUMED-COMPLETE"):
         return {
-            "request_id": request_id, "ok": True,
+            "request_id": request_id,
+            "ok": True,
             "completed": [s["step"] for s in journal["steps"] if s["ok"]],
-            "failed_step": None, "steps": journal["steps"],
+            "failed_step": None,
+            "steps": journal["steps"],
             "resume_hint": None,
         }
 
@@ -178,11 +197,16 @@ def resume_close(mission_dir: Path, request_id: str) -> dict[str, Any]:
 
     for step in remaining:
         result = _run_step(
-            step, mission,
-            task_id=journal["task_id"], lane=journal["lane"],
-            agent=journal["agent"], utc=_utc_now(),
-            finding_path=args["finding"], severity=args["severity"],
-            notes=args["notes"], summary=args["summary"],
+            step,
+            mission,
+            task_id=journal["task_id"],
+            lane=journal["lane"],
+            agent=journal["agent"],
+            utc=_utc_now(),
+            finding_path=args["finding"],
+            severity=args["severity"],
+            notes=args["notes"],
+            summary=args["summary"],
         )
         new_results.append({**result, "completed_utc": _utc_now()})
         if result["ok"]:
@@ -200,6 +224,7 @@ def resume_close(mission_dir: Path, request_id: str) -> dict[str, Any]:
         "completed": completed,
         "failed_step": failed_step,
         "steps": new_results,
-        "resume_hint": None if failed_step is None
-            else f"python3 scripts/atomic_close.py --resume {request_id}",
+        "resume_hint": None
+        if failed_step is None
+        else f"python3 scripts/atomic_close.py --resume {request_id}",
     }

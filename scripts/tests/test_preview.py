@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-FIXTURE_3_LANE = REPO_ROOT / "scripts" / "tests" / "fixtures" / "configs" / "minimal_3_lane"
+FIXTURE_3_LANE = (
+    REPO_ROOT / "scripts" / "tests" / "fixtures" / "configs" / "minimal_3_lane"
+)
 
 
 def _run_preview(*extra_args: str, mission_dir: Path) -> subprocess.CompletedProcess:
@@ -43,14 +45,19 @@ def three_lane_mission(tmp_path: Path) -> Path:
 # test_preview_default_mode_3_lane_fixture
 # ---------------------------------------------------------------------------
 
+
 def test_preview_default_mode_3_lane_fixture(three_lane_mission: Path) -> None:
     """Default mode prints one lane= line per lane with cli=, model=, argv= fields."""
     result = _run_preview(mission_dir=three_lane_mission)
 
     assert result.returncode == 0, f"stderr: {result.stderr}"
 
-    lane_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("lane=")]
-    assert len(lane_lines) == 3, f"Expected 3 lane= lines, got {len(lane_lines)}:\n{result.stdout}"
+    lane_lines = [
+        line for line in result.stdout.splitlines() if line.strip().startswith("lane=")
+    ]
+    assert len(lane_lines) == 3, (
+        f"Expected 3 lane= lines, got {len(lane_lines)}:\n{result.stdout}"
+    )
 
     for line in lane_lines:
         assert "cli=" in line, f"Missing cli= in: {line!r}"
@@ -62,6 +69,7 @@ def test_preview_default_mode_3_lane_fixture(three_lane_mission: Path) -> None:
 # test_preview_include_tmux_argv_adds_tmux_lines
 # ---------------------------------------------------------------------------
 
+
 def test_preview_include_tmux_argv_adds_tmux_lines(three_lane_mission: Path) -> None:
     """--include-tmux-argv adds tmux new-session and MEGALODON_FLEET_OWNED lines."""
     result = _run_preview("--include-tmux-argv", mission_dir=three_lane_mission)
@@ -72,15 +80,20 @@ def test_preview_include_tmux_argv_adds_tmux_lines(three_lane_mission: Path) -> 
     assert "new-session" in stdout, "Expected 'new-session' in tmux output"
     # The socket path appears in tmux -S <socket> lines
     assert "tmux -S" in stdout, "Expected 'tmux -S' in tmux output"
-    assert "MEGALODON_FLEET_OWNED 1" in stdout, "Expected set-environment MEGALODON_FLEET_OWNED 1"
+    assert "MEGALODON_FLEET_OWNED 1" in stdout, (
+        "Expected set-environment MEGALODON_FLEET_OWNED 1"
+    )
 
-    lane_lines = [line for line in stdout.splitlines() if line.strip().startswith("lane=")]
+    lane_lines = [
+        line for line in stdout.splitlines() if line.strip().startswith("lane=")
+    ]
     assert len(lane_lines) == 3, f"Expected 3 lane= lines, got {len(lane_lines)}"
 
 
 # ---------------------------------------------------------------------------
 # test_preview_exit_1_on_missing_mission_dir
 # ---------------------------------------------------------------------------
+
 
 def test_preview_exit_1_on_missing_mission_dir(tmp_path: Path) -> None:
     """Nonexistent mission dir produces rc=1 and non-empty stderr."""
@@ -94,6 +107,7 @@ def test_preview_exit_1_on_missing_mission_dir(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # test_launch_helpers_plan_subcommand_removed
 # ---------------------------------------------------------------------------
+
 
 def test_launch_helpers_plan_subcommand_removed() -> None:
     """The 'plan' subcommand of _launch_helpers.py must no longer succeed."""
@@ -117,6 +131,7 @@ def test_launch_helpers_plan_subcommand_removed() -> None:
 # ---------------------------------------------------------------------------
 # test_no_plan_launches_callers
 # ---------------------------------------------------------------------------
+
 
 def test_no_plan_launches_callers() -> None:
     """No Python file under scripts/ or megalodon_ui/ may reference plan_launches."""

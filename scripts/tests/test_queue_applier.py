@@ -34,7 +34,11 @@ def _drain_until(applier, predicate, timeout=5.0):
 def test_status_update_lands(queue_mission):
     applier = Applier(queue_mission)
     rid = queue_client.status_update(
-        queue_mission, "agent-aaaa", "AUDIT", "working: P5", "test notes",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "working: P5",
+        "test notes",
     )
     assert _drain_until(
         applier,
@@ -48,7 +52,10 @@ def test_status_update_lands(queue_mission):
 def test_tasks_bracket_marks_open_as_claimed(queue_mission):
     applier = Applier(queue_mission)
     rid = queue_client.task_claim(
-        queue_mission, "agent-aaaa", "AUDIT", "Q-FIXTURE-1",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "Q-FIXTURE-1",
     )
     assert _drain_until(
         applier,
@@ -62,8 +69,12 @@ def test_tasks_bracket_marks_open_as_claimed(queue_mission):
 def test_history_append_writes_pipe_row(queue_mission):
     applier = Applier(queue_mission)
     rid = queue_client.history_append(
-        queue_mission, "agent-aaaa", "AUDIT", "Q-FIXTURE-1",
-        "findings/sample.md", "MAJOR",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "Q-FIXTURE-1",
+        "findings/sample.md",
+        "MAJOR",
     )
     assert _drain_until(
         applier,
@@ -78,7 +89,9 @@ def test_history_append_writes_pipe_row(queue_mission):
 def test_mission_event_append(queue_mission):
     applier = Applier(queue_mission)
     rid = queue_client.mission_event(
-        queue_mission, "agent-aaaa", "AUDIT",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
         f"{queue_client.utc_now()} PHASE-PLAN->PHASE-BUILD by agent-aaaa -- test",
     )
     assert _drain_until(
@@ -92,7 +105,10 @@ def test_mission_event_append(queue_mission):
 def test_claim_dir_create_lands(queue_mission):
     applier = Applier(queue_mission)
     rid = queue_client.claim_dir_create(
-        queue_mission, "agent-aaaa", "AUDIT", "Q-NEW-CLAIM",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "Q-NEW-CLAIM",
     )
     assert _drain_until(
         applier,
@@ -105,7 +121,10 @@ def test_claim_dir_done_only_owner(queue_mission):
     """Owner can mark done; non-owner is rejected."""
     applier = Applier(queue_mission)
     rid_create = queue_client.claim_dir_create(
-        queue_mission, "agent-aaaa", "AUDIT", "Q-OWN-CLAIM",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "Q-OWN-CLAIM",
     )
     _drain_until(
         applier,
@@ -113,7 +132,10 @@ def test_claim_dir_done_only_owner(queue_mission):
     )
 
     rid_steal = queue_client.claim_dir_done(
-        queue_mission, "agent-zzzz", "AUDIT", "Q-OWN-CLAIM",
+        queue_mission,
+        "agent-zzzz",
+        "AUDIT",
+        "Q-OWN-CLAIM",
     )
     assert _drain_until(
         applier,
@@ -121,7 +143,10 @@ def test_claim_dir_done_only_owner(queue_mission):
     )
 
     rid_done = queue_client.claim_dir_done(
-        queue_mission, "agent-aaaa", "AUDIT", "Q-OWN-CLAIM",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "Q-OWN-CLAIM",
     )
     assert _drain_until(
         applier,
@@ -137,8 +162,12 @@ def test_idempotent_replay_via_journal(queue_mission):
     """Re-applying an already-applied rid (journal says APPLIED) is a no-op."""
     applier = Applier(queue_mission)
     rid = queue_client.history_append(
-        queue_mission, "agent-aaaa", "AUDIT", "Q-FIXTURE-1",
-        "findings/x.md", "MAJOR",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "Q-FIXTURE-1",
+        "findings/x.md",
+        "MAJOR",
     )
     _drain_until(
         applier,
@@ -188,18 +217,22 @@ def test_pending_indoubt_reconcile_already_applied(queue_mission):
         "fallback": "REJECT",
     }
     (queue_mission / "queue" / "pending").mkdir(parents=True, exist_ok=True)
-    (queue_mission / "queue" / "pending" / f"{rid}.json").write_text(
-        json.dumps(req)
-    )
+    (queue_mission / "queue" / "pending" / f"{rid}.json").write_text(json.dumps(req))
     # Write a PENDING-only journal entry that pre-dates this applier.
     (queue_mission / "queue").mkdir(parents=True, exist_ok=True)
     journal_log = queue_mission / "queue" / "journal.log"
     journal_log.write_text(
-        json.dumps({
-            "rid": rid, "status": "PENDING", "intent": "HISTORY_APPEND",
-            "target": "HISTORY.md", "payload": {"line": pre_line.rstrip("\n")},
-            "utc": queue_client.utc_now(),
-        }) + "\n"
+        json.dumps(
+            {
+                "rid": rid,
+                "status": "PENDING",
+                "intent": "HISTORY_APPEND",
+                "target": "HISTORY.md",
+                "payload": {"line": pre_line.rstrip("\n")},
+                "utc": queue_client.utc_now(),
+            }
+        )
+        + "\n"
     )
 
     applier = Applier(queue_mission)
@@ -224,8 +257,11 @@ def test_t1_concurrent_status_updates(queue_mission):
 
     def submit(lane):
         rid = queue_client.status_update(
-            queue_mission, f"agent-{lane.lower()[:4]}", lane,
-            f"working: T1-{lane}", "",
+            queue_mission,
+            f"agent-{lane.lower()[:4]}",
+            lane,
+            f"working: T1-{lane}",
+            "",
         )
         with lock:
             rids.append(rid)
@@ -254,7 +290,11 @@ def test_t1_concurrent_status_updates(queue_mission):
 def test_t2_hash_mismatch_rejected(queue_mission):
     """T2 — STATUS_UPDATE with stale expected_hash_before is rejected."""
     rid = queue_client.submit(
-        queue_mission, "agent-aaaa", "AUDIT", "STATUS.md", "STATUS_UPDATE",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "STATUS.md",
+        "STATUS_UPDATE",
         {
             "lane": "AUDIT",
             "agent": "agent-aaaa",
@@ -278,8 +318,12 @@ def test_t3_pending_overflow_drains_fifo(queue_mission):
     rids = []
     for i in range(100):
         rid = queue_client.history_append(
-            queue_mission, "agent-aaaa", "AUDIT", f"Q-T3-{i:03d}",
-            f"findings/{i}.md", "MINOR",
+            queue_mission,
+            "agent-aaaa",
+            "AUDIT",
+            f"Q-T3-{i:03d}",
+            f"findings/{i}.md",
+            "MINOR",
         )
         rids.append(rid)
     applier = Applier(queue_mission)
@@ -303,8 +347,12 @@ def test_t4_disk_full_mocked(queue_mission, monkeypatch):
     propagates as an OSError that the applier catches → REJECTED.
     """
     queue_client.history_append(
-        queue_mission, "agent-aaaa", "AUDIT", "Q-DISKFULL",
-        "findings/x.md", "MAJOR",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "Q-DISKFULL",
+        "findings/x.md",
+        "MAJOR",
     )
 
     real_fsync = os.fsync
@@ -334,7 +382,9 @@ def test_t4_disk_full_mocked(queue_mission, monkeypatch):
 def test_q1_status_row_insert(queue_mission):
     applier = Applier(queue_mission)
     rid = queue_client.status_row_insert(
-        queue_mission, "agent-zzzz", "OBSERVER-7",
+        queue_mission,
+        "agent-zzzz",
+        "OBSERVER-7",
         initial_state="idle",
         initial_utc=queue_client.utc_now(),
         initial_notes="surplus observer",
@@ -351,7 +401,9 @@ def test_q1_status_row_insert_rejects_existing_lane(queue_mission):
     """Insert for an existing lane should be rejected."""
     applier = Applier(queue_mission)
     rid = queue_client.status_row_insert(
-        queue_mission, "agent-aaaa", "AUDIT",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
         initial_utc=queue_client.utc_now(),
     )
     assert _drain_until(
@@ -363,8 +415,11 @@ def test_q1_status_row_insert_rejects_existing_lane(queue_mission):
 def test_q1_tasks_inject(queue_mission):
     applier = Applier(queue_mission)
     rid = queue_client.tasks_inject(
-        queue_mission, "agent-aaaa", "META",
-        task_id="CHALLENGE-42", lane="B",
+        queue_mission,
+        "agent-aaaa",
+        "META",
+        task_id="CHALLENGE-42",
+        lane="B",
         description="Fix something",
     )
     assert _drain_until(
@@ -379,8 +434,11 @@ def test_q1_tasks_inject(queue_mission):
 def test_q1_tasks_inject_rejects_duplicate(queue_mission):
     applier = Applier(queue_mission)
     rid = queue_client.tasks_inject(
-        queue_mission, "agent-aaaa", "META",
-        task_id="Q-FIXTURE-1", lane="A",
+        queue_mission,
+        "agent-aaaa",
+        "META",
+        task_id="Q-FIXTURE-1",
+        lane="A",
         description="dup",
     )
     assert _drain_until(
@@ -393,8 +451,12 @@ def test_q1_mission_event_correction_required_prefix(queue_mission):
     """CORRECTION line without 'CORRECTION by ' must be rejected (schema)."""
     applier = Applier(queue_mission)
     rid_bad = queue_client.submit(
-        queue_mission, "agent-aaaa", "AUDIT", ".mission-events",
-        "MISSION_EVENT_CORRECTION", {"line": "2026-05-16T22:00:00Z no prefix"},
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        ".mission-events",
+        "MISSION_EVENT_CORRECTION",
+        {"line": "2026-05-16T22:00:00Z no prefix"},
     )
     assert _drain_until(
         applier,
@@ -405,7 +467,9 @@ def test_q1_mission_event_correction_required_prefix(queue_mission):
 def test_q1_mission_event_correction_happy_path(queue_mission):
     applier = Applier(queue_mission)
     rid = queue_client.mission_event_correction(
-        queue_mission, "agent-aaaa", "AUDIT",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
         f"{queue_client.utc_now()} CORRECTION by agent-aaaa -- fixing prior line",
     )
     assert _drain_until(
@@ -438,7 +502,10 @@ def test_b4_claim_exists_no_owner_rejected(queue_mission):
     """Pre-v9-style claim dir without owner.txt → reject (don't steal)."""
     (queue_mission / "claims" / "LEGACY-TASK").mkdir(parents=True)
     rid = queue_client.claim_dir_create(
-        queue_mission, "agent-aaaa", "AUDIT", "LEGACY-TASK",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "LEGACY-TASK",
     )
     applier = Applier(queue_mission)
     assert _drain_until(
@@ -456,7 +523,10 @@ def test_b4_claim_exists_with_owner_idempotent(queue_mission):
         "agent-aaaa AUDIT 2026-01-01T00:00:00Z\n"
     )
     rid = queue_client.claim_dir_create(
-        queue_mission, "agent-aaaa", "AUDIT", "OK-TASK",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "OK-TASK",
     )
     applier = Applier(queue_mission)
     assert _drain_until(
@@ -470,7 +540,11 @@ def test_b4_claim_exists_with_owner_idempotent(queue_mission):
 
 def test_unknown_intent_rejected(queue_mission):
     rid = queue_client.submit(
-        queue_mission, "agent-aaaa", "AUDIT", "STATUS.md", "DELETE_ALL_THE_THINGS",
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "STATUS.md",
+        "DELETE_ALL_THE_THINGS",
         {},
     )
     applier = Applier(queue_mission)

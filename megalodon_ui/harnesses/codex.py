@@ -56,8 +56,10 @@ class CodexAdapter:
         argv = [
             "codex",
             "exec",
-            "-m", model,
-            "-s", "read-only",
+            "-m",
+            model,
+            "-s",
+            "read-only",
             "--skip-git-repo-check",
             prompt_or_launch_path,
         ]
@@ -89,8 +91,10 @@ class CodexAdapter:
             argv = [
                 "codex",
                 "exec",
-                "-m", model,
-                "-s", "read-only",
+                "-m",
+                model,
+                "-s",
+                "read-only",
                 "--skip-git-repo-check",
                 prompt,
             ]

@@ -10,6 +10,7 @@ Writing is atomic (tmp + rename, CV-2 pattern). Re-running is idempotent.
 Back-compat: generate_all(out_dir) retains the v9.0 hardcoded 6-lane shape so
 existing callers and tests continue to work unchanged.
 """
+
 from __future__ import annotations
 
 import os
@@ -96,6 +97,7 @@ sleep {offset}
 
 # ─── Back-compat API (v9.0) ──────────────────────────────────────────────────
 
+
 def generate_one(lane: str, lane_index: int, repo_root: Path) -> str:
     """Build the lane-bound launch text for a single lane (legacy shape)."""
     launch_md = (repo_root / "launch.md").read_text(encoding="utf-8")
@@ -123,6 +125,7 @@ def generate_all(out_dir: Path) -> None:
 
 
 # ─── Config-driven API (v9.1) ────────────────────────────────────────────────
+
 
 def _find_launch_md(mission_dir: Path) -> str:
     """Locate launch.md: check mission_dir first, then project root."""
@@ -183,6 +186,7 @@ def generate_from_config(config, mission_dir: Path, out_dir: Path) -> list[Path]
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
+
 
 def main(argv: list[str]) -> int:
     import argparse

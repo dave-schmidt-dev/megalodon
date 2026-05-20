@@ -19,8 +19,10 @@ def test_skips_claims_with_existing_owner(tmp_path):
     )
     n = mig.migrate(mission)
     assert n == 0
-    assert (mission / "claims" / "P1-A" / "owner.txt").read_text().startswith(
-        "agent-existing"
+    assert (
+        (mission / "claims" / "P1-A" / "owner.txt")
+        .read_text()
+        .startswith("agent-existing")
     )
 
 

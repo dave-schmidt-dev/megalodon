@@ -9,27 +9,37 @@ from scripts._backends import direct_fcntl as backend
 
 # ---- Task 4: claim_dir_done ----
 
+
 def test_claim_dir_done_happy_path(mission_dir: Path, agent: str):
-    result = backend.claim_dir_done(mission_dir, "TEST-1", agent, "2026-05-16T22:30:00Z")
+    result = backend.claim_dir_done(
+        mission_dir, "TEST-1", agent, "2026-05-16T22:30:00Z"
+    )
     assert result["ok"] is True
     assert (mission_dir / "claims" / "TEST-1" / "done").exists()
-    assert (mission_dir / "claims" / "TEST-1" / "owner.txt").read_text().strip() == agent
+    assert (
+        mission_dir / "claims" / "TEST-1" / "owner.txt"
+    ).read_text().strip() == agent
 
 
 def test_claim_dir_done_idempotent_on_second_call(mission_dir: Path, agent: str):
     backend.claim_dir_done(mission_dir, "TEST-1", agent, "2026-05-16T22:30:00Z")
-    second = backend.claim_dir_done(mission_dir, "TEST-1", agent, "2026-05-16T22:31:00Z")
+    second = backend.claim_dir_done(
+        mission_dir, "TEST-1", agent, "2026-05-16T22:31:00Z"
+    )
     assert second["ok"] is True
     assert second["idempotent"] is True
 
 
 def test_claim_dir_done_fails_when_claim_dir_missing(mission_dir: Path, agent: str):
-    result = backend.claim_dir_done(mission_dir, "DOES-NOT-EXIST", agent, "2026-05-16T22:30:00Z")
+    result = backend.claim_dir_done(
+        mission_dir, "DOES-NOT-EXIST", agent, "2026-05-16T22:30:00Z"
+    )
     assert result["ok"] is False
     assert "claim dir missing" in result["error"]
 
 
 # ---- Task 5: tasks_bracket ----
+
 
 def test_tasks_bracket_marks_open_as_done(mission_dir: Path, agent: str):
     result = backend.tasks_bracket(mission_dir, "TEST-1", agent, "2026-05-16T22:30:00Z")
@@ -46,12 +56,15 @@ def test_tasks_bracket_idempotent(mission_dir: Path, agent: str):
 
 
 def test_tasks_bracket_fails_on_missing_task(mission_dir: Path, agent: str):
-    result = backend.tasks_bracket(mission_dir, "TEST-MISSING", agent, "2026-05-16T22:30:00Z")
+    result = backend.tasks_bracket(
+        mission_dir, "TEST-MISSING", agent, "2026-05-16T22:30:00Z"
+    )
     assert result["ok"] is False
     assert "not found" in result["error"]
 
 
 # ---- Task 6: history_append ----
+
 
 def test_history_append_writes_pipe_row(mission_dir: Path, agent: str):
     result = backend.history_append(
@@ -72,8 +85,12 @@ def test_history_append_writes_pipe_row(mission_dir: Path, agent: str):
 
 def test_history_append_idempotent_within_60s(mission_dir: Path, agent: str):
     common = dict(
-        agent=agent, lane_short="A", task_id="TEST-1",
-        finding_path="findings/x.md", severity="DELTA", notes="first",
+        agent=agent,
+        lane_short="A",
+        task_id="TEST-1",
+        finding_path="findings/x.md",
+        severity="DELTA",
+        notes="first",
     )
     backend.history_append(mission_dir, **common, utc="2026-05-16T22:30:00Z")
     second = backend.history_append(mission_dir, **common, utc="2026-05-16T22:30:45Z")
@@ -82,10 +99,14 @@ def test_history_append_idempotent_within_60s(mission_dir: Path, agent: str):
 
 # ---- Task 7: status_update ----
 
+
 def test_status_update_writes_idle_row(mission_dir: Path, agent: str):
     result = backend.status_update(
-        mission_dir, lane="AUDIT", agent=agent,
-        task_id="TEST-1", summary="sample close",
+        mission_dir,
+        lane="AUDIT",
+        agent=agent,
+        task_id="TEST-1",
+        summary="sample close",
         utc="2026-05-16T22:30:00Z",
     )
     assert result["ok"] is True
@@ -98,8 +119,11 @@ def test_status_update_writes_idle_row(mission_dir: Path, agent: str):
 
 def test_status_update_rejects_owner_mismatch(mission_dir: Path):
     result = backend.status_update(
-        mission_dir, lane="AUDIT", agent="agent-zzzz",
-        task_id="TEST-1", summary="sample close",
+        mission_dir,
+        lane="AUDIT",
+        agent="agent-zzzz",
+        task_id="TEST-1",
+        summary="sample close",
         utc="2026-05-16T22:30:00Z",
     )
     assert result["ok"] is False
@@ -108,13 +132,19 @@ def test_status_update_rejects_owner_mismatch(mission_dir: Path):
 
 def test_status_update_idempotent(mission_dir: Path, agent: str):
     backend.status_update(
-        mission_dir, lane="AUDIT", agent=agent,
-        task_id="TEST-1", summary="sample close",
+        mission_dir,
+        lane="AUDIT",
+        agent=agent,
+        task_id="TEST-1",
+        summary="sample close",
         utc="2026-05-16T22:30:00Z",
     )
     second = backend.status_update(
-        mission_dir, lane="AUDIT", agent=agent,
-        task_id="TEST-1", summary="sample close",
+        mission_dir,
+        lane="AUDIT",
+        agent=agent,
+        task_id="TEST-1",
+        summary="sample close",
         utc="2026-05-16T22:31:00Z",
     )
     assert second["idempotent"] is True
@@ -144,7 +174,10 @@ def test_execute_close_happy_path(mission_dir: Path, agent: str):
     )
     assert result["ok"] is True
     assert result["completed"] == [
-        "CLAIM_DIR_DONE", "TASKS_BRACKET", "HISTORY_APPEND", "STATUS_UPDATE",
+        "CLAIM_DIR_DONE",
+        "TASKS_BRACKET",
+        "HISTORY_APPEND",
+        "STATUS_UPDATE",
     ]
     assert result["failed_step"] is None
     journal = mission_dir / ".scripts-journal" / "rid-happy.json"
@@ -178,16 +211,20 @@ def test_execute_close_partial_on_missing_claim(mission_dir: Path, agent: str):
 
 # ---- Task 9: resume_close ----
 
+
 def test_resume_close_completes_partial(mission_dir: Path, agent: str):
     # First, cause a PARTIAL by targeting a missing claim:
     execute_close(
         mission_dir,
         request_id="rid-resume",
         task_id="TEST-2",  # missing — will fail at CLAIM_DIR_DONE
-        lane="AUDIT", agent=agent,
+        lane="AUDIT",
+        agent=agent,
         utc="2026-05-16T22:30:00Z",
-        finding_path="findings/x.md", severity="DELTA",
-        notes="setup partial", summary="partial",
+        finding_path="findings/x.md",
+        severity="DELTA",
+        notes="setup partial",
+        summary="partial",
     )
     # Create the missing claim dir + matching TASKS line + resume:
     (mission_dir / "claims" / "TEST-2").mkdir()

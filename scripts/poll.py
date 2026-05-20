@@ -20,8 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts._logging import get_logger
 from scripts._state_read import (
-    read_claims, read_events_tail, read_findings_recent,
-    read_lanes, read_partial_journals, read_phase,
+    read_claims,
+    read_events_tail,
+    read_findings_recent,
+    read_lanes,
+    read_partial_journals,
+    read_phase,
 )
 
 
@@ -70,7 +74,9 @@ def main(argv=None) -> int:
         payload["events_tail"] = read_events_tail(mission, args.events_tail)
         include_body = bool(args.full)
         payload["findings_recent"] = read_findings_recent(
-            mission, args.findings_recent, include_body=include_body,
+            mission,
+            args.findings_recent,
+            include_body=include_body,
         )
         payload["partial_journals"] = read_partial_journals(mission)
 

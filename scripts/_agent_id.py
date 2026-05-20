@@ -4,6 +4,7 @@ Replaces `secrets.token_hex(2)` so that re-launching the same lane in the same
 mission at the same UTC reproduces the same agent ID. A different launch UTC
 (typical re-launch case) yields a different ID via the SHA1 input.
 """
+
 from __future__ import annotations
 
 import hashlib

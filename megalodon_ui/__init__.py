@@ -26,8 +26,10 @@ def __getattr__(name: str):
     """
     if name == "make_app":
         from .server import make_app
+
         return make_app
     if name == "AppConfig":
         from .config import AppConfig
+
         return AppConfig
     raise AttributeError(f"module 'megalodon_ui' has no attribute {name!r}")

@@ -52,7 +52,9 @@ def _spawner(mission_dir: Path, shorts: list[str]) -> FleetSpawner:
     adapter = MagicMock()
     adapter.build_argv = MagicMock(return_value=(["stub"], {}))
     adapter.session_log_dir = MagicMock(return_value=None)
-    return FleetSpawner(mission_dir, _make_config(shorts), MagicMock(return_value=adapter), SOCKET)
+    return FleetSpawner(
+        mission_dir, _make_config(shorts), MagicMock(return_value=adapter), SOCKET
+    )
 
 
 async def _start(spawner: FleetSpawner) -> None:

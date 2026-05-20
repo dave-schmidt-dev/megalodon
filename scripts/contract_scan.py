@@ -19,6 +19,7 @@ Exit codes:
 
 Spec: docs/superpowers/specs/2026-05-16-v9-m2-contract-scan-design.md §8.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -54,25 +55,39 @@ def _start_be(mission_dir: Path, port: int) -> subprocess.Popen:
     """Spawn `python -m megalodon_ui` with contract validation enabled."""
     env = {**os.environ, "M9_VALIDATE_CONTRACT": "1"}
     cmd = [
-        "uv", "run",
-        "--with", "fastapi",
-        "--with", "uvicorn[standard]",
-        "--with", "sse-starlette",
-        "--with", "pyyaml",
-        "--with", "pydantic",
-        "python", "-m", "megalodon_ui",
-        "--mission-dir", str(mission_dir),
-        "--port", str(port),
+        "uv",
+        "run",
+        "--with",
+        "fastapi",
+        "--with",
+        "uvicorn[standard]",
+        "--with",
+        "sse-starlette",
+        "--with",
+        "pyyaml",
+        "--with",
+        "pydantic",
+        "python",
+        "-m",
+        "megalodon_ui",
+        "--mission-dir",
+        str(mission_dir),
+        "--port",
+        str(port),
     ]
     return subprocess.Popen(
-        cmd, cwd=REPO_ROOT, env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cmd,
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
 
 
 def _wait_be_ready(port: int, timeout: float = 30.0) -> bool:
     import urllib.error
     import urllib.request
+
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -90,9 +105,11 @@ def _run_be_check(port: int) -> tuple[dict[str, Any], list[list[str]]]:
     """Returns (contract_dict, registered_routes)."""
     sys.path.insert(0, str(REPO_ROOT))
     from megalodon_ui.contract_loader import load_contract
+
     contract = load_contract(CONTRACT_PATH)
 
     import urllib.request
+
     with urllib.request.urlopen(
         f"http://localhost:{port}/api/v1/__contract_introspect__"
     ) as r:
@@ -104,11 +121,17 @@ def _run_fe_check() -> list[dict[str, Any]]:
     """Run playwright contract-trace spec; parse fetched URLs from stdout."""
     cmd = [
         str(REPO_ROOT / "scripts" / "run_e2e.sh"),
-        "--grep", "M2 contract-trace",
-        "--reporter", "list",
+        "--grep",
+        "M2 contract-trace",
+        "--reporter",
+        "list",
     ]
     result = subprocess.run(
-        cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=180,
+        cmd,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     if result.returncode != 0:
         sys.stderr.write(result.stdout)
@@ -141,7 +164,7 @@ def _compare(
             continue
         key = (call["method"], normalized)
         if key not in declared:
-            undocumented.append(f'{call["method"]} {normalized}')
+            undocumented.append(f"{call['method']} {normalized}")
 
     # De-duplicate while preserving order.
     seen: set[str] = set()
@@ -158,10 +181,7 @@ def _compare(
 
     untested = sorted(reg - declared)
     schema_mismatches: list[str] = []  # v9 deferred per spec D6
-    pass_ = (
-        not undocumented_unique
-        and not any(c["status"] != "ok" for c in contracts)
-    )
+    pass_ = not undocumented_unique and not any(c["status"] != "ok" for c in contracts)
 
     return {
         "pass": pass_,
@@ -174,8 +194,9 @@ def _compare(
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="contract_scan")
-    parser.add_argument("--soft", action="store_true",
-                        help="Report findings but always exit 0")
+    parser.add_argument(
+        "--soft", action="store_true", help="Report findings but always exit 0"
+    )
     parser.add_argument("--mission-dir", default=str(DEFAULT_MISSION_DIR))
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args(argv)
@@ -188,11 +209,16 @@ def main(argv: list[str]) -> int:
                 stderr_text = proc.stderr.read().decode("utf-8") if proc.stderr else ""
             except Exception:
                 stderr_text = ""
-            print(json.dumps({
-                "pass": False,
-                "error": "BE failed to start",
-                "stderr": stderr_text[-2000:],
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "pass": False,
+                        "error": "BE failed to start",
+                        "stderr": stderr_text[-2000:],
+                    },
+                    indent=2,
+                )
+            )
             return 2
 
         contract, registered = _run_be_check(args.port)

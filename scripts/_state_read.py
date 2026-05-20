@@ -51,15 +51,17 @@ def read_lanes(mission_dir: Path) -> list[dict[str, Any]]:
         last_utc_dt = _parse_utc(last_utc_str)
         stale = int((now - last_utc_dt).total_seconds()) if last_utc_dt else None
         lane = m["lane"].strip()
-        rows.append({
-            "lane": lane,
-            "lane_short": LANE_LONG_TO_SHORT[lane],
-            "agent": m["agent"].strip(),
-            "state": m["state"].strip(),
-            "last_utc": last_utc_str,
-            "stale_seconds": stale,
-            "notes": m["notes"].strip(),
-        })
+        rows.append(
+            {
+                "lane": lane,
+                "lane_short": LANE_LONG_TO_SHORT[lane],
+                "agent": m["agent"].strip(),
+                "state": m["state"].strip(),
+                "last_utc": last_utc_str,
+                "stale_seconds": stale,
+                "notes": m["notes"].strip(),
+            }
+        )
     return rows
 
 
@@ -122,10 +124,7 @@ def read_events_tail(mission_dir: Path, n: int) -> list[str]:
     path = mission_dir / ".mission-events"
     if not path.exists():
         return []
-    lines = [
-        ln for ln in path.read_text(encoding="utf-8").splitlines()
-        if ln.strip()
-    ]
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     return lines[-n:]
 
 
@@ -156,16 +155,18 @@ def read_findings_recent(
     for path in files[:n]:
         text = path.read_text(encoding="utf-8")
         fm = _parse_frontmatter(text)
-        out.append({
-            "path": str(path.relative_to(mission_dir)),
-            "mtime_utc": datetime.fromtimestamp(
-                path.stat().st_mtime, tz=timezone.utc
-            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "lane": fm.get("lane"),
-            "task_id": fm.get("task-id"),
-            "severity": fm.get("severity"),
-            "body": text if include_body else None,
-        })
+        out.append(
+            {
+                "path": str(path.relative_to(mission_dir)),
+                "mtime_utc": datetime.fromtimestamp(
+                    path.stat().st_mtime, tz=timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "lane": fm.get("lane"),
+                "task_id": fm.get("task-id"),
+                "severity": fm.get("severity"),
+                "body": text if include_body else None,
+            }
+        )
     return out
 
 
@@ -195,23 +196,25 @@ def read_partial_journals(
             (s["step"] for s in data.get("steps", []) if not s.get("ok")),
             None,
         )
-        out.append({
-            "request_id": data["request_id"],
-            "started_utc": data.get("started_utc"),
-            "last_updated_utc": data["last_updated_utc"],
-            "task_id": data["task_id"],
-            "lane": data["lane"],
-            "agent": data["agent"],
-            "completed_steps": completed,
-            "failed_step": failed,
-            "error": next(
-                (s.get("error") for s in data.get("steps", []) if not s.get("ok")),
-                None,
-            ),
-            "age_seconds": age,
-            "resume_hint": (
-                f"python3 scripts/atomic_close.py --resume {data['request_id']}"
-            ),
-        })
+        out.append(
+            {
+                "request_id": data["request_id"],
+                "started_utc": data.get("started_utc"),
+                "last_updated_utc": data["last_updated_utc"],
+                "task_id": data["task_id"],
+                "lane": data["lane"],
+                "agent": data["agent"],
+                "completed_steps": completed,
+                "failed_step": failed,
+                "error": next(
+                    (s.get("error") for s in data.get("steps", []) if not s.get("ok")),
+                    None,
+                ),
+                "age_seconds": age,
+                "resume_hint": (
+                    f"python3 scripts/atomic_close.py --resume {data['request_id']}"
+                ),
+            }
+        )
     out.sort(key=lambda e: e["last_updated_utc"], reverse=True)
     return out

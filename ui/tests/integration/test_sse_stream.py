@@ -16,6 +16,7 @@ import pytest
 
 try:
     from megalodon_ui.server import make_app  # type: ignore[import-not-found]
+
     BACKEND_AVAILABLE = True
 except ImportError:
     make_app = None  # type: ignore[assignment]
@@ -34,12 +35,18 @@ async def test_sse_stream_connects_and_emits(async_client_with_lifespan, fix_med
     something (typically the on-connect `sync` event per api-contract.md:70).
     """
     received_lines: list[str] = []
-    async with async_client_with_lifespan.stream("GET", "/api/v1/events", timeout=5.0) as response:
-        assert response.status_code == 200, f"SSE endpoint returned {response.status_code}"
+    async with async_client_with_lifespan.stream(
+        "GET", "/api/v1/events", timeout=5.0
+    ) as response:
+        assert response.status_code == 200, (
+            f"SSE endpoint returned {response.status_code}"
+        )
         # Read a few lines to confirm streaming works.
         async for line in response.aiter_lines():
             received_lines.append(line)
-            if len(received_lines) >= 3:  # event line + data line + blank, or initial sync
+            if (
+                len(received_lines) >= 3
+            ):  # event line + data line + blank, or initial sync
                 break
     # At least the first event-block (event: + data: + blank line) should arrive.
     assert len(received_lines) >= 1
@@ -52,15 +59,17 @@ async def test_sse_stream_connects_and_emits(async_client_with_lifespan, fix_med
 @pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.server")
 @pytest.mark.xfail(
     reason="Post-CR-7 lifespan-fixture audit (Task 0.9, 2026-05-17) confirms the "
-           "failure is independent of test-client lifespan wiring: the SSE "
-           "endpoint connects (test_sse_stream_connects_and_emits PASSES) but "
-           "the live status-change event still does not arrive within 10s of a "
-           "fixture STATUS.md touch. Root cause is the BE file-watcher / event "
-           "emitter, not lifespan. Re-audit after v9.2 Task 3.1 lands the "
-           "pipe-pane stream tap, which may supersede this path entirely.",
+    "failure is independent of test-client lifespan wiring: the SSE "
+    "endpoint connects (test_sse_stream_connects_and_emits PASSES) but "
+    "the live status-change event still does not arrive within 10s of a "
+    "fixture STATUS.md touch. Root cause is the BE file-watcher / event "
+    "emitter, not lifespan. Re-audit after v9.2 Task 3.1 lands the "
+    "pipe-pane stream tap, which may supersede this path entirely.",
     strict=True,
 )
-async def test_sse_stream_emits_status_change_on_file_touch(async_client_with_lifespan, fix_medium):
+async def test_sse_stream_emits_status_change_on_file_touch(
+    async_client_with_lifespan, fix_medium
+):
     """T-V-SSE-int(b) — MISSION exit-criterion #4.
 
     Connect SSE stream, touch STATUS.md, expect `status-change` event within
@@ -70,11 +79,13 @@ async def test_sse_stream_emits_status_change_on_file_touch(async_client_with_li
     events_received: list[str] = []
 
     async def consume_sse():
-        async with async_client_with_lifespan.stream("GET", "/api/v1/events", timeout=12.0) as response:
+        async with async_client_with_lifespan.stream(
+            "GET", "/api/v1/events", timeout=12.0
+        ) as response:
             assert response.status_code == 200
             async for line in response.aiter_lines():
                 if line.startswith("event:"):
-                    event_type = line[len("event:"):].strip()
+                    event_type = line[len("event:") :].strip()
                     events_received.append(event_type)
                     # Stop after we see status-change or accumulate a few events.
                     if event_type == "status-change" or len(events_received) >= 6:

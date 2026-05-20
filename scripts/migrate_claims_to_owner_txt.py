@@ -50,7 +50,8 @@ def _infer_owner(mission_dir: Path, task_id: str) -> str | None:
     if status.exists():
         m = re.search(
             rf"^\|\s*\w+\s*\|\s*(agent-[0-9a-f]+)\s*\|.*?{re.escape(task_id)}",
-            status.read_text(), re.MULTILINE,
+            status.read_text(),
+            re.MULTILINE,
         )
         if m:
             return m.group(1)

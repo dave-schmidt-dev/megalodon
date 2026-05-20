@@ -83,7 +83,10 @@ def preview(mission_dir: pathlib.Path, include_tmux_argv: bool = False) -> int:
 
         adapter = adapters.get(cli)
         if adapter is None:
-            print(f"error: unknown harness cli {cli!r} for lane {lane.name}", file=sys.stderr)
+            print(
+                f"error: unknown harness cli {cli!r} for lane {lane.name}",
+                file=sys.stderr,
+            )
             return 1
 
         launch_file = mission_dir / f"launch-{lane.name}.md"
@@ -108,10 +111,14 @@ def preview(mission_dir: pathlib.Path, include_tmux_argv: bool = False) -> int:
             preview_prompt = lane.initial_prompt
             if len(preview_prompt) > 120:
                 preview_prompt = preview_prompt[:117] + "..."
-            print(f"  initial_prompt (sent post-spawn via tmux send-keys): {preview_prompt}")
+            print(
+                f"  initial_prompt (sent post-spawn via tmux send-keys): {preview_prompt}"
+            )
 
         if include_tmux_argv:
-            for tmux_line in _tmux_lines(mission_dir, short, argv, INITIAL_PANE_COLS, INITIAL_PANE_ROWS):
+            for tmux_line in _tmux_lines(
+                mission_dir, short, argv, INITIAL_PANE_COLS, INITIAL_PANE_ROWS
+            ):
                 print(f"  {tmux_line}")
 
     return 0
@@ -123,7 +130,9 @@ def main() -> None:
         prog="python -m megalodon_ui.preview",
         description="Print per-lane CLI argv for a configured Megalodon mission.",
     )
-    parser.add_argument("--mission-dir", required=True, help="Path to the mission directory.")
+    parser.add_argument(
+        "--mission-dir", required=True, help="Path to the mission directory."
+    )
     parser.add_argument(
         "--include-tmux-argv",
         action="store_true",

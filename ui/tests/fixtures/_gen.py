@@ -31,9 +31,14 @@ import shutil
 LANES_6 = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"]
 LANES_8 = LANES_6 + ["LEGAL", "OBSERVER"]
 LANE_CODE = {
-    "AUDIT": "A", "ARCHITECT": "B", "BACKEND": "C",
-    "FRONTEND": "D", "TEST": "E", "META": "F",
-    "LEGAL": "G", "OBSERVER": "H",
+    "AUDIT": "A",
+    "ARCHITECT": "B",
+    "BACKEND": "C",
+    "FRONTEND": "D",
+    "TEST": "E",
+    "META": "F",
+    "LEGAL": "G",
+    "OBSERVER": "H",
 }
 SEVERITIES = ["BLOCKING", "MAJOR", "MINOR", "NIT", "DELTA"]
 PHASES = ["PHASE-PLAN", "PHASE-CHALLENGE", "PHASE-BUILD", "PHASE-VERIFY"]
@@ -69,7 +74,9 @@ def write_finding(path, lane, agent, task, severity, utc_str, body_lines=4):
         "",
     ]
     for i in range(body_lines):
-        content.append(f"{i+1}. synthetic claim — `synthetic:{i+1}` — recommend nothing.")
+        content.append(
+            f"{i + 1}. synthetic claim — `synthetic:{i + 1}` — recommend nothing."
+        )
     content += ["", "## Confidence", "", "HIGH (fixture)."]
     path.write_text("\n".join(content) + "\n")
 
@@ -93,9 +100,20 @@ def gen_medium(root: Path, rng, lanes=LANES_6, n_findings=12, with_failure_modes
     init_root(root, lanes, mission_id)
 
     # Spec-mandated severity mix from P1-E §5
-    severity_mix = ["BLOCKING", "MAJOR", "MAJOR", "MAJOR",
-                    "MINOR", "MINOR", "MINOR", "MINOR", "MINOR",
-                    "NIT", "NIT", "DELTA"]
+    severity_mix = [
+        "BLOCKING",
+        "MAJOR",
+        "MAJOR",
+        "MAJOR",
+        "MINOR",
+        "MINOR",
+        "MINOR",
+        "MINOR",
+        "MINOR",
+        "NIT",
+        "NIT",
+        "DELTA",
+    ]
     assert len(severity_mix) == n_findings, "severity mix must equal n_findings"
 
     agents = {lane: agent_id(rng) for lane in lanes}
@@ -104,17 +122,21 @@ def gen_medium(root: Path, rng, lanes=LANES_6, n_findings=12, with_failure_modes
     events = [(start, "INIT", PHASES[0], "orchestrator", "mission start")]
     phase_boundaries = [10, 20, 30]  # tick indices
     for i, b in enumerate(phase_boundaries):
-        events.append((
-            start + timedelta(minutes=b * 3),
-            PHASES[i], PHASES[i + 1],
-            rng.choice(list(agents.values())),
-            f"all P{i+1} done",
-        ))
+        events.append(
+            (
+                start + timedelta(minutes=b * 3),
+                PHASES[i],
+                PHASES[i + 1],
+                rng.choice(list(agents.values())),
+                f"all P{i + 1} done",
+            )
+        )
     (root / ".mission-events").write_text(
         "\n".join(
             f"{e[0].strftime('%Y-%m-%dT%H:%M:%SZ')} {e[1]}->{e[2]} by {e[3]} — {e[4]}"
             for e in events
-        ) + "\n"
+        )
+        + "\n"
     )
 
     # Findings spread across phases (3 per phase)
@@ -130,22 +152,22 @@ def gen_medium(root: Path, rng, lanes=LANES_6, n_findings=12, with_failure_modes
             lane = rng.choice(lanes)
             agent = agents[lane]
             code = LANE_CODE[lane]
-            task = f"P{phase_idx+1}-{code}"
+            task = f"P{phase_idx + 1}-{code}"
             sev = next(sev_iter)
             tick = base_tick + i
             ts = utc(start, tick)
             fname = f"{agent}-{code}-{task}-{ts.replace(':', '-')}.md"
             path = root / "findings" / fname
             write_finding(path, lane, agent, task, sev, ts)
-            history_lines.append(f"{ts} | {agent} | LANE-{code} | {task} | findings/{fname} | {sev}")
+            history_lines.append(
+                f"{ts} | {agent} | LANE-{code} | {task} | findings/{fname} | {sev}"
+            )
             # claim dir + done marker
             claim_dir = root / "claims" / task
             claim_dir.mkdir(exist_ok=True)
             (claim_dir / "done").touch()
 
-    (root / "HISTORY.md").write_text(
-        "# History\n\n" + "\n".join(history_lines) + "\n"
-    )
+    (root / "HISTORY.md").write_text("# History\n\n" + "\n".join(history_lines) + "\n")
 
     # STATUS — 2 stale rows >15min, plus signal exchanges
     now_tick = 38  # near end of run
@@ -190,8 +212,7 @@ def gen_medium(root: Path, rng, lanes=LANES_6, n_findings=12, with_failure_modes
     (root / "STATUS.md").write_text(
         "# Status board\n\n"
         "| Lane | Agent | State | Last UTC | Notes |\n"
-        "|---|---|---|---|---|\n"
-        + "\n".join(rows) + "\n"
+        "|---|---|---|---|---|\n" + "\n".join(rows) + "\n"
     )
 
     # TASKS — minimal, just the 4 phases × 6 lanes shape.
@@ -205,17 +226,17 @@ def gen_medium(root: Path, rng, lanes=LANES_6, n_findings=12, with_failure_modes
         task_lines.append(f"\n## {PHASE_HEADERS[phase_idx]}\n")
         for lane in lanes:
             code = LANE_CODE[lane]
-            tid = f"P{phase_idx+1}-{code}"
+            tid = f"P{phase_idx + 1}-{code}"
             done = (root / "claims" / tid / "done").exists()
             agent = agents[lane]
             if done:
                 task_lines.append(
-                    f"- [done: {agent} @ {utc(start, phase_idx*10 + 2)}] "
-                    f"[LANE-{code}] `{tid}` — dummy phase-{phase_idx+1} task for {lane}"
+                    f"- [done: {agent} @ {utc(start, phase_idx * 10 + 2)}] "
+                    f"[LANE-{code}] `{tid}` — dummy phase-{phase_idx + 1} task for {lane}"
                 )
             else:
                 task_lines.append(
-                    f"- [ ] [LANE-{code}] `{tid}` — dummy phase-{phase_idx+1} task for {lane}"
+                    f"- [ ] [LANE-{code}] `{tid}` — dummy phase-{phase_idx + 1} task for {lane}"
                 )
     (root / "TASKS.md").write_text("\n".join(task_lines) + "\n")
 
@@ -234,7 +255,9 @@ def bake_failure_modes(root, agents, lanes, start):
     me.write_text("\n".join(text) + "\n")
     # backdate lock age to 5 min before "now" (tick 38)
     stuck_age_utc = (start + timedelta(minutes=33 * 3)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    (root / ".phase-flip-locks" / "PHASE-PLAN-to-PHASE-CHALLENGE" / ".stuck-at").write_text(stuck_age_utc)
+    (
+        root / ".phase-flip-locks" / "PHASE-PLAN-to-PHASE-CHALLENGE" / ".stuck-at"
+    ).write_text(stuck_age_utc)
 
     # Shape-B: two claim dirs for same logical task.
     canon = root / "claims" / "P2-C-to-B"
@@ -247,7 +270,11 @@ def bake_failure_modes(root, agents, lanes, start):
     fname = f"{agents['BACKEND']}-C-P2-C-to-B-{utc(start, 12).replace(':', '-')}.md"
     write_finding(
         root / "findings" / fname,
-        "BACKEND", agents["BACKEND"], "P2-C-to-B", "MAJOR", utc(start, 12),
+        "BACKEND",
+        agents["BACKEND"],
+        "P2-C-to-B",
+        "MAJOR",
+        utc(start, 12),
     )
 
     # Shape-C: HISTORY format drift. Inject 3 spelling variants.
@@ -270,22 +297,32 @@ def gen_large(root: Path, rng, n_ticks=150, n_findings=60):
     events = [(start, "INIT", PHASES[0], "orchestrator", "mission start")]
     boundaries = [37, 74, 112]
     for i, b in enumerate(boundaries):
-        events.append((
-            start + timedelta(minutes=b * 3),
-            PHASES[i], PHASES[i + 1],
-            rng.choice(list(agents.values())),
-            f"all P{i+1} done",
-        ))
+        events.append(
+            (
+                start + timedelta(minutes=b * 3),
+                PHASES[i],
+                PHASES[i + 1],
+                rng.choice(list(agents.values())),
+                f"all P{i + 1} done",
+            )
+        )
     (root / ".mission-events").write_text(
         "\n".join(
             f"{e[0].strftime('%Y-%m-%dT%H:%M:%SZ')} {e[1]}->{e[2]} by {e[3]} — {e[4]}"
             for e in events
-        ) + "\n"
+        )
+        + "\n"
     )
 
     # Findings — even spread across phases
     per_phase = [n_findings // 4] * 4
-    sev_choices = ["BLOCKING"] * 2 + ["MAJOR"] * 12 + ["MINOR"] * 28 + ["NIT"] * 12 + ["DELTA"] * 6
+    sev_choices = (
+        ["BLOCKING"] * 2
+        + ["MAJOR"] * 12
+        + ["MINOR"] * 28
+        + ["NIT"] * 12
+        + ["DELTA"] * 6
+    )
     rng.shuffle(sev_choices)
     sev_iter = iter(sev_choices)
 
@@ -296,13 +333,15 @@ def gen_large(root: Path, rng, n_ticks=150, n_findings=60):
             lane = rng.choice(LANES_8)
             agent = agents[lane]
             code = LANE_CODE[lane]
-            tid = f"P{phase_idx+1}-{code}-{i:02d}"
+            tid = f"P{phase_idx + 1}-{code}-{i:02d}"
             sev = next(sev_iter)
             tick = base + i
             ts = utc(start, tick)
             fname = f"{agent}-{code}-{tid}-{ts.replace(':', '-')}.md"
             write_finding(root / "findings" / fname, lane, agent, tid, sev, ts)
-            history_lines.append(f"{ts} | {agent} | LANE-{code} | {tid} | findings/{fname} | {sev}")
+            history_lines.append(
+                f"{ts} | {agent} | LANE-{code} | {tid} | findings/{fname} | {sev}"
+            )
             claim_dir = root / "claims" / tid
             claim_dir.mkdir(exist_ok=True)
             (claim_dir / "done").touch()
@@ -318,9 +357,13 @@ def gen_large(root: Path, rng, n_ticks=150, n_findings=60):
         path = root / "findings" / fname
         write_finding(path, lane, agent, tid, "MAJOR", ts)
         # rewrite to cite the shared artifact
-        text = path.read_text().replace("artifact: synthetic (fixture)", f"artifact: {quorum_artifact}")
+        text = path.read_text().replace(
+            "artifact: synthetic (fixture)", f"artifact: {quorum_artifact}"
+        )
         path.write_text(text)
-        history_lines.append(f"{ts} | {agent} | LANE-{code} | {tid} | findings/{fname} | MAJOR")
+        history_lines.append(
+            f"{ts} | {agent} | LANE-{code} | {tid} | findings/{fname} | MAJOR"
+        )
         claim_dir = root / "claims" / tid
         claim_dir.mkdir(exist_ok=True)
         (claim_dir / "done").touch()
@@ -334,9 +377,15 @@ def gen_large(root: Path, rng, n_ticks=150, n_findings=60):
     rec_agent = agents["LEGAL"]
     rec_ts = utc(start, 95)
     rec_fname = f"{rec_agent}-G-{recovery_tid}-{rec_ts.replace(':', '-')}.md"
-    write_finding(root / "findings" / rec_fname, "LEGAL", rec_agent, recovery_tid, "MAJOR", rec_ts)
-    history_lines.append(f"{rec_ts} | {rec_agent} | LANE-G | {recovery_tid} | findings/{rec_fname} | MAJOR")
-    history_lines.append(f"{utc(start, 96)} | agent-recv | RECOVERY | {recovery_tid} | findings/{rec_fname} | RECOVERY — retroactive done-marker added")
+    write_finding(
+        root / "findings" / rec_fname, "LEGAL", rec_agent, recovery_tid, "MAJOR", rec_ts
+    )
+    history_lines.append(
+        f"{rec_ts} | {rec_agent} | LANE-G | {recovery_tid} | findings/{rec_fname} | MAJOR"
+    )
+    history_lines.append(
+        f"{utc(start, 96)} | agent-recv | RECOVERY | {recovery_tid} | findings/{rec_fname} | RECOVERY — retroactive done-marker added"
+    )
 
     (root / "HISTORY.md").write_text("# History\n\n" + "\n".join(history_lines) + "\n")
 
@@ -358,22 +407,26 @@ def gen_large(root: Path, rng, n_ticks=150, n_findings=60):
     (root / "STATUS.md").write_text(
         "# Status board\n\n"
         "| Lane | Agent | State | Last UTC | Notes |\n"
-        "|---|---|---|---|---|\n"
-        + "\n".join(rows) + "\n"
+        "|---|---|---|---|---|\n" + "\n".join(rows) + "\n"
     )
 
     # TASKS — abbreviated
     (root / "TASKS.md").write_text(
-        "# Tasks\n\n"
-        "(Generated fixture — see HISTORY.md and claims/ for full state.)\n"
+        "# Tasks\n\n(Generated fixture — see HISTORY.md and claims/ for full state.)\n"
     )
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--target", required=True, choices=[
-        "fix-medium", "fix-large", "fix-medium-failure-modes",
-    ])
+    p.add_argument(
+        "--target",
+        required=True,
+        choices=[
+            "fix-medium",
+            "fix-large",
+            "fix-medium-failure-modes",
+        ],
+    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", type=Path, default=Path(__file__).parent)
     args = p.parse_args()

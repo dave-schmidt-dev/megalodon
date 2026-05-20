@@ -1,4 +1,5 @@
 """V9 M2 contract_loader tests."""
+
 from __future__ import annotations
 
 import sys

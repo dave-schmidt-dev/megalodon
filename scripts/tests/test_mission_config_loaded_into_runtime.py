@@ -13,6 +13,7 @@ identify if additional fixtures are needed. The two available fixtures are
 sufficient to demonstrate that lane count and lane shorts are driven by the
 actual mission config, not the 6-lane v9.0 default.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -22,6 +23,7 @@ import pytest
 
 try:
     from megalodon_ui.server import make_app
+
     _BACKEND_AVAILABLE = True
 except ImportError:
     make_app = None  # type: ignore[assignment]
@@ -137,4 +139,6 @@ async def test_default_v9_lane_count_not_leaked_for_3_lane_mission(tmp_path: Pat
     # v9.0 default has AUDIT, ARCHITECT, BACKEND, FRONTEND, TEST, META;
     # this fixture has ALPHA, BETA, GAMMA — confirm the v9.0 names are absent.
     lane_names = {lane["name"] for lane in body["lanes"]}
-    assert "AUDIT" not in lane_names, "v9.0 default lane AUDIT leaked into 3-lane mission"
+    assert "AUDIT" not in lane_names, (
+        "v9.0 default lane AUDIT leaked into 3-lane mission"
+    )

@@ -36,9 +36,10 @@ def test_detect_stream_log_size_below_threshold_returns_ok(tmp_path: Path):
 
 def test_detect_stream_log_size_missing_returns_skip(tmp_path: Path):
     """A lane that has not written any bytes yet must not trigger warn."""
-    assert detectors.detect_stream_log_size(
-        tmp_path / "nope.stream.log", THRESHOLD
-    ) == "skip"
+    assert (
+        detectors.detect_stream_log_size(tmp_path / "nope.stream.log", THRESHOLD)
+        == "skip"
+    )
 
 
 def test_detect_stream_log_size_at_or_above_threshold_returns_warn(tmp_path: Path):
@@ -84,7 +85,8 @@ def test_poll_once_fires_stream_log_size_alert(tmp_path: Path, monkeypatch):
 
     # Find the STREAM-LOG-SIZE alert call.
     stream_size_calls = [
-        c for c in alerts.alert.call_args_list
+        c
+        for c in alerts.alert.call_args_list
         if len(c.args) >= 2 and c.args[1] == "STREAM-LOG-SIZE"
     ]
     assert len(stream_size_calls) == 1, (

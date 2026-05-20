@@ -18,13 +18,18 @@ async def new_session(
     """Create a new detached tmux session, set remain-on-exit, and mark it fleet-owned."""
     proc = await asyncio.create_subprocess_exec(
         "tmux",
-        "-S", str(socket),
+        "-S",
+        str(socket),
         "new-session",
         "-d",
-        "-s", name,
-        "-x", str(cols),
-        "-y", str(rows),
-        "-c", str(cwd),
+        "-s",
+        name,
+        "-x",
+        str(cols),
+        "-y",
+        str(rows),
+        "-c",
+        str(cwd),
         *argv,
         env={**os.environ, **env},
     )
@@ -33,18 +38,28 @@ async def new_session(
         return rc
 
     proc2 = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
-        "set-option", "-t", name,
-        "remain-on-exit", "on",
+        "tmux",
+        "-S",
+        str(socket),
+        "set-option",
+        "-t",
+        name,
+        "remain-on-exit",
+        "on",
     )
     rc2 = await proc2.wait()
     if rc2 != 0:
         return rc2
 
     proc3 = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
-        "set-environment", "-t", name,
-        "MEGALODON_FLEET_OWNED", "1",
+        "tmux",
+        "-S",
+        str(socket),
+        "set-environment",
+        "-t",
+        name,
+        "MEGALODON_FLEET_OWNED",
+        "1",
     )
     return await proc3.wait()
 
@@ -52,8 +67,12 @@ async def new_session(
 async def kill_session(socket: Path, name: str) -> int:
     """Kill the named tmux session; no-op (rc 0) if already absent."""
     proc = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
-        "kill-session", "-t", name,
+        "tmux",
+        "-S",
+        str(socket),
+        "kill-session",
+        "-t",
+        name,
     )
     return await proc.wait()
 
@@ -61,8 +80,12 @@ async def kill_session(socket: Path, name: str) -> int:
 async def has_session(socket: Path, name: str) -> bool:
     """Return True if the named session exists on the given socket."""
     proc = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
-        "has-session", "-t", name,
+        "tmux",
+        "-S",
+        str(socket),
+        "has-session",
+        "-t",
+        name,
     )
     rc = await proc.wait()
     return rc == 0
@@ -76,8 +99,13 @@ async def pipe_pane(socket: Path, name: str, dest: Path) -> int:
     # sh(1) internally.  shlex.quote on dest prevents path injection.
     shell_cmd = f"cat >> {shlex.quote(str(dest))}"
     proc = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
-        "pipe-pane", "-O", "-t", name,
+        "tmux",
+        "-S",
+        str(socket),
+        "pipe-pane",
+        "-O",
+        "-t",
+        name,
         shell_cmd,
     )
     return await proc.wait()
@@ -92,17 +120,27 @@ async def respawn_pane(
     """Set env vars then respawn the pane in the named session with new argv."""
     for key, value in env.items():
         proc = await asyncio.create_subprocess_exec(
-            "tmux", "-S", str(socket),
-            "set-environment", "-t", name,
-            key, value,
+            "tmux",
+            "-S",
+            str(socket),
+            "set-environment",
+            "-t",
+            name,
+            key,
+            value,
         )
         rc = await proc.wait()
         if rc != 0:
             return rc
 
     proc = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
-        "respawn-pane", "-t", name, "-k",
+        "tmux",
+        "-S",
+        str(socket),
+        "respawn-pane",
+        "-t",
+        name,
+        "-k",
         *argv,
     )
     return await proc.wait()
@@ -111,8 +149,12 @@ async def respawn_pane(
 async def list_sessions(socket: Path) -> list[str]:
     """Return a list of session names on the given socket; empty list on error."""
     proc = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
-        "list-sessions", "-F", "#{session_name}",
+        "tmux",
+        "-S",
+        str(socket),
+        "list-sessions",
+        "-F",
+        "#{session_name}",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -125,15 +167,15 @@ async def list_sessions(socket: Path) -> list[str]:
 async def kill_server(socket: Path) -> int:
     """Kill the tmux server at the given socket path."""
     proc = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
+        "tmux",
+        "-S",
+        str(socket),
         "kill-server",
     )
     return await proc.wait()
 
 
-async def display_message_pane_dead(
-    socket: Path, name: str
-) -> tuple[bool, int | None]:
+async def display_message_pane_dead(socket: Path, name: str) -> tuple[bool, int | None]:
     """Query a pane's dead-ness + exit status (CV-8 lazy probe).
 
     Runs ``tmux display-message -p -F '#{pane_dead}|#{pane_dead_status}'``
@@ -150,10 +192,15 @@ async def display_message_pane_dead(
     """
     spawn = asyncio.create_subprocess_exec
     proc = await spawn(
-        "tmux", "-S", str(socket),
-        "display-message", "-p",
-        "-F", "#{pane_dead}|#{pane_dead_status}",
-        "-t", name,
+        "tmux",
+        "-S",
+        str(socket),
+        "display-message",
+        "-p",
+        "-F",
+        "#{pane_dead}|#{pane_dead_status}",
+        "-t",
+        name,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -182,8 +229,12 @@ async def send_keys(socket: Path, name: str, keys: str, *, enter: bool = True) -
     appends an Enter keystroke so a slash command or prompt fires.
     """
     proc = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
-        "send-keys", "-t", name,
+        "tmux",
+        "-S",
+        str(socket),
+        "send-keys",
+        "-t",
+        name,
         keys,
         *(["Enter"] if enter else []),
     )
@@ -193,8 +244,14 @@ async def send_keys(socket: Path, name: str, keys: str, *, enter: bool = True) -
 async def display_message_pane_pipe(socket: Path, name: str) -> bool:
     """Return True if pipe-pane is currently active on the named session's pane."""
     proc = await asyncio.create_subprocess_exec(
-        "tmux", "-S", str(socket),
-        "display-message", "-t", name, "-p", "#{pane_pipe}",
+        "tmux",
+        "-S",
+        str(socket),
+        "display-message",
+        "-t",
+        name,
+        "-p",
+        "#{pane_pipe}",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )

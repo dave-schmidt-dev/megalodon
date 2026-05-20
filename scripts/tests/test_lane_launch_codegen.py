@@ -1,4 +1,5 @@
 """V9 A2 — tests for per-lane launch file codegen."""
+
 import subprocess
 import sys
 from pathlib import Path
@@ -68,10 +69,7 @@ def test_model_hint_uses_claude_alias(tmp_path):
 # ─── v9.1 config-driven tests ────────────────────────────────────────────────
 
 _FIXTURE_3_LANE = (
-    Path(__file__).resolve().parent
-    / "fixtures"
-    / "configs"
-    / "minimal_3_lane"
+    Path(__file__).resolve().parent / "fixtures" / "configs" / "minimal_3_lane"
 )
 
 _GENERATOR = Path(__file__).resolve().parents[1] / "gen_lane_launches.py"
@@ -85,8 +83,10 @@ def test_codegen_against_minimal_3_lane_config(tmp_path):
         [
             sys.executable,
             str(_GENERATOR),
-            "--mission-dir", str(_FIXTURE_3_LANE),
-            "--out-dir", str(tmp_path),
+            "--mission-dir",
+            str(_FIXTURE_3_LANE),
+            "--out-dir",
+            str(tmp_path),
         ],
         capture_output=True,
         text=True,

@@ -10,6 +10,44 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## V9.4 SHIPPED — Dashboard Rebuild (warp-tier plan)
+
+**Date:** 2026-05-20
+
+**Phases shipped:** All implementation phases complete (Phase 1: MVP grid + lane_detail, Phase 2: activity wall + stale lanes + restart-loop, Phase 3: approval rules + page rewrites). Phases 4–5 (docs + validation) 30 of 31 tasks complete. T4.3 (dogfood run) remains as operator-driven gate.
+
+**Task summary:** 30 of 31 tasks shipped. T4.3 (4-hour operator dogfood with v9.4 dashboard on 6-lane mission) and T5.1 (post-dogfood README + HISTORY + TASKS.md finalization) deferred until operator runs the dogfood.
+
+**Key surface additions:**
+
+- **Grid page** (`/lane/:short`) — N-pane terminal grid (config-driven layout; click lane tile → lane_detail with inject form). Replaced flat `grid.js` with path-param router upgrade + new `lane_detail.js` modal.
+- **5 new BE endpoints:** `POST /api/v1/lane/{short}/inject` (inject-challenge workflow), `POST /api/v1/lane/{short}/restart-loop` (restart-loop button), `GET /api/v1/lanes/stale` (stale-lanes badge data), `GET /api/v1/activity-wall` + `POST /api/v1/activity-wall/snapshot` (6-source activity feed), `GET|POST|DELETE /api/v1/approval-rules` + `POST /api/v1/approval-rules/extract` (approval-rules CRUD + pattern extraction).
+- **`_test/stale_override` endpoint** — fake-spawner-only, gated by `MEGALODON_FAKE_SPAWNER=1` registration check, for E2E testing of stale-lane detection without real wall-clock delays.
+- **PermissionWatcher.on_change callback** — signature `(lane, info, action)` where actions are `approve` / `approve_remember` / `deny`. Activity wall consumes these lifecycle events.
+- **`event_tail.py` shared helpers** — async file/dir poll utilities (250ms cadence; no watchdog dependency). Used by activity wall + restart-loop sources.
+- **Activity wall (Phase 2):** Merged 6 event sources (findings, signals, history, queue events, inject log, approval decisions) into a scrollable right-side panel with filter chips (by source type), pause button, expandable drawer for details.
+- **Stale-lanes badge** (mission header) + **restart-loop button** (lane_detail toolbar) — badge shows count; button triggers mission-wide loop restart on a single lane.
+- **Approve & remember flow (Phase 3):** Operator selects a finding → extract-pattern modal → confirms regex in FE modal → POST `/api/v1/approval-rules` → persisted to `.fleet/approval-rules.json` → merged into `--allowedTools` at next spawn.
+- **Page rewrites (Phase 3):** 6 pages migrated to v9.4 FE patterns: `findings.js` (severity filter, search), `signals.js` (sortable columns), `mission.js` (orchestrator actions), `tasks.js` (kanban board), `approval_rules.js` (new page; CRUD UI), `grid.js` (N-pane terminal grid).
+
+**Test totals:**
+- **Python:** 795 passed (baseline 669 + 126 v9.4 tests = +18.8% growth). All units + integration suites green.
+- **Playwright:** 23 chromium-grid tests pass. Chromium-default + v92-dashboard each have pre-existing v9.3-era failures on the deprecated surface (not regressions; test design carries forward intentionally).
+- **Config fix (playwright.config.ts):** webServer filter now correctly starts only the project's webServer per `--project=` invocation (was 11; now 1).
+
+**Deferred follow-ups (carry into v9.5 or later):**
+- T2.1: switch `_log.exception()` to `str(exc)` for PromptInfo command_preview leak
+- T2.2: switch `event_tail.tail_file_lines` text mode → binary mode + buffered decode (byte/char position inconsistency)
+- T2.5: extract shared `_write_inject_log` helper (DRY violation: inject + restart-loop duplicate ~13 lines)
+- T2.6: replace `silent_seconds=float("inf")` with a sentinel that doesn't serialize as JSON `null`
+- T1.4: restore `sawFirstByte` early send-button release via `onFirstByte` callback in terminal_pane
+- T1.6: convert 6s debounce test to `page.clock` fake-time
+- 5 v9.3-era failing specs (test_status_view × 3, followup, lane-exit-detected) need migration or retirement
+
+**Migration note for v9.3 → v9.4:** Fresh `.fleet/` directory is required. Any old `approval-rules.json` from prior runs is ignored — schema is unversioned by design (plan §2 non-goal). Operators should delete stale `.fleet/` before launching v9.4.
+
+---
+
 ## 2026-05-19 — v9.4 dashboard rebuild plan complete (warp tier)
 
 After the v9.3 dogfood (`docs/v9/dogfood-2026-05-19/`) surfaced that the BE protocol works but the dashboard is the bottleneck, ran a full warp-tier plan for v9.4. Plan + tasks + synthesis + reviews archived at `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19*`.

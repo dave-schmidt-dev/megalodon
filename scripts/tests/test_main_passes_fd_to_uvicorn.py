@@ -1,4 +1,5 @@
 """Unit tests for __main__.py: fd handoff, bind-before-write ordering, and cleanup."""
+
 from __future__ import annotations
 
 import os
@@ -32,12 +33,14 @@ def _run_main(tmp_path: Path, extra_argv: list[str] | None = None) -> None:
         argv += extra_argv
     with patch.object(sys, "argv", argv):
         from megalodon_ui.__main__ import main
+
         main()
 
 
 # ---------------------------------------------------------------------------
 # Shared stub server
 # ---------------------------------------------------------------------------
+
 
 class _CapturingServer:
     """Replacement for uvicorn.Server that records the Config it received."""
@@ -56,6 +59,7 @@ class _CapturingServer:
 # ---------------------------------------------------------------------------
 # Test: Config.fd is set and Config.port is absent / None
 # ---------------------------------------------------------------------------
+
 
 def test_fd_passed_to_uvicorn_config(tmp_path: Path) -> None:
     _CapturingServer.captured = None
@@ -79,6 +83,7 @@ def test_fd_passed_to_uvicorn_config(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Test: bind() happens before token file open()
 # ---------------------------------------------------------------------------
+
 
 def test_bind_happens_before_token_write(tmp_path: Path) -> None:
     call_order: list[str] = []
@@ -121,6 +126,7 @@ def test_bind_happens_before_token_write(tmp_path: Path) -> None:
 # Test: cleanup unlinks token + dashboard.url when Server.run() raises
 # ---------------------------------------------------------------------------
 
+
 def test_cleanup_on_server_run_exception(tmp_path: Path) -> None:
     _CapturingServer.captured = None
     _CapturingServer.side_effect = OSError("startup-timeout (synthetic)")
@@ -133,13 +139,18 @@ def test_cleanup_on_server_run_exception(tmp_path: Path) -> None:
         _run_main(tmp_path)
 
     fleet = tmp_path / ".fleet"
-    assert not (fleet / "ui.token").exists(), "ui.token should be cleaned up after error"
-    assert not (fleet / "dashboard.url").exists(), "dashboard.url should be cleaned up after error"
+    assert not (fleet / "ui.token").exists(), (
+        "ui.token should be cleaned up after error"
+    )
+    assert not (fleet / "dashboard.url").exists(), (
+        "dashboard.url should be cleaned up after error"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Test: EADDRINUSE exits 9
 # ---------------------------------------------------------------------------
+
 
 def test_eaddrinuse_exits_9(tmp_path: Path) -> None:
     occupier = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -149,8 +160,10 @@ def test_eaddrinuse_exits_9(tmp_path: Path) -> None:
     try:
         argv = [
             "python-m-megalodon-ui",
-            "--mission-dir", str(tmp_path),
-            "--port", str(occupied_port),
+            "--mission-dir",
+            str(tmp_path),
+            "--port",
+            str(occupied_port),
         ]
         with (
             _patched_main_env(),
@@ -158,6 +171,7 @@ def test_eaddrinuse_exits_9(tmp_path: Path) -> None:
             pytest.raises(SystemExit) as exc_info,
         ):
             from megalodon_ui.__main__ import main
+
             main()
         assert exc_info.value.code == 9
     finally:

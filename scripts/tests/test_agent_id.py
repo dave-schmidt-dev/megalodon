@@ -1,4 +1,5 @@
 """V9 A4 — tests for deterministic agent IDs."""
+
 import sys
 from pathlib import Path
 

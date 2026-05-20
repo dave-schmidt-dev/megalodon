@@ -4,11 +4,11 @@ Covers flag parsing, print mode, dry-run AppleScript generation, and the
 pre-flight checks (lane files, applier heartbeat). Does not actually open
 iTerm — that's verified by hand via --no-launch spawn.
 """
+
 from __future__ import annotations
 
 import base64
 import os
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -33,13 +33,17 @@ LANES = ["AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"]
 BASH_32 = "/bin/bash"
 
 
-def _make_mission(tmp_path: Path, with_lane_files: bool = True, with_fresh_applier: bool = False) -> Path:
+def _make_mission(
+    tmp_path: Path, with_lane_files: bool = True, with_fresh_applier: bool = False
+) -> Path:
     """Build a minimal mission dir with the requested preconditions."""
     mission = tmp_path / "mission"
     mission.mkdir()
     if with_lane_files:
         for lane in LANES:
-            (mission / f"launch-{lane}.md").write_text(f"# launch-{lane}.md test stub\n")
+            (mission / f"launch-{lane}.md").write_text(
+                f"# launch-{lane}.md test stub\n"
+            )
     if with_fresh_applier:
         lock = mission / "queue" / ".applier.lock"
         lock.mkdir(parents=True)
@@ -136,7 +140,9 @@ def test_dry_run_spawn_emits_applescript(tmp_path):
 
 def test_dry_run_spawn_no_launch_uses_echo(tmp_path):
     mission = _make_mission(tmp_path)
-    r = _run("--spawn", "--dry-run", "--skip-applier-check", "--no-launch", mission=mission)
+    r = _run(
+        "--spawn", "--dry-run", "--skip-applier-check", "--no-launch", mission=mission
+    )
     assert r.returncode == 0, r.stderr
     out = r.stdout
     for lane in LANES:
@@ -147,7 +153,9 @@ def test_dry_run_spawn_no_launch_uses_echo(tmp_path):
     assert '&& echo \\"cd ' in out
     # Live-mode shape (badge; cd /... && claude) must be absent.
     # Live: `printf ... ; cd "/..."` ; no-launch: `printf ... ; echo \"`
-    assert ' ; cd \\"/private' not in out, "live-mode exec pattern leaked into --no-launch"
+    assert ' ; cd \\"/private' not in out, (
+        "live-mode exec pattern leaked into --no-launch"
+    )
     # Confirm every pane's command after the badge starts with `echo` of the banner.
     assert out.count(' ; echo \\"===') == 6
 
@@ -155,7 +163,9 @@ def test_dry_run_spawn_no_launch_uses_echo(tmp_path):
 def test_dry_run_spawn_includes_badge_prefix(tmp_path):
     """Each pane's command starts with iTerm's SetBadgeFormat escape."""
     mission = _make_mission(tmp_path)
-    r = _run("--spawn", "--dry-run", "--skip-applier-check", "--no-launch", mission=mission)
+    r = _run(
+        "--spawn", "--dry-run", "--skip-applier-check", "--no-launch", mission=mission
+    )
     assert r.returncode == 0, r.stderr
     # Expect the badge printf 6 times (one per lane).
     assert r.stdout.count("SetBadgeFormat=%s") == 6
@@ -205,7 +215,9 @@ def test_no_launch_skips_applier_check(tmp_path):
 def test_prompt_override_replaces_read_launch(tmp_path):
     mission = _make_mission(tmp_path)
     r = _run(
-        "--spawn", "--dry-run", "--skip-applier-check",
+        "--spawn",
+        "--dry-run",
+        "--skip-applier-check",
         "--prompt-override=say hello",
         mission=mission,
     )
@@ -221,7 +233,9 @@ def test_prompt_override_replaces_read_launch(tmp_path):
 def test_prompt_override_works_with_non_claude_cli(tmp_path):
     mission = _make_mission(tmp_path)
     r = _run(
-        "--spawn", "--dry-run", "--skip-applier-check",
+        "--spawn",
+        "--dry-run",
+        "--skip-applier-check",
         "--cli-audit=codex",
         "--prompt-override=demo prompt",
         mission=mission,
@@ -237,7 +251,13 @@ def test_prompt_override_works_with_non_claude_cli(tmp_path):
 
 def test_unknown_cli_in_spawn_mode_errors(tmp_path):
     mission = _make_mission(tmp_path)
-    r = _run("--spawn", "--dry-run", "--skip-applier-check", "--cli-audit=bogus-cli", mission=mission)
+    r = _run(
+        "--spawn",
+        "--dry-run",
+        "--skip-applier-check",
+        "--cli-audit=bogus-cli",
+        mission=mission,
+    )
     assert r.returncode == 5
     assert "unknown cli" in r.stderr.lower()
 
@@ -245,6 +265,7 @@ def test_unknown_cli_in_spawn_mode_errors(tmp_path):
 # ---------------------------------------------------------------------------
 # Gap coverage (Tester pass).
 # ---------------------------------------------------------------------------
+
 
 def test_mission_dir_not_found_errors(tmp_path):
     """Non-existent mission dir → exit 1 with a clear error."""
@@ -271,17 +292,25 @@ def test_per_lane_cli_override_all_lanes(tmp_path, flag, lane):
     target_line = next(ln for ln in r.stdout.splitlines() if f"launch-{lane}.md" in ln)
     # The override should appear before the prompt, and other lanes still use claude.
     assert "codex" in target_line
-    other_lanes = [ln for ln in r.stdout.splitlines() if ln.startswith("cd ") and f"launch-{lane}.md" not in ln]
+    other_lanes = [
+        ln
+        for ln in r.stdout.splitlines()
+        if ln.startswith("cd ") and f"launch-{lane}.md" not in ln
+    ]
     assert len(other_lanes) == 5
     for ol in other_lanes:
         # The CLI is the third whitespace-separated token of "cd <dir> && <cli> --model ..."
-        assert " claude --model " in ol, f"non-overridden lane lost its claude CLI: {ol}"
+        assert " claude --model " in ol, (
+            f"non-overridden lane lost its claude CLI: {ol}"
+        )
 
 
 def test_badge_base64_per_lane(tmp_path):
     """Every lane's badge escape must contain that lane's base64."""
     mission = _make_mission(tmp_path)
-    r = _run("--spawn", "--dry-run", "--skip-applier-check", "--no-launch", mission=mission)
+    r = _run(
+        "--spawn", "--dry-run", "--skip-applier-check", "--no-launch", mission=mission
+    )
     assert r.returncode == 0, r.stderr
     for lane in LANES:
         b64 = base64.b64encode(lane.encode()).decode()
@@ -298,7 +327,9 @@ def test_applescript_split_order_and_session_binding(tmp_path):
     sessC → split horizontally → sessF (bottom-right, META)
     """
     mission = _make_mission(tmp_path)
-    r = _run("--spawn", "--dry-run", "--skip-applier-check", "--no-launch", mission=mission)
+    r = _run(
+        "--spawn", "--dry-run", "--skip-applier-check", "--no-launch", mission=mission
+    )
     assert r.returncode == 0, r.stderr
     out = r.stdout
     # Each split must appear inside the correct parent's `tell` block. Find the
@@ -356,7 +387,14 @@ def test_runs_under_bash_3_2(tmp_path):
     if not Path(BASH_32).exists():
         pytest.skip(f"{BASH_32} not present")
     mission = _make_mission(tmp_path)
-    cmd = [BASH_32, str(SCRIPT), str(mission), "--spawn", "--dry-run", "--skip-applier-check"]
+    cmd = [
+        BASH_32,
+        str(SCRIPT),
+        str(mission),
+        "--spawn",
+        "--dry-run",
+        "--skip-applier-check",
+    ]
     r = subprocess.run(cmd, capture_output=True, text=True)
     assert r.returncode == 0, f"bash 3.2 invocation failed: stderr={r.stderr}"
     assert 'tell application "iTerm"' in r.stdout
@@ -372,7 +410,9 @@ def test_prompt_override_with_single_quote_does_not_break_shell(tmp_path):
     """
     mission = _make_mission(tmp_path)
     r = _run(
-        "--spawn", "--dry-run", "--skip-applier-check",
+        "--spawn",
+        "--dry-run",
+        "--skip-applier-check",
         "--prompt-override=say 'hi'",
         mission=mission,
     )
@@ -382,14 +422,16 @@ def test_prompt_override_with_single_quote_does_not_break_shell(tmp_path):
     assert r.stdout.count("say 'hi'") == 6
     # And the surrounding shell command must still be double-quoted (not
     # single-quoted, which is what produced the bug).
-    assert " ; cd \\\"" in r.stdout
+    assert ' ; cd \\"' in r.stdout
 
 
 def test_prompt_override_with_special_chars_does_not_break_applescript(tmp_path):
     """Prompts containing " or \\ must be properly escaped for AppleScript."""
     mission = _make_mission(tmp_path)
     r = _run(
-        "--spawn", "--dry-run", "--skip-applier-check",
+        "--spawn",
+        "--dry-run",
+        "--skip-applier-check",
         '--prompt-override=hello "world" \\path',
         mission=mission,
     )
@@ -399,6 +441,6 @@ def test_prompt_override_with_special_chars_does_not_break_applescript(tmp_path)
     for line in r.stdout.splitlines():
         s = line.lstrip()
         if s.startswith('write text "'):
-            inner = s[len('write text "'):]
+            inner = s[len('write text "') :]
             # Strip trailing whitespace; line should end with an unescaped ".
             assert inner.endswith('"'), f"write text line not closed: {line!r}"

@@ -15,7 +15,6 @@ History: Task 1.4 (SR-2 grep audit, v9.2).
 """
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -144,9 +143,7 @@ def test_no_unauthorized_legacy_default_config_callers():
         if "__pycache__" in rel_path:
             continue
         if rel_path not in ALLOW_LIST:
-            offenders.append(
-                f"  {rel_path}:{lineno}: {text.strip()}"
-            )
+            offenders.append(f"  {rel_path}:{lineno}: {text.strip()}")
 
     if offenders:
         offender_list = "\n".join(offenders)

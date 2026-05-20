@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Any
 
 from megalodon_ui.mission_config.default_v9_0_shape import synthesize as _synthesize
-from megalodon_ui.mission_config.regex_builder import build_status_row_re as _build_status_row_re
+from megalodon_ui.mission_config.regex_builder import (
+    build_status_row_re as _build_status_row_re,
+)
 from scripts._backends._history_format import format_history_line
 
 LOCK_TIMEOUT_SECONDS = 5.0
@@ -37,7 +39,9 @@ def _hash_dir(dir_path: Path) -> str:
         return _sha256("")
     for child in sorted(dir_path.iterdir()):
         if child.is_file():
-            parts.append(f"{child.name}\0{child.read_text(encoding='utf-8', errors='replace')}")
+            parts.append(
+                f"{child.name}\0{child.read_text(encoding='utf-8', errors='replace')}"
+            )
         else:
             parts.append(f"{child.name}/")
     return _sha256("\n".join(parts))
@@ -66,9 +70,7 @@ def _step_result(
     }
 
 
-def claim_dir_done(
-    mission: Path, task_id: str, agent: str, utc: str
-) -> dict[str, Any]:
+def claim_dir_done(mission: Path, task_id: str, agent: str, utc: str) -> dict[str, Any]:
     start = time.monotonic()
     claim_dir = mission / "claims" / task_id
     target = str(claim_dir)
@@ -158,9 +160,7 @@ def _read_under_lock(path: Path, timeout: float) -> tuple[str, int]:
         raise
 
 
-def tasks_bracket(
-    mission: Path, task_id: str, agent: str, utc: str
-) -> dict[str, Any]:
+def tasks_bracket(mission: Path, task_id: str, agent: str, utc: str) -> dict[str, Any]:
     start = time.monotonic()
     path = mission / "TASKS.md"
     target = str(path)
@@ -169,7 +169,9 @@ def tasks_bracket(
         text, fd = _read_under_lock(path, LOCK_TIMEOUT_SECONDS)
     except LockTimeoutError as e:
         return _step_result(
-            step="TASKS_BRACKET", ok=False, target_file=target,
+            step="TASKS_BRACKET",
+            ok=False,
+            target_file=target,
             error=str(e),
             duration_ms=int((time.monotonic() - start) * 1000),
         )
@@ -181,8 +183,11 @@ def tasks_bracket(
             if m and m["task_id"] == task_id:
                 if m["state"].startswith("done:"):
                     return _step_result(
-                        step="TASKS_BRACKET", ok=True, target_file=target,
-                        pre_hash=pre_hash, post_hash=pre_hash,
+                        step="TASKS_BRACKET",
+                        ok=True,
+                        target_file=target,
+                        pre_hash=pre_hash,
+                        post_hash=pre_hash,
                         duration_ms=int((time.monotonic() - start) * 1000),
                         idempotent=True,
                     )
@@ -195,12 +200,17 @@ def tasks_bracket(
                 new_text = "".join(lines)
                 _atomic_replace(path, new_text)
                 return _step_result(
-                    step="TASKS_BRACKET", ok=True, target_file=target,
-                    pre_hash=pre_hash, post_hash=_sha256(new_text),
+                    step="TASKS_BRACKET",
+                    ok=True,
+                    target_file=target,
+                    pre_hash=pre_hash,
+                    post_hash=_sha256(new_text),
                     duration_ms=int((time.monotonic() - start) * 1000),
                 )
         return _step_result(
-            step="TASKS_BRACKET", ok=False, target_file=target,
+            step="TASKS_BRACKET",
+            ok=False,
+            target_file=target,
             error=f"task {task_id} not found in TASKS.md",
             duration_ms=int((time.monotonic() - start) * 1000),
         )
@@ -218,10 +228,12 @@ STATUS_ROW_RE = _build_status_row_re(_default_config)
 def _history_row_recent(text: str, agent: str, task_id: str, utc: str) -> bool:
     """Return True if last ~50 lines contain a row with same agent+task_id
     within ±60 seconds of utc."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     try:
-        target = datetime.strptime(utc, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        target = datetime.strptime(utc, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
     except ValueError:
         return False
     lines = text.splitlines()[-50:]
@@ -231,7 +243,9 @@ def _history_row_recent(text: str, agent: str, task_id: str, utc: str) -> bool:
         # Try to parse leading UTC stamp
         prefix = ln.split(" | ", 1)[0]
         try:
-            row_utc = datetime.strptime(prefix, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            row_utc = datetime.strptime(prefix, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
         except ValueError:
             continue
         if abs((row_utc - target).total_seconds()) <= 60:
@@ -253,20 +267,25 @@ def history_append(
     start = time.monotonic()
     path = mission / "HISTORY.md"
     target = str(path)
-    line = format_history_line(
-        utc=utc,
-        lane=lane_short,
-        agent=agent,
-        task_id=task_id,
-        finding_path=finding_path,
-        severity=severity,
-        notes=notes,
-    ) + "\n"
+    line = (
+        format_history_line(
+            utc=utc,
+            lane=lane_short,
+            agent=agent,
+            task_id=task_id,
+            finding_path=finding_path,
+            severity=severity,
+            notes=notes,
+        )
+        + "\n"
+    )
     try:
         text, fd = _read_under_lock(path, LOCK_TIMEOUT_SECONDS)
     except LockTimeoutError as e:
         return _step_result(
-            step="HISTORY_APPEND", ok=False, target_file=target,
+            step="HISTORY_APPEND",
+            ok=False,
+            target_file=target,
             error=str(e),
             duration_ms=int((time.monotonic() - start) * 1000),
         )
@@ -274,8 +293,11 @@ def history_append(
         pre_hash = _sha256(text)
         if _history_row_recent(text, agent, task_id, utc):
             return _step_result(
-                step="HISTORY_APPEND", ok=True, target_file=target,
-                pre_hash=pre_hash, post_hash=pre_hash,
+                step="HISTORY_APPEND",
+                ok=True,
+                target_file=target,
+                pre_hash=pre_hash,
+                post_hash=pre_hash,
                 duration_ms=int((time.monotonic() - start) * 1000),
                 idempotent=True,
             )
@@ -284,8 +306,11 @@ def history_append(
         new_text = text + line
         _atomic_replace(path, new_text)
         return _step_result(
-            step="HISTORY_APPEND", ok=True, target_file=target,
-            pre_hash=pre_hash, post_hash=_sha256(new_text),
+            step="HISTORY_APPEND",
+            ok=True,
+            target_file=target,
+            pre_hash=pre_hash,
+            post_hash=_sha256(new_text),
             duration_ms=int((time.monotonic() - start) * 1000),
         )
     finally:
@@ -311,7 +336,9 @@ def status_update(
         text, fd = _read_under_lock(path, LOCK_TIMEOUT_SECONDS)
     except LockTimeoutError as e:
         return _step_result(
-            step="STATUS_UPDATE", ok=False, target_file=target,
+            step="STATUS_UPDATE",
+            ok=False,
+            target_file=target,
             error=str(e),
             duration_ms=int((time.monotonic() - start) * 1000),
         )
@@ -325,8 +352,11 @@ def status_update(
                 continue
             if m["agent"].strip() != agent:
                 return _step_result(
-                    step="STATUS_UPDATE", ok=False, target_file=target,
-                    pre_hash=pre_hash, post_hash=pre_hash,
+                    step="STATUS_UPDATE",
+                    ok=False,
+                    target_file=target,
+                    pre_hash=pre_hash,
+                    post_hash=pre_hash,
                     error=(
                         f"STATUS row owner mismatch: lane={lane} "
                         f"expected agent={agent} found={m['agent'].strip()}"
@@ -335,8 +365,11 @@ def status_update(
                 )
             if m["state"].strip() == "idle" and f"{task_id} done" in m["notes"]:
                 return _step_result(
-                    step="STATUS_UPDATE", ok=True, target_file=target,
-                    pre_hash=pre_hash, post_hash=pre_hash,
+                    step="STATUS_UPDATE",
+                    ok=True,
+                    target_file=target,
+                    pre_hash=pre_hash,
+                    post_hash=pre_hash,
                     duration_ms=int((time.monotonic() - start) * 1000),
                     idempotent=True,
                 )
@@ -344,12 +377,17 @@ def status_update(
             new_text = "".join(lines)
             _atomic_replace(path, new_text)
             return _step_result(
-                step="STATUS_UPDATE", ok=True, target_file=target,
-                pre_hash=pre_hash, post_hash=_sha256(new_text),
+                step="STATUS_UPDATE",
+                ok=True,
+                target_file=target,
+                pre_hash=pre_hash,
+                post_hash=_sha256(new_text),
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
         return _step_result(
-            step="STATUS_UPDATE", ok=False, target_file=target,
+            step="STATUS_UPDATE",
+            ok=False,
+            target_file=target,
             error=f"no STATUS row for lane={lane}",
             duration_ms=int((time.monotonic() - start) * 1000),
         )

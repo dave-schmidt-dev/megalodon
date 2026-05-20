@@ -76,7 +76,18 @@ async def authed_client_with_spawner(
     claude_adapter = MagicMock()
     claude_adapter.build_argv = MagicMock(return_value=(["stub"], {}))
     claude_adapter.build_followup_argv = MagicMock(
-        return_value=(["claude", "--print", "--model", "claude-sonnet-4-6", "--resume", "prior-sid-xyz", "follow up prompt"], {}),
+        return_value=(
+            [
+                "claude",
+                "--print",
+                "--model",
+                "claude-sonnet-4-6",
+                "--resume",
+                "prior-sid-xyz",
+                "follow up prompt",
+            ],
+            {},
+        ),
     )
     claude_adapter.session_log_dir = MagicMock(return_value=None)
 
@@ -85,6 +96,7 @@ async def authed_client_with_spawner(
 
     # Pre-populate sessions WITHOUT running start_all (avoids tmux dependency).
     from megalodon_ui.spawn import LaneSession
+
     stream_log = fleet / "A.stream.log"
     stream_log.touch()
     spawner.sessions["A"] = LaneSession(

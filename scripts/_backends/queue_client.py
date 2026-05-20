@@ -40,7 +40,9 @@ def _hash_dir(dir_path: Path) -> str:
         return _sha256("")
     for child in sorted(dir_path.iterdir()):
         if child.is_file():
-            parts.append(f"{child.name}\0{child.read_text(encoding='utf-8', errors='replace')}")
+            parts.append(
+                f"{child.name}\0{child.read_text(encoding='utf-8', errors='replace')}"
+            )
         else:
             parts.append(f"{child.name}/")
     return _sha256("\n".join(parts))
@@ -76,6 +78,7 @@ def _applier_alive(mission: Path) -> bool:
     heartbeat is fresh. False otherwise (including no lock dir).
     """
     import os
+
     lock_dir = mission / "queue" / ".applier.lock"
     pid_file = lock_dir / "pid.txt"
     hb_file = lock_dir / "heartbeat.txt"
@@ -119,9 +122,7 @@ def _rejection_reason(mission: Path, rid: str) -> str:
 # ---- backend API (matches direct_fcntl.py shape) ----
 
 
-def claim_dir_done(
-    mission: Path, task_id: str, agent: str, utc: str
-) -> dict[str, Any]:
+def claim_dir_done(mission: Path, task_id: str, agent: str, utc: str) -> dict[str, Any]:
     start = time.monotonic()
     claim_dir = mission / "claims" / task_id
     target = str(claim_dir)
@@ -129,7 +130,9 @@ def claim_dir_done(
 
     if not claim_dir.is_dir():
         return _step_result(
-            step="CLAIM_DIR_DONE", ok=False, target_file=target,
+            step="CLAIM_DIR_DONE",
+            ok=False,
+            target_file=target,
             error=f"claim dir missing: {claim_dir}",
             duration_ms=int((time.monotonic() - start) * 1000),
         )
@@ -140,8 +143,11 @@ def claim_dir_done(
         owner_first = owner_file.read_text(encoding="utf-8").strip().split()
         if owner_first and owner_first[0] == agent:
             return _step_result(
-                step="CLAIM_DIR_DONE", ok=True, target_file=target,
-                pre_hash=pre_hash, post_hash=pre_hash,
+                step="CLAIM_DIR_DONE",
+                ok=True,
+                target_file=target,
+                pre_hash=pre_hash,
+                post_hash=pre_hash,
                 duration_ms=int((time.monotonic() - start) * 1000),
                 idempotent=True,
             )
@@ -155,21 +161,24 @@ def claim_dir_done(
     status = _wait_or_drain(mission, rid)
     if status != "applied":
         return _step_result(
-            step="CLAIM_DIR_DONE", ok=False, target_file=target,
+            step="CLAIM_DIR_DONE",
+            ok=False,
+            target_file=target,
             pre_hash=pre_hash,
             error=f"queue-status:{status}:{_rejection_reason(mission, rid)}",
             duration_ms=int((time.monotonic() - start) * 1000),
         )
     return _step_result(
-        step="CLAIM_DIR_DONE", ok=True, target_file=target,
-        pre_hash=pre_hash, post_hash=_hash_dir(claim_dir),
+        step="CLAIM_DIR_DONE",
+        ok=True,
+        target_file=target,
+        pre_hash=pre_hash,
+        post_hash=_hash_dir(claim_dir),
         duration_ms=int((time.monotonic() - start) * 1000),
     )
 
 
-def tasks_bracket(
-    mission: Path, task_id: str, agent: str, utc: str
-) -> dict[str, Any]:
+def tasks_bracket(mission: Path, task_id: str, agent: str, utc: str) -> dict[str, Any]:
     start = time.monotonic()
     path = mission / "TASKS.md"
     target = str(path)
@@ -178,43 +187,57 @@ def tasks_bracket(
 
     # Idempotency: if already done, return idempotent.
     import re
-    pattern = (
-        rf"^-\s+\[done:[^\]]*\]\s+\[LANE-[A-Z]\]\s+`{re.escape(task_id)}`"
-    )
+
+    pattern = rf"^-\s+\[done:[^\]]*\]\s+\[LANE-[A-Z]\]\s+`{re.escape(task_id)}`"
     if re.search(pattern, pre_text, re.MULTILINE):
         return _step_result(
-            step="TASKS_BRACKET", ok=True, target_file=target,
-            pre_hash=pre_hash, post_hash=pre_hash,
+            step="TASKS_BRACKET",
+            ok=True,
+            target_file=target,
+            pre_hash=pre_hash,
+            post_hash=pre_hash,
             duration_ms=int((time.monotonic() - start) * 1000),
             idempotent=True,
         )
     # Task not found at all?
     if not re.search(
         rf"^-\s+\[[^\]]+\]\s+\[LANE-[A-Z]\]\s+`{re.escape(task_id)}`",
-        pre_text, re.MULTILINE,
+        pre_text,
+        re.MULTILINE,
     ):
         return _step_result(
-            step="TASKS_BRACKET", ok=False, target_file=target,
+            step="TASKS_BRACKET",
+            ok=False,
+            target_file=target,
             pre_hash=pre_hash,
             error=f"task {task_id} not found in TASKS.md",
             duration_ms=int((time.monotonic() - start) * 1000),
         )
 
     rid = _qc.tasks_bracket(
-        mission, agent, "?", task_id, f"[done: {agent} @ {utc}]",
+        mission,
+        agent,
+        "?",
+        task_id,
+        f"[done: {agent} @ {utc}]",
     )
     status = _wait_or_drain(mission, rid)
     if status != "applied":
         return _step_result(
-            step="TASKS_BRACKET", ok=False, target_file=target,
+            step="TASKS_BRACKET",
+            ok=False,
+            target_file=target,
             pre_hash=pre_hash,
             error=f"queue-status:{status}:{_rejection_reason(mission, rid)}",
             duration_ms=int((time.monotonic() - start) * 1000),
         )
     post_text = path.read_text(encoding="utf-8")
     return _step_result(
-        step="TASKS_BRACKET", ok=True, target_file=target,
-        pre_hash=pre_hash, post_hash=_sha256(post_text),
+        step="TASKS_BRACKET",
+        ok=True,
+        target_file=target,
+        pre_hash=pre_hash,
+        post_hash=_sha256(post_text),
         duration_ms=int((time.monotonic() - start) * 1000),
     )
 
@@ -238,6 +261,7 @@ def history_append(
 
     # Idempotency: row recent within 60s for same agent + task_id.
     from datetime import datetime, timezone
+
     try:
         target_dt = datetime.strptime(utc, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc
@@ -249,15 +273,18 @@ def history_append(
             if agent in ln and task_id in ln:
                 prefix = ln.split(" | ", 1)[0]
                 try:
-                    row_dt = datetime.strptime(
-                        prefix, "%Y-%m-%dT%H:%M:%SZ"
-                    ).replace(tzinfo=timezone.utc)
+                    row_dt = datetime.strptime(prefix, "%Y-%m-%dT%H:%M:%SZ").replace(
+                        tzinfo=timezone.utc
+                    )
                 except ValueError:
                     continue
                 if abs((row_dt - target_dt).total_seconds()) <= 60:
                     return _step_result(
-                        step="HISTORY_APPEND", ok=True, target_file=target,
-                        pre_hash=pre_hash, post_hash=pre_hash,
+                        step="HISTORY_APPEND",
+                        ok=True,
+                        target_file=target,
+                        pre_hash=pre_hash,
+                        post_hash=pre_hash,
                         duration_ms=int((time.monotonic() - start) * 1000),
                         idempotent=True,
                     )
@@ -274,27 +301,42 @@ def history_append(
         notes=notes,
     )
     rid = _qc.history_append(
-        mission, agent, lane_short, task_id, finding_path, severity, utc=utc,
+        mission,
+        agent,
+        lane_short,
+        task_id,
+        finding_path,
+        severity,
+        utc=utc,
     )
     # We need the raw line that the applier writes to differ from what the
     # M3 direct backend writes. Override via direct submit with our custom
     # line so it matches M3 shape.
     rid = _qc.submit(
-        mission, agent, lane_short, "HISTORY.md", "HISTORY_APPEND",
+        mission,
+        agent,
+        lane_short,
+        "HISTORY.md",
+        "HISTORY_APPEND",
         {"line": line},
     )
     status = _wait_or_drain(mission, rid)
     if status != "applied":
         return _step_result(
-            step="HISTORY_APPEND", ok=False, target_file=target,
+            step="HISTORY_APPEND",
+            ok=False,
+            target_file=target,
             pre_hash=pre_hash,
             error=f"queue-status:{status}:{_rejection_reason(mission, rid)}",
             duration_ms=int((time.monotonic() - start) * 1000),
         )
     post_text = path.read_text(encoding="utf-8")
     return _step_result(
-        step="HISTORY_APPEND", ok=True, target_file=target,
-        pre_hash=pre_hash, post_hash=_sha256(post_text),
+        step="HISTORY_APPEND",
+        ok=True,
+        target_file=target,
+        pre_hash=pre_hash,
+        post_hash=_sha256(post_text),
         duration_ms=int((time.monotonic() - start) * 1000),
     )
 
@@ -315,6 +357,7 @@ def status_update(
     pre_hash = _sha256(pre_text)
 
     import re
+
     # Owner-mismatch & idempotency mirror M3.
     row_re = re.compile(
         rf"^\|\s*{re.escape(lane)}\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|"
@@ -324,8 +367,11 @@ def status_update(
     m = row_re.search(pre_text)
     if not m:
         return _step_result(
-            step="STATUS_UPDATE", ok=False, target_file=target,
-            pre_hash=pre_hash, error=f"no STATUS row for lane={lane}",
+            step="STATUS_UPDATE",
+            ok=False,
+            target_file=target,
+            pre_hash=pre_hash,
+            error=f"no STATUS row for lane={lane}",
             duration_ms=int((time.monotonic() - start) * 1000),
         )
     existing_agent = m.group(1).strip()
@@ -333,8 +379,11 @@ def status_update(
     existing_notes = m.group(3).strip()
     if existing_agent != agent:
         return _step_result(
-            step="STATUS_UPDATE", ok=False, target_file=target,
-            pre_hash=pre_hash, post_hash=pre_hash,
+            step="STATUS_UPDATE",
+            ok=False,
+            target_file=target,
+            pre_hash=pre_hash,
+            post_hash=pre_hash,
             error=(
                 f"STATUS row owner mismatch: lane={lane} "
                 f"expected agent={agent} found={existing_agent}"
@@ -344,26 +393,39 @@ def status_update(
     new_notes_value = f"{task_id} done — {summary}"
     if existing_state == "idle" and f"{task_id} done" in existing_notes:
         return _step_result(
-            step="STATUS_UPDATE", ok=True, target_file=target,
-            pre_hash=pre_hash, post_hash=pre_hash,
+            step="STATUS_UPDATE",
+            ok=True,
+            target_file=target,
+            pre_hash=pre_hash,
+            post_hash=pre_hash,
             duration_ms=int((time.monotonic() - start) * 1000),
             idempotent=True,
         )
 
     rid = _qc.status_update(
-        mission, agent, lane, "idle", new_notes_value, new_utc=utc,
+        mission,
+        agent,
+        lane,
+        "idle",
+        new_notes_value,
+        new_utc=utc,
     )
     status = _wait_or_drain(mission, rid)
     if status != "applied":
         return _step_result(
-            step="STATUS_UPDATE", ok=False, target_file=target,
+            step="STATUS_UPDATE",
+            ok=False,
+            target_file=target,
             pre_hash=pre_hash,
             error=f"queue-status:{status}:{_rejection_reason(mission, rid)}",
             duration_ms=int((time.monotonic() - start) * 1000),
         )
     post_text = path.read_text(encoding="utf-8")
     return _step_result(
-        step="STATUS_UPDATE", ok=True, target_file=target,
-        pre_hash=pre_hash, post_hash=_sha256(post_text),
+        step="STATUS_UPDATE",
+        ok=True,
+        target_file=target,
+        pre_hash=pre_hash,
+        post_hash=_sha256(post_text),
         duration_ms=int((time.monotonic() - start) * 1000),
     )

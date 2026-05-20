@@ -5,11 +5,11 @@ This module exposes the protocol-level operations the unit-test suite in
 sse_starlette imports here — this module must be importable in a pure-stdlib
 Python environment (per BACKEND P2.5-C plan-v2 Δ1.1).
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-import os
 import re
 import shutil
 
@@ -34,7 +34,9 @@ LANE_LONG_TO_SHORT: dict[str, str] = {l.name: l.short for l in _DEFAULT_CONFIG.l
 # factory (schema.py line 65) rather than a copy-pasted literal here.
 # ---------------------------------------------------------------------------
 
-_DEFAULT_LOOSE_PATTERN = MissionConfig.model_fields["task_id_patterns"].default_factory().patterns[0]
+_DEFAULT_LOOSE_PATTERN = (
+    MissionConfig.model_fields["task_id_patterns"].default_factory().patterns[0]
+)
 CANONICAL_TASK_ID_RE = re.compile(_DEFAULT_LOOSE_PATTERN)
 """Server-side canonical task-id pattern. ASCII-only per v8 Edit 3."""
 
@@ -154,8 +156,7 @@ def compute_effective_severity(findings: list[dict]) -> str:
 
     # Quorum considers only Pass-1, non-ACK-VERIFIED findings.
     quorum_set = [
-        f for f in findings
-        if f.get("pass") == 1 and f.get("type") != "ACK-VERIFIED"
+        f for f in findings if f.get("pass") == 1 and f.get("type") != "ACK-VERIFIED"
     ]
 
     # Group by artifact for quorum math.
@@ -167,7 +168,9 @@ def compute_effective_severity(findings: list[dict]) -> str:
     for art, group in by_artifact.items():
         # Distinct lanes among this artifact's Pass-1 findings.
         lanes = {f.get("lane") for f in group if f.get("lane")}
-        max_sev = max((_SEVERITY_ORDER.get(f.get("severity", "NIT"), 0) for f in group), default=0)
+        max_sev = max(
+            (_SEVERITY_ORDER.get(f.get("severity", "NIT"), 0) for f in group), default=0
+        )
 
         # MAJOR → BLOCKING: 2+ INDEPENDENT lanes' Pass-1 findings on same artifact.
         if max_sev == _SEVERITY_ORDER["MAJOR"] and len(lanes) >= 2:
@@ -288,9 +291,7 @@ def mark_complete(
             r"\[(?:\s|claimed:[^\]]*)\]"
             r"(\s\[LANE-" + _lane_match + r"\]\s`" + re.escape(canonical) + r"`)"
         )
-        new_text, n = pattern.subn(
-            f"[done: {agent} @ {utc}]\\1", text, count=1
-        )
+        new_text, n = pattern.subn(f"[done: {agent} @ {utc}]\\1", text, count=1)
         if n == 0:
             # Already done or task absent — no-op (idempotent).
             new_text = text
@@ -367,8 +368,9 @@ def _is_holder_fresh(
     # Match a table row containing this agent_id; extract the 4th cell (Last UTC).
     # Row form: | Lane | Agent | State | Last UTC | Notes |
     pat = re.compile(
-        r"^\|[^|\n]*\|\s*" + re.escape(agent_id) +
-        r"\s*\|[^|\n]*\|\s*([0-9TZ:\-+\.]+)\s*\|",
+        r"^\|[^|\n]*\|\s*"
+        + re.escape(agent_id)
+        + r"\s*\|[^|\n]*\|\s*([0-9TZ:\-+\.]+)\s*\|",
         re.MULTILINE,
     )
     m = pat.search(text)
@@ -383,9 +385,7 @@ def _is_holder_fresh(
     return age <= stuck_after_seconds
 
 
-def try_phase_flip(
-    root: Path, from_phase: str, to_phase: str, agent: str
-) -> bool:
+def try_phase_flip(root: Path, from_phase: str, to_phase: str, agent: str) -> bool:
     """Attempt the distributed atomic phase-flip per RULE 11.
 
     On win: mkdir lock, write owner.txt (v8.1 Edit-14 fix), append flip event,
@@ -521,7 +521,9 @@ def detect_and_recover_stuck_flips(
                 # A 60s stuck-lock with a 2-min-quiet holder is still recoverable
                 # only if the holder has gone fully stale per RULE 1.
                 holder_fresh = _is_holder_fresh(
-                    root, owner_id, now=now,
+                    root,
+                    owner_id,
+                    now=now,
                     stuck_after_seconds=STALE_THRESHOLD_SECONDS,
                 )
                 if holder_fresh:
@@ -531,10 +533,14 @@ def detect_and_recover_stuck_flips(
         # Recovery: rm lock + remkdir + append synthetic event with RECOVERY marker.
         shutil.rmtree(lock_dir)
         lock_dir.mkdir()
-        (lock_dir / "owner.txt").write_text("recovery-agent\n" + _utc_now_str_minute() + "\n")
+        (lock_dir / "owner.txt").write_text(
+            "recovery-agent\n" + _utc_now_str_minute() + "\n"
+        )
 
         utc_str = _utc_now_str_minute()
-        suffix = f" (RECOVERY, previous holder: {owner_id})" if owner_id else " (RECOVERY)"
+        suffix = (
+            f" (RECOVERY, previous holder: {owner_id})" if owner_id else " (RECOVERY)"
+        )
         recovery_line = (
             f"{utc_str} {from_phase}->{to_phase} by recovery-agent "
             f"-- v8 Edit 14 step 4a stuck-flip recovery; "

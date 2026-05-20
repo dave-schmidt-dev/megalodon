@@ -1,4 +1,5 @@
 """V9 A1 — watchdog alert dedup + finding write."""
+
 from __future__ import annotations
 
 import json
@@ -52,7 +53,9 @@ class AlertManager:
         self._state["last_poll_utc"] = _utc()
         _atomic_write(self.state_path, json.dumps(self._state, indent=2))
 
-    def alert(self, lane: str, alert_type: str, *, evidence: Iterable[str]) -> Path | None:
+    def alert(
+        self, lane: str, alert_type: str, *, evidence: Iterable[str]
+    ) -> Path | None:
         """Write SIGNAL finding unless duplicate. Returns path or None."""
         lane_state = self._state["lanes"].get(lane, {})
         if lane_state.get("last_alert_type") == alert_type:
@@ -62,7 +65,9 @@ class AlertManager:
         filename = f"watchdog-ALERT-{lane}-{utc.replace(':', '-')}.md"
         path = self.findings_dir / filename
 
-        evidence_lines = "\n".join(f"- {e}" for e in evidence) or "- (no additional evidence)"
+        evidence_lines = (
+            "\n".join(f"- {e}" for e in evidence) or "- (no additional evidence)"
+        )
         action = _ACTION_HINTS.get(alert_type, "Operator decision required.")
         body = f"""---
 signal-type: WATCHDOG-ALERT

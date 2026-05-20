@@ -6,10 +6,8 @@
 from __future__ import annotations
 
 import re
-import tempfile
 from pathlib import Path
 
-import pytest
 
 from megalodon_ui.mission_config.schema import (
     HarnessBinding,
@@ -52,18 +50,22 @@ def _make_config(
         mission=_MISSION,
         lanes=lanes,
         phases=phases or ["PHASE-A"],
-        task_id_patterns=TaskIdPattern(patterns=patterns or [r"^[A-Z][A-Za-z0-9\-\.]*$"]),
+        task_id_patterns=TaskIdPattern(
+            patterns=patterns or [r"^[A-Z][A-Za-z0-9\-\.]*$"]
+        ),
     )
 
 
 def _default_v9_0(tmp_path: Path) -> MissionConfig:
     from megalodon_ui.mission_config.default_v9_0_shape import synthesize
+
     return synthesize(tmp_path)
 
 
 # ---------------------------------------------------------------------------
 # Test 1: single lane produces anchored alternation
 # ---------------------------------------------------------------------------
+
 
 def test_single_lane_produces_anchored_alternation():
     config = _make_config(["ALPHA"], ["A"])
@@ -76,6 +78,7 @@ def test_single_lane_produces_anchored_alternation():
 # ---------------------------------------------------------------------------
 # Test 2: multi-lane alternation
 # ---------------------------------------------------------------------------
+
 
 def test_multi_lane_alternation():
     config = _make_config(["ALPHA", "BETA", "GAMMA"], ["A", "B", "C"])
@@ -91,6 +94,7 @@ def test_multi_lane_alternation():
 # Test 3: short charclass — six contiguous lanes A..F (default v9.0)
 # ---------------------------------------------------------------------------
 
+
 def test_short_charclass_six_contiguous_lanes(tmp_path):
     config = _default_v9_0(tmp_path)
     cc = build_lane_short_charclass(config)
@@ -100,6 +104,7 @@ def test_short_charclass_six_contiguous_lanes(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 4: short charclass — non-contiguous codes
 # ---------------------------------------------------------------------------
+
 
 def test_short_charclass_non_contiguous():
     config = _make_config(
@@ -113,6 +118,7 @@ def test_short_charclass_non_contiguous():
 # ---------------------------------------------------------------------------
 # Test 5: short charclass — over 26 lanes (auto-assigned A..Z + AA)
 # ---------------------------------------------------------------------------
+
 
 def test_short_charclass_over_26_lanes():
     names = [f"LANE{i}" for i in range(27)]
@@ -128,6 +134,7 @@ def test_short_charclass_over_26_lanes():
 # ---------------------------------------------------------------------------
 # Test 6: PM-8 — phase header sorted length-descending in pattern
 # ---------------------------------------------------------------------------
+
 
 def test_phase_header_length_descending_order():
     config = _make_config(
@@ -153,9 +160,7 @@ def test_phase_header_length_descending_order():
     # PHASE-A in alternation (not inside PHASE-AUDIT-EXTENDED): find its standalone pos
     idx_phase_a = alternatives.index("PHASE-A")
     # PHASE bare: find standalone occurrence (not as prefix of longer name)
-    idx_phase_bare = next(
-        i for i, alt in enumerate(alternatives) if alt == "PHASE"
-    )
+    idx_phase_bare = next(i for i, alt in enumerate(alternatives) if alt == "PHASE")
 
     assert idx_extended < idx_phase_a < idx_phase_bare, (
         f"Expected length-descending order in alternation {alternatives!r}"
@@ -165,6 +170,7 @@ def test_phase_header_length_descending_order():
 # ---------------------------------------------------------------------------
 # Test 7: PM-8 — compiled regex captures longest match first
 # ---------------------------------------------------------------------------
+
 
 def test_phase_header_matches_longest_first():
     config = _make_config(
@@ -181,6 +187,7 @@ def test_phase_header_matches_longest_first():
 # ---------------------------------------------------------------------------
 # Test 8: task_line_re byte-equal to canonical v9.0 shape (with [A-F])
 # ---------------------------------------------------------------------------
+
 
 def test_task_line_round_trip_against_v9_0_default(tmp_path):
     """Builder must reproduce the canonical task-line pattern for default v9.0.
@@ -209,6 +216,7 @@ def test_task_line_round_trip_against_v9_0_default(tmp_path):
 # Test 9: task_id_re strips leading ^ and trailing $
 # ---------------------------------------------------------------------------
 
+
 def test_task_id_re_strips_leading_caret_trailing_dollar():
     config = _make_config(
         ["LANE1"],
@@ -216,9 +224,7 @@ def test_task_id_re_strips_leading_caret_trailing_dollar():
         patterns=["^foo$", "^bar$"],
     )
     pat = build_task_id_re(config)
-    assert pat.pattern == "^(foo|bar)$", (
-        f"Expected '^(foo|bar)$', got {pat.pattern!r}"
-    )
+    assert pat.pattern == "^(foo|bar)$", f"Expected '^(foo|bar)$', got {pat.pattern!r}"
     assert pat.match("foo")
     assert pat.match("bar")
     assert not pat.match("^foo$")
@@ -227,6 +233,7 @@ def test_task_id_re_strips_leading_caret_trailing_dollar():
 # ---------------------------------------------------------------------------
 # Test 10: status_row_re byte-equal to v9.0 server.py shape
 # ---------------------------------------------------------------------------
+
 
 def test_status_row_re_byte_equal_to_v9_0(tmp_path):
     config = _default_v9_0(tmp_path)
@@ -250,6 +257,7 @@ def test_status_row_re_byte_equal_to_v9_0(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 11: semantic equivalence — CV-4 full corpus (≥60 strings)
 # ---------------------------------------------------------------------------
+
 
 def test_semantic_equivalence_v9_0_default(tmp_path):
     """Full corpus test proving v9.1 regex_builder output matches v9.0 TASK_ID_RE.
@@ -291,6 +299,7 @@ def test_semantic_equivalence_v9_0_default(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 12: corpus size guard — regression-guard against accidental shrinking
 # ---------------------------------------------------------------------------
+
 
 def test_corpus_has_minimum_size():
     """Cheap regression-guard: positive and negative lists must stay at 30 each."""

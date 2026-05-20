@@ -8,6 +8,7 @@ Append-only (idempotent skip if file already exists). Tick numbers are
 monotonic per lane. See spec
 ``docs/superpowers/specs/2026-05-17-v9-a9-fleet-ledger-design.md``.
 """
+
 from __future__ import annotations
 
 import json

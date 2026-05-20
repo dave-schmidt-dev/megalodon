@@ -45,30 +45,36 @@ class Journal:
             os.fsync(f.fileno())
 
     def write_pending(self, rid: str, intent: str, target: str, payload: dict) -> None:
-        self._append({
-            "rid": rid,
-            "status": "PENDING",
-            "intent": intent,
-            "target": target,
-            "payload": payload,
-            "utc": _utc(),
-        })
+        self._append(
+            {
+                "rid": rid,
+                "status": "PENDING",
+                "intent": intent,
+                "target": target,
+                "payload": payload,
+                "utc": _utc(),
+            }
+        )
 
     def write_applied(self, rid: str, summary: str) -> None:
-        self._append({
-            "rid": rid,
-            "status": "APPLIED",
-            "summary": summary,
-            "utc": _utc(),
-        })
+        self._append(
+            {
+                "rid": rid,
+                "status": "APPLIED",
+                "summary": summary,
+                "utc": _utc(),
+            }
+        )
 
     def write_rejected(self, rid: str, reason: str) -> None:
-        self._append({
-            "rid": rid,
-            "status": "REJECTED",
-            "reason": reason,
-            "utc": _utc(),
-        })
+        self._append(
+            {
+                "rid": rid,
+                "status": "REJECTED",
+                "reason": reason,
+                "utc": _utc(),
+            }
+        )
 
     # ---- replay ----
 

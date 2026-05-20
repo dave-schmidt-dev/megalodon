@@ -57,9 +57,12 @@ class GeminiAdapter(_FollowupArgvDefault):
         approval = "yolo" if output_format in ("write", "yolo") else "plan"
         argv = [
             "gemini",
-            "-p", prompt_or_launch_path,
-            "-m", model,
-            "--approval-mode", approval,
+            "-p",
+            prompt_or_launch_path,
+            "-m",
+            model,
+            "--approval-mode",
+            approval,
         ]
         return argv, {}
 

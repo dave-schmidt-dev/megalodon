@@ -6,6 +6,7 @@ returns the expected v9.1-extended response shapes.
 
 P5.4 deliverable — back-compat promise tests.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,8 +26,13 @@ _CSRF = "test-csrf-back-compat"
 _APP_CONFIG = AppConfig(csrf_token=_CSRF, poll_interval_seconds=0.05)
 
 
-async def _wait_for_applied(client: AsyncClient, request_id: str, mission_dir: Path,
-                             timeout: float = 5.0, poll_interval: float = 0.05) -> dict:
+async def _wait_for_applied(
+    client: AsyncClient,
+    request_id: str,
+    mission_dir: Path,
+    timeout: float = 5.0,
+    poll_interval: float = 0.05,
+) -> dict:
     """Drive the queue applier then poll until status != 'pending'."""
     from megalodon_ui.queue.applier import Applier
 
@@ -67,6 +73,7 @@ def test_factory_boots_against_v9_0_fixture(queue_mission: Path):
     )
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
     from fastapi import FastAPI
+
     assert isinstance(app, FastAPI)
 
 
@@ -79,7 +86,9 @@ def test_factory_boots_against_v9_0_fixture(queue_mission: Path):
 async def test_api_v1_config_returns_v9_1_extended_shape(queue_mission: Path):
     """GET /api/v1/config returns both v9.0 legacy keys and v9.1 extension keys."""
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         r = await client.get("/api/v1/config")
     assert r.status_code == 200, r.text
     data = r.json()
@@ -100,8 +109,12 @@ async def test_api_v1_config_returns_v9_1_extended_shape(queue_mission: Path):
     # Shape invariants
     assert len(data["lanes"]) == 6, f"expected 6 lanes, got {len(data['lanes'])}"
     assert len(data["phases"]) == 10, f"expected 10 phases, got {len(data['phases'])}"
-    assert data["phases"][0] == "INIT", f"first phase must be INIT, got {data['phases'][0]}"
-    assert "claude" in data["harnesses"], f"harnesses must include 'claude': {data['harnesses']}"
+    assert data["phases"][0] == "INIT", (
+        f"first phase must be INIT, got {data['phases'][0]}"
+    )
+    assert "claude" in data["harnesses"], (
+        f"harnesses must include 'claude': {data['harnesses']}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +126,9 @@ async def test_api_v1_config_returns_v9_1_extended_shape(queue_mission: Path):
 async def test_api_v1_state_returns_6_lanes_init_first(queue_mission: Path):
     """GET /api/v1/state returns 6 lane rows and an INIT-first phase navigator."""
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         r = await client.get("/api/v1/state")
     assert r.status_code == 200, r.text
     data = r.json()
@@ -143,7 +158,9 @@ async def test_api_v1_state_returns_6_lanes_init_first(queue_mission: Path):
 async def test_all_11_v1_routes_register(queue_mission: Path):
     """GET /api/v1/__contract_introspect__ lists ≥11 /api/v1/* routes."""
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         r = await client.get("/api/v1/__contract_introspect__")
     assert r.status_code == 200, r.text
     registered = r.json()["registered"]
@@ -176,7 +193,9 @@ async def test_challenge_task_id_validates(queue_mission: Path):
     """
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
     task_line = "- [ ] [LANE-A] `CHALLENGE-FOO_1` — integration test challenge"
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         r = await client.post("/api/v1/inject-task", json={"task_text": task_line})
         assert r.status_code == 202, f"expected 202, got {r.status_code}: {r.text}"
         request_id = r.json()["request_id"]
@@ -199,7 +218,9 @@ async def test_sse_stream_connects(queue_mission: Path):
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
     received_events: list[str] = []
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         async with client.stream("GET", "/api/v1/events") as response:
             assert response.status_code == 200, f"SSE status {response.status_code}"
             async for line in response.aiter_lines():
@@ -222,12 +243,17 @@ async def test_sse_stream_connects(queue_mission: Path):
 async def test_queue_applier_accepts_canonical_intent(queue_mission: Path):
     """POST STATUS_UPDATE for META lane via /api/v1/signal; assert STATUS.md updated."""
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        r = await client.post("/api/v1/signal", json={
-            "to_lane": "META",
-            "claim": "back-compat test signal",
-            "evidence": "test-evidence-ref",
-        })
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.post(
+            "/api/v1/signal",
+            json={
+                "to_lane": "META",
+                "claim": "back-compat test signal",
+                "evidence": "test-evidence-ref",
+            },
+        )
         assert r.status_code == 202, f"expected 202, got {r.status_code}: {r.text}"
         request_id = r.json()["request_id"]
         await _wait_for_applied(client, request_id, mission_dir=queue_mission)

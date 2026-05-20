@@ -8,6 +8,7 @@ filtered out by returning ``None``.
 Malformed YAML never raises — the parser swallows ``yaml.YAMLError`` and
 returns ``None`` so callers can iterate over the findings directory safely.
 """
+
 from __future__ import annotations
 
 import re

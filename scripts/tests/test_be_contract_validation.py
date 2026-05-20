@@ -1,4 +1,5 @@
 """V9 M2 BE-side contract validation tests."""
+
 from __future__ import annotations
 
 import sys

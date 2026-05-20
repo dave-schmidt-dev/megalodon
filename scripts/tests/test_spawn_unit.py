@@ -74,7 +74,9 @@ async def test_start_all_calls_new_session_once_per_lane():
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
-        patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)) as mock_new,
+        patch(
+            "megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)
+        ) as mock_new,
         patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(return_value=0)),
     ):
         await spawner.start_all()
@@ -145,8 +147,14 @@ async def test_cancellation_cleans_up_spawned_sessions():
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
-        patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(side_effect=new_session_side_effect)),
-        patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(side_effect=kill_side_effect)),
+        patch(
+            "megalodon_ui.spawn.tmux.new_session",
+            new=AsyncMock(side_effect=new_session_side_effect),
+        ),
+        patch(
+            "megalodon_ui.spawn.tmux.kill_session",
+            new=AsyncMock(side_effect=kill_side_effect),
+        ),
     ):
         task = asyncio.create_task(spawner.start_all())
         # Give lane-A time to complete and lane-B time to start blocking.
@@ -201,10 +209,23 @@ async def test_orphan_purge_only_kills_marker_tagged_sessions():
         return 0
 
     with (
-        patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=existing_sessions)),
-        patch.object(FleetSpawner, "_is_fleet_owned", new=AsyncMock(side_effect=lambda n: n == "lane-A")),
-        patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(side_effect=kill_side_effect)),
-        patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(side_effect=new_session_side_effect)),
+        patch(
+            "megalodon_ui.spawn.tmux.list_sessions",
+            new=AsyncMock(return_value=existing_sessions),
+        ),
+        patch.object(
+            FleetSpawner,
+            "_is_fleet_owned",
+            new=AsyncMock(side_effect=lambda n: n == "lane-A"),
+        ),
+        patch(
+            "megalodon_ui.spawn.tmux.kill_session",
+            new=AsyncMock(side_effect=kill_side_effect),
+        ),
+        patch(
+            "megalodon_ui.spawn.tmux.new_session",
+            new=AsyncMock(side_effect=new_session_side_effect),
+        ),
     ):
         await spawner.start_all()
 
@@ -236,15 +257,24 @@ async def test_reattach_branch_preserves_existing_marker_session():
         return 0
 
     with (
-        patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=existing_sessions)),
+        patch(
+            "megalodon_ui.spawn.tmux.list_sessions",
+            new=AsyncMock(return_value=existing_sessions),
+        ),
         patch.object(
             FleetSpawner,
             "_is_fleet_owned",
             new=AsyncMock(side_effect=lambda n: n == "lane-A"),
         ),
-        patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(side_effect=new_session_side_effect)),
+        patch(
+            "megalodon_ui.spawn.tmux.new_session",
+            new=AsyncMock(side_effect=new_session_side_effect),
+        ),
         patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(return_value=0)),
-        patch("megalodon_ui.spawn.tmux.display_message_pane_pipe", new=AsyncMock(return_value=True)),
+        patch(
+            "megalodon_ui.spawn.tmux.display_message_pane_pipe",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         await spawner.start_all()
 

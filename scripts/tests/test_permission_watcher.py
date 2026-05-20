@@ -23,7 +23,7 @@ SAMPLE_PROMPT_BLOCK = (
     "\x1b[2J\x1b[H"  # CSI clear-screen + home
     "Bash command\n"
     "mkdir -p /Users/dave/Documents/Projects/megalodon-fleet/claims/P1-F && "
-    "echo \"agent-5407\" > /Users/dave/Documents/Projects/megalodon-fleet/claims/P1-F/owner.txt\n"
+    'echo "agent-5407" > /Users/dave/Documents/Projects/megalodon-fleet/claims/P1-F/owner.txt\n'
     "Claim task P1-F atomically for this agent\n"
     "\x1b[1mDo you want to proceed?\x1b[0m\n"
     "\xe2\x9d\xaf 1. Yes\n"
@@ -139,7 +139,7 @@ def test_watcher_detects_no_space_marker(tmp_path):
     fleet_dir.mkdir()
     log = fleet_dir / "F.stream.log"
     log.write_bytes(
-        b"Bash command\npython3 -c \"import secrets\"\n"
+        b'Bash command\npython3 -c "import secrets"\n'
         b"This command requires approval\n"
         b"Doyouwanttoproceed?\n"
         b"1. Yes\n2. Yes, and don't ask again\n3. No\n"
@@ -167,7 +167,6 @@ def test_watcher_suppresses_reflash_after_clear(tmp_path):
     the prompt → prompt re-flashes in dashboard for ~1s. Fix: suppress
     same-fingerprint re-detection per lane for CLEAR_SUPPRESSION_SECONDS.
     """
-    import asyncio
 
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir()

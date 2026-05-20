@@ -42,8 +42,14 @@ def test_no_symbol_overlap():
     import megalodon_ui.constants
     import megalodon_ui._v92_constants
 
-    v92_public = {x for x in dir(megalodon_ui._v92_constants) if not x.startswith("_") and x.isupper()}
-    base_public = {x for x in dir(megalodon_ui.constants) if not x.startswith("_") and x.isupper()}
+    v92_public = {
+        x
+        for x in dir(megalodon_ui._v92_constants)
+        if not x.startswith("_") and x.isupper()
+    }
+    base_public = {
+        x for x in dir(megalodon_ui.constants) if not x.startswith("_") and x.isupper()
+    }
 
     overlap = v92_public & base_public
     assert not overlap, f"Symbol overlap found: {overlap}"

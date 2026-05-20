@@ -23,6 +23,20 @@ A blackboard multi-agent coordination protocol for parallel review, audit, synth
 - **Test mode:** the lifespan honors `MEGALODON_LIFESPAN_TEST_MODE=1` to bypass fleet spawn for integration tests that exercise request handlers without a real tmux. Set automatically by the `async_client_with_lifespan` fixture and the `scripts/tests/conftest.py` autouse fixture.
 - **Plan archive:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md` (plan v1.4) + `…-tasks.md`. See `HISTORY.md` for the implementation log.
 
+## v9.4 — Dashboard rebuild (SHIPPED 2026-05-20)
+
+- **Status:** SHIPPED. Dashboard FE fully rewritten. 30 of 31 tasks complete; dogfood gate (T4.3) remains operator-driven.
+- **Grid page** (`/lane/:short`) — replaces flat terminal layout with N-pane grid (config-driven; click a lane tile to open lane_detail modal with inject form, stale badge, restart-loop button).
+- **Activity wall** — right-side panel merging 6 event sources (findings, signals, history, queue events, inject log, approval decisions). Filter chips by source type, pause button, expandable details drawer.
+- **Stale-lanes detection** — mission header shows count of lanes exceeding 15-min staleness threshold. Restart-loop button triggers per-lane loop restart.
+- **Approve & remember flow** — operator selects a finding → extracts pattern via regex modal → persists rule to `.fleet/approval-rules.json` → merged into `--allowedTools` at next spawn. Complete audit trail in approval-rules page (CRUD UI).
+- **Page rewrites** — 6 pages migrated to v9.4 patterns: findings (severity filter + search), signals (sortable columns), mission (orchestrator actions), tasks (kanban board), approval_rules (new page), grid (N-pane layout).
+- **Backend endpoints** — 5 new: `POST /api/v1/lane/{short}/inject`, `POST /api/v1/lane/{short}/restart-loop`, `GET /api/v1/lanes/stale`, `GET /api/v1/activity-wall` + `POST /api/v1/activity-wall/snapshot`, `GET|POST|DELETE /api/v1/approval-rules` + `POST /api/v1/approval-rules/extract`.
+- **PermissionWatcher.on_change callback** — (lane, info, action) signature where action is approve/approve_remember/deny. Activity wall surfaces these lifecycle events.
+- **Migration note:** Fresh `.fleet/` required. Old `approval-rules.json` from prior runs is ignored (schema unversioned by design).
+- **Test coverage:** 795 Python tests pass (+126 v9.4 tests). Playwright 23 chromium-grid tests green. Pre-existing v9.3-era failures on deprecated surface (v92-dashboard, default) preserved intentionally.
+- **Plan archive:** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (plan v2 warp-complete) + tasks + synthesis + reviews. See `HISTORY.md` "V9.4 SHIPPED" for full manifest.
+
 ## v9.1 startup sequence
 
 New to v9.1? Start here before the v8 section.

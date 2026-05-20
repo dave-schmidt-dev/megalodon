@@ -4,6 +4,7 @@ Binds the listener socket FIRST, holds it open through token write and
 dashboard URL write, then hands the fd to uvicorn.Server so there is
 no probe-close-rebind window (eliminates OW-2).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -88,7 +89,9 @@ def main() -> None:
     raw_mission = args.mission_dir or str(Path(__file__).resolve().parent.parent)
     mission_dir = Path(raw_mission).resolve()
     if not mission_dir.exists() or not mission_dir.is_dir():
-        sys.stderr.write(f"mission directory does not exist or is not a directory: {mission_dir}\n")
+        sys.stderr.write(
+            f"mission directory does not exist or is not a directory: {mission_dir}\n"
+        )
         sys.exit(7)
 
     # Step 2: tmux availability + version >= 2.6.

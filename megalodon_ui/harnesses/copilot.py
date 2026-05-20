@@ -56,8 +56,10 @@ class CopilotAdapter(_FollowupArgvDefault):
         # stream-json is not supported in v9.1; fall back to text shape.
         argv = [
             "copilot",
-            "-p", prompt_or_launch_path,
-            "--model", model,
+            "-p",
+            prompt_or_launch_path,
+            "--model",
+            model,
             "--allow-all-tools",
             "--no-ask-user",
         ]

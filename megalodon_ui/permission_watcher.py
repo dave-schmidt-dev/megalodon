@@ -38,6 +38,7 @@ import asyncio
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,10 +121,10 @@ def _extract_command_preview(stripped: str, prompt_idx: int) -> str:
             best_idx = i
             best_header = header
     if best_idx >= 0:
-        excerpt = before[best_idx:best_idx + 280]
+        excerpt = before[best_idx : best_idx + 280]
         excerpt = re.sub(r"\s+", " ", excerpt).strip()
         excerpt = excerpt.split("Do you want")[0].strip()
-        return f"[{best_header}] {excerpt[len(best_header):].strip()}"
+        return f"[{best_header}] {excerpt[len(best_header) :].strip()}"
 
     # Fallback: take the last ~400 chars before the prompt and clean them.
     tail = before[-400:]
@@ -147,6 +148,7 @@ def _now_utc_iso() -> str:
 @dataclass
 class PromptInfo:
     """One pending permission prompt for a single lane."""
+
     lane_short: str
     lane_name: str
     command_preview: str
@@ -182,9 +184,23 @@ class PermissionWatcher:
         List of ``(short, name)`` tuples for every configured lane.
     """
 
-    def __init__(self, mission_dir: Path, lanes: list[tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        mission_dir: Path,
+        lanes: list[tuple[str, str]],
+        on_change: Callable[[str, PromptInfo | None, str | None], None] | None = None,
+    ) -> None:
         self.mission_dir = mission_dir
         self.lanes = lanes
+        # Optional callback fired on every state transition:
+        #   on_change(lane_short, new_info, action)
+        # • pending-add: on_change(lane, PromptInfo, None)
+        # • clear:       on_change(lane, None, action)  — action is the respond
+        #                action string ("approve"/"approve_remember"/"deny") or
+        #                None when cleared without a specific action.
+        # A misbehaving callback must NOT crash the watcher — all calls are
+        # wrapped in try/except inside the firing helpers.
+        self._on_change = on_change
         # Lane short → current pending prompt, or None.
         self._pending: dict[str, PromptInfo | None] = {s: None for s, _ in lanes}
         self._task: asyncio.Task | None = None
@@ -234,8 +250,18 @@ class PermissionWatcher:
     # plus margin. Exposed at module level so tests can monkey-patch it tight.
     CLEAR_SUPPRESSION_SECONDS: float = 5.0
 
-    def clear_lane(self, lane_short: str) -> None:
+    def clear_lane(self, lane_short: str, action: str | None = None) -> None:
         """Mark a lane's prompt resolved (called after send-keys response).
+
+        Parameters
+        ----------
+        lane_short:
+            Short lane identifier (e.g. ``"A"``).
+        action:
+            The operator action that resolved the prompt — one of
+            ``"approve"``, ``"approve_remember"``, ``"deny"``, or ``None``
+            when cleared without a specific action (backward-compat callers
+            that omit the parameter). Forwarded to the ``on_change`` callback.
 
         Also arms a per-lane suppression window: any same-fingerprint re-match
         within ``CLEAR_SUPPRESSION_SECONDS`` is ignored, so the prompt cannot
@@ -249,6 +275,21 @@ class PermissionWatcher:
             )
         if lane_short in self._pending:
             self._pending[lane_short] = None
+        self._fire_change(lane_short, None, action)
+
+    def _fire_change(
+        self,
+        lane_short: str,
+        info: PromptInfo | None,
+        action: str | None,
+    ) -> None:
+        """Invoke ``self._on_change`` if set, swallowing any exception."""
+        if self._on_change is None:
+            return
+        try:
+            self._on_change(lane_short, info, action)
+        except Exception:
+            _log.exception("permission_watcher on_change callback raised — ignoring")
 
     # ------------------------------------------------------------------
     # Internals
@@ -297,13 +338,15 @@ class PermissionWatcher:
                     self._suppressed.pop(short, None)
             existing = self._pending[short]
             if existing is None or existing.fingerprint != fingerprint:
-                self._pending[short] = PromptInfo(
+                new_info = PromptInfo(
                     lane_short=short,
                     lane_name=name,
                     command_preview=preview,
                     detected_at_utc=_now_utc_iso(),
                     fingerprint=fingerprint,
                 )
+                self._pending[short] = new_info
+                self._fire_change(short, new_info, None)
 
     @staticmethod
     def _read_tail_stripped(path: Path) -> str:

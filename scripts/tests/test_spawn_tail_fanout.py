@@ -101,7 +101,9 @@ def _spawner(mission_dir: Path, shorts: list[str]) -> FleetSpawner:
     adapter = MagicMock()
     adapter.build_argv = MagicMock(return_value=(["stub"], {}))
     adapter.session_log_dir = MagicMock(return_value=None)
-    return FleetSpawner(mission_dir, _make_config(shorts), MagicMock(return_value=adapter), SOCKET)
+    return FleetSpawner(
+        mission_dir, _make_config(shorts), MagicMock(return_value=adapter), SOCKET
+    )
 
 
 async def _start_with_fake_tail(spawner: FleetSpawner, fake_proc: _FakeProc) -> None:
@@ -110,7 +112,10 @@ async def _start_with_fake_tail(spawner: FleetSpawner, fake_proc: _FakeProc) -> 
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
         patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)),
         patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
-        patch("megalodon_ui.spawn._spawn_tail_subprocess", new=_patch_tail_spawn(fake_proc)),
+        patch(
+            "megalodon_ui.spawn._spawn_tail_subprocess",
+            new=_patch_tail_spawn(fake_proc),
+        ),
     ):
         await spawner.start_all()
 

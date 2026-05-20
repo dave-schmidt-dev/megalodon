@@ -1,4 +1,5 @@
 """V9 A8 — tests for SIGNAL frontmatter parser."""
+
 import sys
 from pathlib import Path
 

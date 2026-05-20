@@ -18,11 +18,14 @@ import pathlib
 import sys
 from typing import Any
 
-MANUAL_TICK_BANNER = "MANUAL TICK REQUIRED — re-prompt this tab each tick or use v9.2 wrapper"
+MANUAL_TICK_BANNER = (
+    "MANUAL TICK REQUIRED — re-prompt this tab each tick or use v9.2 wrapper"
+)
 
 # ---------------------------------------------------------------------------
 # Adapter registry
 # ---------------------------------------------------------------------------
+
 
 def _load_adapters() -> dict[str, Any]:
     """Return CLI-name -> adapter mapping. Deferred import keeps FastAPI out."""
@@ -32,6 +35,7 @@ def _load_adapters() -> dict[str, Any]:
     from megalodon_ui.harnesses.copilot import CopilotAdapter
     from megalodon_ui.harnesses.cursor import CursorAdapter
     from megalodon_ui.harnesses.vibe import VibeAdapter
+
     return {
         "claude": ClaudeAdapter(),
         "codex": CodexAdapter(),
@@ -45,6 +49,7 @@ def _load_adapters() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Grid math (PM-1)
 # ---------------------------------------------------------------------------
+
 
 def _grid(n: int) -> tuple[int, int]:
     """Return (cols, rows) for an N-lane grid.
@@ -62,6 +67,7 @@ def _grid(n: int) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 # Internal plan builder (applescript subcommand only; plan subcommand removed CV-3)
 # ---------------------------------------------------------------------------
+
 
 def _build_applescript_plan(mission_dir: str | pathlib.Path) -> list[dict]:
     """Build per-lane plan dicts for render_applescript.
@@ -90,16 +96,18 @@ def _build_applescript_plan(mission_dir: str | pathlib.Path) -> list[dict]:
             cwd=mission_path,
         )
 
-        plan.append({
-            "lane": lane.name,
-            "cli": cli,
-            "model": model,
-            "argv": argv,
-            "env_overlay": env_overlay,
-            "applescript_pane_index": idx,
-            "cwd": str(mission_path),
-            "manual_tick": (cli != "claude"),
-        })
+        plan.append(
+            {
+                "lane": lane.name,
+                "cli": cli,
+                "model": model,
+                "argv": argv,
+                "env_overlay": env_overlay,
+                "applescript_pane_index": idx,
+                "cwd": str(mission_path),
+                "manual_tick": (cli != "claude"),
+            }
+        )
 
     return plan
 
@@ -107,6 +115,7 @@ def _build_applescript_plan(mission_dir: str | pathlib.Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 # AppleScript generator (PM-1 loop)
 # ---------------------------------------------------------------------------
+
 
 def _as_escape(s: str) -> str:
     """Escape for embedding inside an AppleScript double-quoted string."""
@@ -118,6 +127,7 @@ def _as_escape(s: str) -> str:
 def _badge_prefix(lane: str) -> str:
     """Return a shell fragment that sets iTerm's SetBadgeFormat escape."""
     import base64
+
     b64 = base64.b64encode(lane.encode()).decode()
     return f"printf '\\e]1337;SetBadgeFormat=%s\\a' {b64}"
 
@@ -146,7 +156,9 @@ def _pane_shell_cmd(entry: dict) -> str:
         # Claude: full argv as built by ClaudeAdapter.build_argv
         # argv = ["claude", "--print", "--model", <model>, <launch-file>]
         argv_shell = " ".join(
-            '"' + a.replace("\\", "\\\\").replace('"', '\\"') + '"' if " " in a or '"' in a else a
+            '"' + a.replace("\\", "\\\\").replace('"', '\\"') + '"'
+            if " " in a or '"' in a
+            else a
             for a in argv
         )
         return f"{badge} ; cd {cwd_q} && {argv_shell}"
@@ -167,6 +179,7 @@ def render_applescript(plan: list[dict]) -> str:
         return 'tell application "iTerm"\nend tell\n'
 
     cols, rows = _grid(n)
+
     # sess_var[i] = variable name for pane index i.
     # Use alphabetic suffixes for the first 26 panes (sessA..sessZ) for
     # readability and back-compat with existing AppleScript assertions;
@@ -180,25 +193,25 @@ def render_applescript(plan: list[dict]) -> str:
 
     lines: list[str] = []
     lines.append('tell application "iTerm"')
-    lines.append('    activate')
-    lines.append('    set newWindow to (create window with default profile)')
-    lines.append(f'    set {sess_vars[0]} to current session of newWindow')
-    lines.append('')
+    lines.append("    activate")
+    lines.append("    set newWindow to (create window with default profile)")
+    lines.append(f"    set {sess_vars[0]} to current session of newWindow")
+    lines.append("")
 
     # Build top row (row 0): split vertically to create all columns.
     # sess0 is top-left. Split sess[col-1] vertically to get sess[col].
     for col in range(1, min(cols, n)):
         prev = sess_vars[col - 1]
         curr = sess_vars[col]
-        lines.append(f'    tell {prev}')
-        lines.append(f'        set {curr} to (split vertically with default profile)')
-        lines.append('    end tell')
+        lines.append(f"    tell {prev}")
+        lines.append(f"        set {curr} to (split vertically with default profile)")
+        lines.append("    end tell")
 
     # Set names for top row
     for col in range(min(cols, n)):
-        lines.append(f'    tell {sess_vars[col]}')
+        lines.append(f"    tell {sess_vars[col]}")
         lines.append(f'        set name to "{plan[col]["lane"]}"')
-        lines.append('    end tell')
+        lines.append("    end tell")
 
     # Fill remaining rows: split each column head horizontally to get row r.
     for row in range(1, rows):
@@ -210,31 +223,34 @@ def render_applescript(plan: list[dict]) -> str:
             parent_idx = (row - 1) * cols + col
             parent = sess_vars[parent_idx]
             curr = sess_vars[pane_idx]
-            lines.append(f'    tell {parent}')
-            lines.append(f'        set {curr} to (split horizontally with default profile)')
-            lines.append('    end tell')
-            lines.append(f'    tell {curr}')
+            lines.append(f"    tell {parent}")
+            lines.append(
+                f"        set {curr} to (split horizontally with default profile)"
+            )
+            lines.append("    end tell")
+            lines.append(f"    tell {curr}")
             lines.append(f'        set name to "{plan[pane_idx]["lane"]}"')
-            lines.append('    end tell')
+            lines.append("    end tell")
 
-    lines.append('')
+    lines.append("")
 
     # Write text into each pane
     for i, entry in enumerate(plan):
         cmd = _pane_shell_cmd(entry)
         cmd_escaped = _as_escape(cmd)
-        lines.append(f'    tell {sess_vars[i]}')
+        lines.append(f"    tell {sess_vars[i]}")
         lines.append(f'        write text "{cmd_escaped}"')
-        lines.append('    end tell')
+        lines.append("    end tell")
 
     lines.append('    return "OK:" & (id of newWindow)')
-    lines.append('end tell')
+    lines.append("end tell")
     return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
 # WR-5: existing fleet check
 # ---------------------------------------------------------------------------
+
 
 def check_existing_fleet(mission_dir: str | pathlib.Path) -> str | None:
     """Return a session ID string if .fleet-ledger/ has an active session, else None."""
@@ -252,8 +268,10 @@ def check_existing_fleet(mission_dir: str | pathlib.Path) -> str | None:
 # __main__ CLI
 # ---------------------------------------------------------------------------
 
+
 def _cmd_applescript(args: list[str]) -> None:
     import argparse
+
     p = argparse.ArgumentParser()
     p.add_argument("--mission-dir", required=True)
     opts = p.parse_args(args)
@@ -274,13 +292,19 @@ def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
     if not argv:
-        print("Usage: python3 -m scripts._launch_helpers <applescript> [opts]", file=sys.stderr)
+        print(
+            "Usage: python3 -m scripts._launch_helpers <applescript> [opts]",
+            file=sys.stderr,
+        )
         sys.exit(1)
     cmd, rest = argv[0], argv[1:]
     if cmd == "applescript":
         _cmd_applescript(rest)
     else:
-        print(f"Unknown subcommand: {cmd!r} (hint: 'plan' moved to megalodon_ui.preview)", file=sys.stderr)
+        print(
+            f"Unknown subcommand: {cmd!r} (hint: 'plan' moved to megalodon_ui.preview)",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-import yaml
 
 from megalodon_ui.mission_config import load_mission_config, MissionConfig
 from megalodon_ui.mission_config.__main__ import main

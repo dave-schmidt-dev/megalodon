@@ -77,7 +77,9 @@ async def test_pipe_pane_preserved_across_respawn(tmp_path: Path):
         return_value=([str(_STUB), "long"], {}),
     )
     adapter.session_log_dir = MagicMock(return_value=None)
-    spawner = FleetSpawner(mission_dir, _make_config(), MagicMock(return_value=adapter), sock)
+    spawner = FleetSpawner(
+        mission_dir, _make_config(), MagicMock(return_value=adapter), sock
+    )
 
     try:
         await spawner.start_all()

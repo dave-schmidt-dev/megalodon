@@ -25,7 +25,9 @@ from megalodon_ui.harnesses.vibe import VibeAdapter
 def test_claude_session_log_dir_is_sanitised_cwd_under_projects():
     cwd = pathlib.Path("/tmp/megalodon-fix-medium")
     d = ClaudeAdapter().session_log_dir(cwd)
-    assert d == pathlib.Path.home() / ".claude" / "projects" / "tmp-megalodon-fix-medium"
+    assert (
+        d == pathlib.Path.home() / ".claude" / "projects" / "tmp-megalodon-fix-medium"
+    )
 
 
 def test_claude_session_log_dir_handles_root_cwd():

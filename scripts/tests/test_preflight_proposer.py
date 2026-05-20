@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from megalodon_ui.preflight.proposer import build_initial_prompt, build_refine_prompt
 

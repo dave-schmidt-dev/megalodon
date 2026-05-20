@@ -28,6 +28,8 @@ const PROJECT_TO_LABEL: Record<string, string> = {
   'chromium-mutations': 'mut-c',
   'chromium-failure-modes': 'fail-c',
   'chromium-v92-dashboard': 'v92-c',
+  'chromium-grid': 'grid-c',
+  'chromium-grid-smoke': 'smoke-c',
   'webkit-default': 'def-w',
   'webkit-mutations': 'mut-w',
   'webkit-failure-modes': 'fail-w',

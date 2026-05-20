@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator, StringConstraints
 # operator's regex (so operator can't accidentally weaken it).
 _FORBIDDEN_TASK_ID_CHARS = ("/", "\\", "..", "\x00")
 
+
 def _assert_no_path_traversal(task_id: str) -> None:
     """PM-6 mitigation: clear error naming the specific char + doc link."""
     for forbidden in _FORBIDDEN_TASK_ID_CHARS:
@@ -25,7 +26,9 @@ class HarnessBinding(BaseModel):
 
 
 class LaneConfig(BaseModel):
-    name: Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_-]*$", max_length=20)]
+    name: Annotated[
+        str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_-]*$", max_length=20)
+    ]
     short: Annotated[str, StringConstraints(pattern=r"^[A-Z]{1,2}$")] | None = None
     role: str = ""
     harness: HarnessBinding
@@ -47,6 +50,7 @@ class TaskIdPattern(BaseModel):
     @classmethod
     def patterns_compile(cls, v):
         import re
+
         for p in v:
             try:
                 re.compile(p)
@@ -57,8 +61,11 @@ class TaskIdPattern(BaseModel):
 
 class MissionInfo(BaseModel):
     """Required mission identity. Consumed by M3 deterministic agent_id + UI header."""
+
     id: Annotated[str, StringConstraints(min_length=1, max_length=80)]
-    utc_started: Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")]
+    utc_started: Annotated[
+        str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+    ]
     type: str = "software-engineering"
     description: str = ""
 
@@ -67,17 +74,21 @@ class MissionConfig(BaseModel):
     schema_version: int = 1
     mission: MissionInfo
     lanes: list[LaneConfig] = Field(min_length=1)
-    phases: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_-]*$")]] = Field(min_length=1)
-    task_id_patterns: TaskIdPattern = Field(default_factory=lambda: TaskIdPattern(patterns=[r"^[A-Z][A-Za-z0-9\-\.]*$"]))
+    phases: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_-]*$")]] = (
+        Field(min_length=1)
+    )
+    task_id_patterns: TaskIdPattern = Field(
+        default_factory=lambda: TaskIdPattern(patterns=[r"^[A-Z][A-Za-z0-9\-\.]*$"])
+    )
     harness_rebinding_reserved: dict[str, Any] = Field(default_factory=dict)
 
     orchestrator_pseudo_lane: Annotated[
         str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_-]*$", max_length=20)
     ] = "ORCHESTRATOR"
 
-    task_sections: list[Annotated[str, StringConstraints(min_length=1, max_length=80)]] = Field(
-        default_factory=lambda: ["PHASE-PLAN", "OPERATOR-ACCEPTANCE"]
-    )
+    task_sections: list[
+        Annotated[str, StringConstraints(min_length=1, max_length=80)]
+    ] = Field(default_factory=lambda: ["PHASE-PLAN", "OPERATOR-ACCEPTANCE"])
 
     @field_validator("lanes")
     @classmethod
@@ -94,6 +105,7 @@ class MissionConfig(BaseModel):
             if i < 26:
                 return chr(ord("A") + i)
             return chr(ord("A") + (i // 26) - 1) + chr(ord("A") + (i % 26))
+
         seen = set()
         for i, lane in enumerate(v):
             if lane.short is None:
@@ -114,6 +126,7 @@ class MissionConfig(BaseModel):
 def validate_task_id_with_config(task_id: str, config: "MissionConfig") -> None:
     """Validate a task_id against config patterns + path-traversal guard (CR-3)."""
     import re
+
     _assert_no_path_traversal(task_id)
     if not any(re.match(p, task_id) for p in config.task_id_patterns.patterns):
         raise ValueError(f"task_id does not match any configured pattern: {task_id!r}")

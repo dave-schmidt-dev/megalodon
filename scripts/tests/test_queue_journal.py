@@ -76,7 +76,7 @@ def test_journal_skips_malformed_lines(tmp_path):
     log = tmp_path / "journal.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(
-        'not-json garbage\n'
+        "not-json garbage\n"
         '{"rid":"rid1","status":"PENDING","intent":"X","target":"Y","payload":{},"utc":"2026-01-01T00:00:00Z"}\n'
     )
     j = Journal(log)

@@ -50,7 +50,9 @@ def test_vendored_file_present_and_nonempty(filename: str) -> None:
 def test_version_txt_declares_xterm_versions() -> None:
     text = _read_version_txt()
     assert "@xterm/xterm" in text, "VERSION.txt missing @xterm/xterm declaration"
-    assert "@xterm/addon-fit" in text, "VERSION.txt missing @xterm/addon-fit declaration"
+    assert "@xterm/addon-fit" in text, (
+        "VERSION.txt missing @xterm/addon-fit declaration"
+    )
     assert re.search(r"@xterm/xterm@\d+\.\d+\.\d+", text), (
         "VERSION.txt must pin @xterm/xterm to a semver (e.g. @xterm/xterm@5.5.0)"
     )

@@ -13,7 +13,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from megalodon_ui.harnesses.gemini import GeminiAdapter
-from megalodon_ui.harnesses.base import Event
 
 ADAPTER = GeminiAdapter()
 
@@ -59,9 +58,13 @@ def test_build_argv_text_default():
         cwd=Path("/tmp"),
     )
     assert argv == [
-        "gemini", "-p", "hello",
-        "-m", "gemini-3.1-pro-preview",
-        "--approval-mode", "plan",
+        "gemini",
+        "-p",
+        "hello",
+        "-m",
+        "gemini-3.1-pro-preview",
+        "--approval-mode",
+        "plan",
     ]
     assert env == {}
 
@@ -80,9 +83,13 @@ def test_build_argv_stream_json_when_supported():
         output_format="stream-json",
     )
     assert argv == [
-        "gemini", "-p", "hello",
-        "-m", "gemini-3.1-pro-preview",
-        "--approval-mode", "plan",
+        "gemini",
+        "-p",
+        "hello",
+        "-m",
+        "gemini-3.1-pro-preview",
+        "--approval-mode",
+        "plan",
     ]
     assert env == {}
 
@@ -119,7 +126,5 @@ def test_help_smoke():
         pytest.skip("gemini CLI not found")
     if os.environ.get("CI"):
         pytest.skip("smoke tests disabled in CI")
-    result = subprocess.run(
-        ["gemini", "--help"], capture_output=True, timeout=10
-    )
+    result = subprocess.run(["gemini", "--help"], capture_output=True, timeout=10)
     assert result.returncode == 0

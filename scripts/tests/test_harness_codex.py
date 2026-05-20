@@ -13,7 +13,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from megalodon_ui.harnesses.codex import CodexAdapter
-from megalodon_ui.harnesses.base import Event
 
 ADAPTER = CodexAdapter()
 
@@ -57,8 +56,14 @@ def test_build_argv_text_default():
         cwd=Path("/tmp"),
     )
     assert argv == [
-        "codex", "exec", "-m", "gpt-5.5",
-        "-s", "read-only", "--skip-git-repo-check", "hello",
+        "codex",
+        "exec",
+        "-m",
+        "gpt-5.5",
+        "-s",
+        "read-only",
+        "--skip-git-repo-check",
+        "hello",
     ]
     assert env == {}
 
@@ -78,8 +83,14 @@ def test_build_argv_stream_json_when_supported():
     )
     # Should be identical to the text shape — no crash, no --json flag added
     assert argv == [
-        "codex", "exec", "-m", "gpt-5.5",
-        "-s", "read-only", "--skip-git-repo-check", "hello",
+        "codex",
+        "exec",
+        "-m",
+        "gpt-5.5",
+        "-s",
+        "read-only",
+        "--skip-git-repo-check",
+        "hello",
     ]
     assert env == {}
 
@@ -116,7 +127,5 @@ def test_help_smoke():
         pytest.skip("codex CLI not found")
     if os.environ.get("CI"):
         pytest.skip("smoke tests disabled in CI")
-    result = subprocess.run(
-        ["codex", "--help"], capture_output=True, timeout=10
-    )
+    result = subprocess.run(["codex", "--help"], capture_output=True, timeout=10)
     assert result.returncode == 0
