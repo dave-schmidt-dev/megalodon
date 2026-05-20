@@ -1,5 +1,17 @@
-> **Active plan:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md` (v1.4 — warp-complete) — **SHIPPED 2026-05-18**.
-> **Active task file:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17-tasks.md` — all P0-P7 tasks `done`.
+> **Active plan (v9.4 — pickup tomorrow):** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (v2 — warp-complete: self-contrarian + 3 reviewers + pre-mortem). **Status: APPROVED, READY TO IMPLEMENT.**
+> **Active task file:** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19-tasks.md` — 30 tasks across 5 phases (MVP day 1-3, Iter2 day 4-5, Iter3 day 6-7, Dogfood day 7-8, Docs).
+> **Synthesis:** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19-synthesis.md`
+> **Reviews archived:** 4 JSON files + 4 prompt files in the same `.plans/megalodon/` dir (Codex contrarian, Gemini auditor, Claude constructive, Kimi pre-mortem).
+> **Start tomorrow with Task 1.1 (router upgrade) — nothing else ships until that lands.** Tasks 1.1 + 1.2 are parallelizable (FE router + BE auth gate).
+>
+> **Plan summary:** Full FE rewrite (`pages/grid.js`, `lane_detail.js`, `approval_rules.js` + 6 rewritten existing pages + 6 new components) + 5 new BE endpoints (`inject`, `restart-loop`, `activity-wall` + snapshot, `approval-rules` CRUD, `lanes/stale`). Reuses existing `pane-stream` endpoint (server.py:1127) and CSRF infrastructure. Adds `PermissionWatcher.on_change` callback. Extends `_V92_GATED_PATH_RE` with lock-in enumeration test. ~7 working days to dogfood-ready.
+>
+> ---
+>
+> **Previous plan (v9.2 — SHIPPED 2026-05-18):** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md` (v1.4 — warp-complete).
+> **Previous task file:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17-tasks.md` — all P0-P7 tasks `done`.
+>
+> **v9.3 (interim dogfood iteration, 2026-05-19):** No formal plan — orchestrator's bug-fix sweep during a 6-hour dogfood run. Code shipped in commit `86f3ecc`; mission archive in commit `095882d`. See `docs/v9/dogfood-2026-05-19/README.md` for the run's 120 findings + 10 top failure modes (the foundation for v9.4 above).
 > v9.2 — tmux + web UI headless fleet. Implementation complete.
 >
 > **P0 — Pre-flight:** done (9/9).

@@ -8,6 +8,23 @@ Append-only log of mission events and finding completions.
 
 Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-filename> | <severity>`
 
+---
+
+## 2026-05-19 — v9.4 dashboard rebuild plan complete (warp tier)
+
+After the v9.3 dogfood (`docs/v9/dogfood-2026-05-19/`) surfaced that the BE protocol works but the dashboard is the bottleneck, ran a full warp-tier plan for v9.4. Plan + tasks + synthesis + reviews archived at `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19*`.
+
+**Warp pipeline outcome:**
+- Self-contrarian pass: 15 findings raised, 13 fixed inline.
+- 3 parallel external reviewers (Codex GPT-5.5, Gemini 3.1 Pro, Claude Opus 4.7 effort=max): 21 raw → 14 distinct findings, 13 ACCEPT / 1 ACKNOWLEDGE / 0 REJECT / 0 ESCALATE.
+- Fresh-eyes pre-mortem (Kimi K2.5 via cursor-agent): 10 failure modes + 4 systemic risks, 8 MITIGATE / 6 ACKNOWLEDGE / 0 ESCALATE.
+
+**Biggest plan changes vs draft:** dropped the proposed new `/api/v1/lane/{short}/stream` endpoint (reuses existing `pane-stream` at server.py:1127); dropped reinventing CSRF (reuses existing `X-CSRF-Token` header convention); added router path-param upgrade as Day-1 blocker (current `PAGE_LOADERS` is a flat object — `/lane/A` would fall back to dashboard); added `PermissionWatcher.on_change` callback so activity wall can surface prompt lifecycle; added auth-gate regex extension + lock-in enumeration test (3 new endpoints would have shipped unauthenticated); added `.fleet/approval-rules.json` to teardown cleanup (it was NOT actually cleared by the existing teardown); tightened pattern-extraction to keep curl localhost-scoped (was too permissive); explicit spawn.py wiring for approval rules (without which "approve & remember" silently no-ops).
+
+**Tomorrow's pickup:** start with Task 1.1 (router upgrade in `ui/static/js/app.js`) and Task 1.2 (extend `_V92_GATED_PATH_RE` in `megalodon_ui/server.py:65`). Both are parallelizable. See `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19-tasks.md`.
+
+---
+
 (use ASCII single-letter LANE codes consistently: `A` | `B` | `C` | `D` | `E` | `F` per v8 Edit 18)
 
 ---
