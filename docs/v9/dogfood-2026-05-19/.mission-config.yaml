@@ -1,0 +1,103 @@
+schema_version: 1
+mission:
+  id: megalodon-fleet
+  utc_started: '2026-05-19T15:55:06Z'
+  type: software-engineering
+  description: "v9.3 live-REPL template \u2014 claude REPL + /loop autonomous per\
+    \ lane"
+lanes:
+- name: AUDIT
+  short: A
+  role: "AUDIT \u2014 scrutinize protocol adherence, race conditions, security"
+  harness:
+    cli: claude
+    model: claude-opus-4-7
+    extra_args: []
+    auth_env: []
+  cadence_seconds: 300
+  tick_offset_seconds: 0
+  live_repl: true
+  initial_prompt: /loop Read launch-AUDIT.md and execute one iteration.
+- name: ARCHITECT
+  short: B
+  role: "ARCHITECT \u2014 design specs, ADRs, integration shapes"
+  harness:
+    cli: claude
+    model: claude-opus-4-7
+    extra_args: []
+    auth_env: []
+  cadence_seconds: 300
+  tick_offset_seconds: 0
+  live_repl: true
+  initial_prompt: /loop Read launch-ARCHITECT.md and execute one iteration.
+- name: BACKEND
+  short: C
+  role: "BACKEND \u2014 implement server/primitives/adapters in megalodon_ui/"
+  harness:
+    cli: claude
+    model: claude-sonnet-4-6
+    extra_args: []
+    auth_env: []
+  cadence_seconds: 300
+  tick_offset_seconds: 0
+  live_repl: true
+  initial_prompt: /loop Read launch-BACKEND.md and execute one iteration.
+- name: FRONTEND
+  short: D
+  role: "FRONTEND \u2014 implement UI in ui/static/, wire dashboard forms"
+  harness:
+    cli: claude
+    model: claude-sonnet-4-6
+    extra_args: []
+    auth_env: []
+  cadence_seconds: 300
+  tick_offset_seconds: 0
+  live_repl: true
+  initial_prompt: /loop Read launch-FRONTEND.md and execute one iteration.
+- name: TEST
+  short: E
+  role: "TEST \u2014 write/run pytest + playwright suites, eliminate skipped/xfail"
+  harness:
+    cli: claude
+    model: claude-sonnet-4-6
+    extra_args: []
+    auth_env: []
+  cadence_seconds: 300
+  tick_offset_seconds: 0
+  live_repl: true
+  initial_prompt: /loop Read launch-TEST.md and execute one iteration.
+- name: META
+  short: F
+  role: "META \u2014 observe agent behavior, track tick activity, mid/final reports"
+  harness:
+    cli: claude
+    model: claude-haiku-4-5-20251001
+    extra_args: []
+    auth_env: []
+  cadence_seconds: 300
+  tick_offset_seconds: 0
+  live_repl: true
+  initial_prompt: /loop Read launch-META.md and execute one iteration.
+phases:
+- INIT
+- PHASE-PLAN
+- PHASE-CHALLENGE
+- PHASE-BUILD
+- PHASE-VERIFY
+- PHASE-RUN
+- PHASE-HEAL
+- PHASE-OPERATOR-ACCEPTANCE
+- DRAINING
+- COMPLETE
+task_id_patterns:
+  patterns:
+  - ^(P\d+(\.\d+)?(-[A-F](-to-[A-F])?)?|P\d+-RUN-[A-Z0-9_-]+|REPAIR-[A-Z0-9_-]+|OPERATOR-[A-Z_-]+|S-\d+|TEST-\d+|CHALLENGE-[A-Z0-9_-]+|OA-[A-Z0-9_-]+)$
+  description: ''
+harness_rebinding_reserved: {}
+orchestrator_pseudo_lane: META
+task_sections:
+- "PHASE 1 \u2014 PLAN"
+- "PHASE 2 \u2014 BUILD"
+- "PHASE 3 \u2014 VERIFY"
+- OPERATOR-ACCEPTANCE TASKS
+- CROSS-LANE / SECONDARY TASK POOL
