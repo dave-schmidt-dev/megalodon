@@ -2,15 +2,16 @@
 
 - **Date:** 2026-05-22
 - **Author:** David Schmidt (with Claude)
-- **Status:** approved (design); pending implementation plan
+- **Status:** approved (design, rev 2 post-contrarian-review); pending implementation plan
 - **Closes:** v9.4 plan task T4.3 (dogfood gate) — prerequisite for T5.1 (final docs)
 - **Plan ref:** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19-tasks.md`
+- **Review:** 3 parallel contrarian reviewers (lifecycle/blast-radius, dogfood-validity, premortem) 2026-05-22; findings folded into rev 2 (see Changelog).
 
 ## Problem
 
 v9.4 (dashboard rebuild) is implementation-complete: 30 of 31 tasks shipped (commit
-`b1c867d`). The one remaining gate before final docs is **T4.3 — a 4-hour operator
-dogfood** that proves the new dashboard delivers full visibility into a live fleet.
+`b1c867d`). The one remaining gate before final docs is **T4.3 — a dogfood** that proves
+the new dashboard delivers full visibility into a live fleet.
 
 Two structural problems surfaced while prepping that run:
 
@@ -28,9 +29,9 @@ with templates, then runs the v9.4 dogfood as the first run through it.
 
 - Canonical per-run doc templates, duplicated and iterated each run.
 - One uniform archive location and registry for every run: `.archive/<UTC>--<slug>/` + `INDEX.md`.
-- A reliable clear-out step so no run leaves residue at the repo root.
-- Execute the v9.4 dogfood (T4.3) on top of the new lifecycle and satisfy its exit criteria.
-- Update all project docs to reflect v9.4 + the new lifecycle **before** kickoff.
+- A reliable, transactional clear-out so no run leaves residue and no run output is lost.
+- Execute the v9.4 dogfood (T4.3) on the new lifecycle with an instrumented, falsifiable gate.
+- Update the targeted project docs to reflect v9.4 + the new lifecycle **before** kickoff.
 
 ## Non-goals
 
@@ -39,20 +40,34 @@ with templates, then runs the v9.4 dogfood as the first run through it.
   planning input; it only gains an `INDEX.md` entry for registry completeness).
 - Changing the v9.1 mission-config schema or the spawn mechanism.
 
-## Key decisions (resolved during brainstorming)
+## Key decisions (resolved during brainstorming + contrarian review)
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Underlying workload | Real mission + dual charter | Authentic activity; a UI that shows "active agents/plans/tasks/comms" needs real artifacts to display. |
-| Mission topic | Harden v9.4 dashboard + clear v9.x backlog + scope v10 groundwork | Reflexive (tool improving tool) + uses already-specced backlog. |
+| Underlying workload | Real mission + dual charter | Authentic activity for the dashboard to display. |
+| Mission topic | Harden v9.4 dashboard + clear v9.x backlog + scope v10 groundwork | Reflexive + uses already-specced backlog. |
 | Lifecycle build | Template dir + lifecycle scripts | Explicit, uniform, scriptable; decouples run docs from active-repo docs. |
-| Mission dir isolation | **None — repo root, on `main`** | Same in-place model as runs 1–2; the work *is* editing this repo. |
-| Dogfood archive location | `.archive/` only | Strictly uniform with runs 1–2. |
-| Build order | lifecycle → update all docs → kick off | User-specified sequence. |
+| **Mission-ephemera location** | **`runs/<UTC>--<slug>/` subdir (rev 2)** | Fleet still edits repo source in place; bookkeeping lives in a subdir, not the repo root. Resolves data-loss, namespace collision, and false-uniformity from rev 1. |
+| Dogfood archive location | `.archive/<UTC>--<slug>/` (via `git mv`) only | Strictly uniform with runs 1–2; git-tracked = durable. |
+| **Exit gate** | **Instrumented stimulus harness (rev 2)** | Falsifiable, attributable, numeric. The 4 qualitative T4.3 claims become a secondary signal. |
+| Build order | lifecycle → pre-flight gate → update targeted docs → kick off | User-specified sequence + premortem pre-flight insert. |
 
 ## Architecture
 
 ### Part A — Run lifecycle & templates
+
+**Layout (rev 2).** A run is a self-contained subdir `runs/<UTC>--<slug>/` holding all
+mission bookkeeping (the same shape as the committed `docs/v9/dogfood-2026-05-19/`). The
+fleet's *code work* still lands in repo source (`megalodon_ui/`, `ui/`, `scripts/`, …) as
+real commits; only mission *ephemera* live in the run subdir. This keeps run docs out of
+the repo's own `README.md`/`TASKS.md`/`HISTORY.md` namespace.
+
+```
+runs/<UTC>--<slug>/
+  MISSION.md  STATUS.md  TASKS.md  HISTORY.md  README.md  .mission-config.yaml
+  launch-<LANE>.md (x6)
+  findings/  claims/  signals/  queue/  .fleet/  .mission-events
+```
 
 **`templates/run/`** — canonical run docs with `{{placeholder}}` substitution:
 
@@ -62,133 +77,195 @@ with templates, then runs the v9.4 dogfood as the first run through it.
 | `STATUS.md.tmpl` | `STATUS.md` | one-row-per-lane board (6 unclaimed rows) |
 | `TASKS.md.tmpl` | `TASKS.md` | run-scoped work queue header + empty phases |
 | `HISTORY.md.tmpl` | `HISTORY.md` | run changelog header |
-| `README.md.tmpl` | archive `README.md` | what/why/lanes/what's-here, modeled on `docs/v9/dogfood-2026-05-19/README.md` |
+| `README.md.tmpl` | archive `README.md` | what/why/lanes/what's-here, modeled on the v9.3 dogfood README |
 | `.mission-config.yaml.tmpl` | `.mission-config.yaml` | v9.1 schema; drives spawn |
+| `INDEX-entry.tmpl` | one `.archive/INDEX.md` row + notes block | used by `archive_run.sh` |
 
-Launch files (`launch-<LANE>.md`) are generated by the existing
-`scripts/gen_lane_launches.py`, not templated here.
+Launch files (`launch-<LANE>.md`) are generated by `scripts/gen_lane_launches.py` into the
+run dir, not templated here.
 
 Placeholders (minimum): `{{SLUG}}`, `{{UTC}}`, `{{DATE}}`, `{{LANES}}`,
 `{{MISSION_TITLE}}`, `{{MISSION_SUMMARY}}`, `{{EXIT_CRITERIA}}`.
 
 **`scripts/new_run.sh <slug> [--title T] [--summary S]`**
-- Refuses to run if a live mission is already active at root (existing non-empty
-  `findings/`/`claims/` or a `.mission-events` with non-terminal last line) → operator
-  must `archive_run.sh` first. Idempotent guard against clobbering an in-flight run.
-- Copies `templates/run/*` into the repo root, substitutes placeholders.
-- Initializes empty `findings/ claims/ signals/ .fleet/` (with `.gitkeep`) and a fresh
-  `.mission-events` seeded with a `RUN-START` line.
-- Runs `gen_lane_launches.py` to emit `launch-<LANE>.md` (agent-ids pre-baked).
-- Prints the launch command (applier + `launch_fleet.sh --spawn` + dashboard URL).
+- Computes `RUN_DIR=runs/<UTC>--<slug>/`; refuses if it already exists (or `--force`).
+- Refuses if another run dir under `runs/` is still **live** (see liveness grammar below)
+  unless `--force`; prints which run and how to archive it.
+- Copies `templates/run/*` into `RUN_DIR`, substitutes placeholders.
+- Initializes empty `findings/ claims/ signals/ queue/{pending,applied,rejected} .fleet/`
+  (with `.gitkeep`) and a fresh `.mission-events` seeded with a structured `RUN-START` line.
+- Runs `gen_lane_launches.py --mission-dir RUN_DIR` (agent-ids pre-baked).
+- Prints the launch command (applier + `launch_fleet.sh --mission-dir RUN_DIR --spawn`
+  + dashboard URL).
 
-**`scripts/archive_run.sh [--slug <slug>]`** (one motion)
-1. **Snapshot** → `.archive/<UTC>--<slug>/`: copy final `MISSION.md STATUS.md TASKS.md
-   HISTORY.md .mission-config.yaml`, the `findings/ claims/ signals/` trees, and
-   `.fleet/*.log`.
-2. **Register**: append a row + per-run-notes block to `.archive/INDEX.md` (from an
-   `INDEX-entry.tmpl` fragment).
-3. **Clear** (reset mission ephemera at root): empty `findings/ claims/ signals/`
-   (restore `.gitkeep`), clear `.mission-events`, restore `STATUS.md`/`TASKS.md` to
-   clean template state.
+**`scripts/archive_run.sh <run-dir>`** — transactional, re-runnable, two committed phases:
+1. **Snapshot + verify (no deletion yet).** `git mv <run-dir> .archive/<UTC>--<slug>/`
+   (tracked move; git is the durability guarantee). Verify the destination file count
+   matches source before proceeding; write a `.archived` sentinel.
+2. **Register.** Append one row + notes block to `.archive/INDEX.md` from `INDEX-entry.tmpl`;
+   dedup by run ID (re-run is a no-op, not a duplicate row).
 
-**Blast-radius boundary (load-bearing):** `archive_run.sh` operates on a fixed
-allowlist of mission ephemera + run docs. It MUST NOT delete or reset tracked source
-(`megalodon_ui/`, `ui/`, `scripts/`, `docs/`, `tests/`, config). Enforced by:
-- explicit path allowlist in the script (no globbed `rm -rf` of parent dirs),
-- a guard that aborts if `git status` shows staged deletions of tracked source,
-- tests (below).
+Because a run is a self-contained tracked subdir, "clear" is just the `git mv` — there is
+**no reset of repo-root files**, which eliminates the rev-1 blast-radius problem entirely.
 
-**Uniformity rule going forward:** every run archives to `.archive/<UTC>--<slug>/` with
-an `INDEX.md` entry. The existing `docs/v9/dogfood-2026-05-19/` stays in place (committed
-planning input) and gains a back-filled `INDEX.md` entry only.
+**Liveness grammar (rev 2).** `.mission-events` lines begin with a structured first token.
+Terminal tokens: `COMPLETE | ABORTED | DEGRADED-CLOSE`. A run is *live* iff its last
+`.mission-events` line's first token is not terminal. `archive_run.sh` requires a terminal
+line (or `--force`). This replaces the rev-1 free-text substring heuristic.
+
+**Blast-radius guard (retained, narrowed).** `new_run.sh`/`archive_run.sh` operate only on
+paths under `runs/` and `.archive/` and the `INDEX.md`. They never touch repo source. A
+guard aborts if either script is about to operate outside those roots.
+
+**Uniformity rule going forward:** every run is `runs/<UTC>--<slug>/` during the run and
+`.archive/<UTC>--<slug>/` after, with an `INDEX.md` entry. The existing
+`docs/v9/dogfood-2026-05-19/` stays in place (committed planning input) and gains a
+back-filled `INDEX.md` entry only.
+
+### Part A.5 — Pre-flight gate (NEW, rev 2; blocks kickoff)
+
+A documented checklist + a `scripts/preflight.sh` that must pass before the real dogfood:
+
+1. **Task 4.2 actually executed.** Pin test deps (single canonical list or
+   `pyproject.toml [project.optional-dependencies] test`: includes `pytest-asyncio`,
+   `freezegun`, `pytest-forked`). Add `testpaths` + `norecursedirs` to `pytest.ini` so a
+   bare `pytest` excludes `docs/` and `.archive/`. Record one canonical green command.
+   Run Playwright (`run_e2e.sh`) + contract-trace. Capture results.
+2. **Approval-friction allowlist fixed.** Add the README-mandated helper-script wildcards
+   to `.claude/settings.json` (`Bash(scripts/atomic_close.py:*)`, `Bash(scripts/poll.py:*)`,
+   `Bash(scripts/run_e2e.sh:*)`) and pre-seed `<run>/.fleet/approval-rules.json` with the
+   compound-bash patterns harvested from the 2026-05-19 archive. Assert presence.
+3. **Lifecycle scripts proven.** A throwaway smoke run: `new_run.sh smoke` → write fake
+   findings/signals → `archive_run.sh` → assert archive populated, `runs/` clean, repo
+   source untouched (`git status` shows no source changes).
+4. **Loops armed.** After spawn, assert all 6 lanes emit ≥2 STATUS heartbeats within 10 min
+   before declaring the run "started."
 
 ### Part B — The dogfood mission (T4.3), slug `v94-ui-dogfood`
 
-Six lanes; models per the v9.3 precedent:
-
-| Lane | Role | Model |
-|---|---|---|
-| A | AUDIT | opus |
-| B | ARCHITECT | opus |
-| C | BACKEND | sonnet |
-| D | FRONTEND | sonnet |
-| E | TEST | sonnet |
-| F | META | haiku |
+Six lanes; models per the v9.3 precedent: A AUDIT opus, B ARCHITECT opus, C BACKEND sonnet,
+D FRONTEND sonnet, E TEST sonnet, F META haiku.
 
 **Dual charter per lane:**
-- *Primary work* drawn from: harden the v9.4 dashboard (edge cases, error states, the
-  4 known failure modes), clear the v9.x backlog (CR-4 autonomous-loop wrapper, WR-3
-  watchdog staleness, CV-8 SIGHUP reload, the 9 run-2 residuals), and scope v10-refactor
-  groundwork.
-- *Visibility charter* — each lane owns one dashboard surface and, every tick,
-  cross-checks it against on-disk ground truth, filing a finding on any divergence:
+- *Primary work* drawn from: harden the v9.4 dashboard (edge/error states, the 4 known
+  failure modes), clear the v9.x backlog (CR-4, WR-3, CV-8, the 9 run-2 residuals), and
+  scope v10-refactor groundwork.
+- *Visibility charter* — each lane runs a **mechanical disk-vs-UI assertion** (a script,
+  not a judgment) for its surface every tick and files a finding on divergence.
 
-| UI surface | Owner lane |
-|---|---|
-| Active-agents grid | FRONTEND |
-| Plans | ARCHITECT |
-| Tasks | TEST |
-| Communication / signals | META |
-| Approval rules / friction | BACKEND |
-| Findings / activity wall | AUDIT |
+**Expanded surface matrix (rev 2 — covers what actually exists):**
 
-**Exit criteria (verbatim from T4.3):**
-- 4-hour minimum dogfood completed.
-- Operator confirms these 4 negative claims do **not** recur: *"I can't see what agents
-  are doing" / "approvals are slowing the fleet" / "snap-back to dashboard" /
-  "tab doesn't highlight."*
-- Findings archived (via `archive_run.sh`, to `.archive/<UTC>--v94-ui-dogfood/`).
+| UI surface | Component / endpoint | Owner lane |
+|---|---|---|
+| Active-agents grid | `grid.js` | FRONTEND |
+| **Terminal panes (live bytes/ANSI)** | `terminal_pane.js` | FRONTEND |
+| Plans | mission/plan view | ARCHITECT |
+| Tasks | `tasks.js` | TEST |
+| Communication / signals | `signals.js` | META (mechanical diff, not judgment) |
+| Approval rules + **approve→respawn→suppression** | `approval_rules.js`, spawn.py | BACKEND |
+| Findings / activity wall | `activity_wall.js` | AUDIT |
+| **Stale-lane badge** | `stale_modal.js`, `/api/v1/lanes/stale` | AUDIT |
+| **Inject / restart-loop round-trip** | `lane_detail.js`, server.py inject/restart | TEST |
 
-### Part C — Doc updates (before kickoff)
+**Scope of the agent charter (rev 2 clarification):** agents validate *data fidelity*
+(disk == UI). *Interaction fidelity* (navigation/snap-back, tab highlight, inject UX,
+terminal rendering under load, approve-and-remember UX) is validated by the **stimulus
+harness + Playwright + operator**, not by the agents (agents coordinate via disk, so they
+don't exercise operator click-paths).
 
-- `README.md` — v9.4 dashboard section + new run-lifecycle section + link to `docs/v9/api-contract.md`.
+**Instrumented exit gate (rev 2 — replaces absence-of-complaint):** a stimulus harness
+forces each surface to receive a known artifact and asserts the dashboard reflects it,
+with numeric pass/fail and deadlines. Built on existing endpoints (`__fake__/emit`,
+`__fake__/set_state`, `_test/stale_override`). Required assertions:
+
+| Prior failure mode | Forced stimulus | Pass assertion |
+|---|---|---|
+| #1 can't see agents | live bytes to a lane stream | terminal pane shows them; time-to-visibility < 60s |
+| #2 approval friction | run a burst of compound-bash | operator approval clicks/hr < 10 (prior ~50); measured from inject/permission logs |
+| #3 buried/blocked lane | force a blocked lane | dashboard surfaces blocked state < 60s (the 195-min invisible-block class) |
+| #4 stale-lane false/miss | `_test/stale_override` | stale badge appears for the right lane, clears on recovery |
+| #5 snap-back | Playwright: click each of 7 tabs during a slow `loadConfig()` | active page stable; URL unchanged |
+| "tab doesn't highlight" | Playwright: visit each route | `aria-current` set on correct nav element (app.js sets it — assert it) |
+| #2 rule suppression | forced respawn after approve-and-remember | next identical prompt is suppressed |
+| #6/#7 empty/wrong-key | empty surface + lane-key cases | empty-state renders; no silent placeholder fallthrough |
+| SSE health | kill the stream | reconnect/error banner shown (`activity_wall.js` onerror) |
+
+**Secondary signal (qualitative, retained from T4.3):** during a soak alongside the
+harness, the operator confirms the 4 original claims don't recur. This is *corroboration*,
+not the gate.
+
+**Done when:** the instrumented assertions pass; a soak (≥2h, plus the harness) shows no
+latency drift; findings archived via `archive_run.sh` to `.archive/<UTC>--v94-ui-dogfood/`.
+
+### Part C — Update targeted docs (before kickoff) — scoped to 5 files (rev 2)
+
+"All docs" was a scope trap (175 `.md` files exist). Targeted set only:
+- `README.md` — v9.4 dashboard section + run-lifecycle section + link to `docs/v9/api-contract.md`.
 - `HISTORY.md` — finalize the v9.4-SHIPPED entry + record the lifecycle convention.
 - root `TASKS.md` — mark T4.3 in-progress, point at the lifecycle + next plan.
 - `.archive/INDEX.md` — back-fill the v9.3 dogfood entry.
-- new `docs/v9/v9-4-RUN-LIFECYCLE.md` — the convention doc (`new_run` / `archive_run` /
-  template set / uniformity rule).
+- new `docs/v9/v9-4-RUN-LIFECYCLE.md` — the convention doc.
+
+Everything else is explicitly out of scope (T5.1 finalizes v9.4 docs *after* the dogfood).
 
 ## Data flow
 
 ```
 new_run.sh <slug>
-   templates/run/*  ──subst──>  repo root (MISSION/STATUS/TASKS/HISTORY/.mission-config)
-   gen_lane_launches.py ─────>  launch-<LANE>.md
-   init ───────────────────>  findings/ claims/ signals/ .fleet/ .mission-events(RUN-START)
+   templates/run/*  ──subst──>  runs/<UTC>--<slug>/ (MISSION/STATUS/TASKS/HISTORY/config)
+   gen_lane_launches.py ─────>  runs/<UTC>--<slug>/launch-<LANE>.md
+   init ───────────────────>  findings/ claims/ signals/ queue/ .fleet/ .mission-events(RUN-START)
         │
+        ▼  preflight.sh (4.2 green | friction allowlist | scripts proven | loops armed)
         ▼
-  start_applier.sh + launch_fleet.sh --spawn  ──>  6-lane fleet on http://localhost:8765
-        │  (fleet edits megalodon source = real commits to main;
-        │   mission ephemera accrue in findings/claims/signals/.fleet)
+  start_applier.sh + launch_fleet.sh --mission-dir runs/<…> --spawn  ──>  fleet @ :8765
+        │  (fleet edits repo source = real commits; ephemera accrue in run dir;
+        │   stimulus harness fires forced events; agents diff disk-vs-UI)
         ▼
-archive_run.sh
-   snapshot ─> .archive/<UTC>--<slug>/   (docs + ephemera + .fleet logs)
-   register ─> .archive/INDEX.md (+row +notes)
-   clear ───> reset root ephemera; STATUS/TASKS back to template
+archive_run.sh runs/<UTC>--<slug>/
+   git mv ─> .archive/<UTC>--<slug>/   (tracked move = durable; verify count; .archived sentinel)
+   register ─> .archive/INDEX.md (+row +notes, dedup by run ID)
 ```
 
 ## Testing
 
-- `scripts/` tests (pytest, matching existing `scripts/tests/` conventions):
-  - `new_run.sh` golden path: scaffolds expected files; placeholders all substituted
-    (no residual `{{...}}`); refuses when a live mission is active.
-  - `archive_run.sh` golden path: snapshot dir created with expected contents; `INDEX.md`
-    gains exactly one row; root ephemera reset to clean state.
-  - **`archive_run.sh` safety guard:** aborts and makes no changes if asked to operate
-    when tracked source deletions are staged; never touches `megalodon_ui/`/`ui/`/
-    `scripts/`/`docs/`.
-- Run on a temp fixture mission dir, not the real root.
-- The dogfood itself IS the test for the dashboard (T4.3): the 4 negative claims are the
-  pass/fail signal.
+- `scripts/` tests (pytest, matching `scripts/tests/` conventions), run on a temp fixture:
+  - `new_run.sh` golden path: scaffolds expected files in `runs/<…>/`; no residual
+    `{{...}}`; refuses when a live run exists; `--force` overrides.
+  - `archive_run.sh` golden path: `git mv` to `.archive/`; `runs/` entry gone; `INDEX.md`
+    gains exactly one row; re-run is a no-op (idempotent, no dup row).
+  - `archive_run.sh` safety: refuses a non-terminal (live) run without `--force`; never
+    operates outside `runs/`/`.archive/`/`INDEX.md`.
+  - liveness grammar: terminal-token detection across `COMPLETE`/`ABORTED`/`DEGRADED-CLOSE`.
+- `preflight.sh`: each of the 4 checks has a pass and a fail fixture.
+- Stimulus harness: each forced-stimulus → assertion pair is itself a test (can run against
+  a fake-spawner server without a real fleet).
 
 ## Risks
 
-- **`archive_run.sh` blast radius** — mitigated by path allowlist + git-status guard + tests.
-- **In-place on `main`** — fleet code edits land on `main`; acceptable per solo-dev
-  workflow, but the dogfood should commit at sane checkpoints, not one giant end commit.
-- **Chicken-and-egg** — addressed by the real-mission workload; if primary work stalls,
-  the visibility charter still generates activity (findings every tick).
+- **archive_run.sh data safety** — now a tracked `git mv` (not `rm`), verified before
+  sentinel; git history is the fallback. Residual risk is low.
+- **In-place source edits on main** — fleet code edits land on `main`; mitigate with
+  checkpoint commits (≥ every 30 min) so a half-failure is `git reset` to a checkpoint, not
+  archaeology. (User declined a branch; this is the agreed mitigation.)
+- **Operational fragility (friction, silent /loop death)** — addressed by the Part A.5
+  pre-flight gate; the run is not declared "started" until loops are proven armed.
+- **Stimulus harness ≠ full realism** — the soak + operator corroboration covers emergent
+  behavior the scripted stimuli miss.
 
 ## Open questions
 
-None blocking. (v10 scope is intentionally deferred to its own spec.)
+None blocking. (v10 scope is deferred to its own spec.)
+
+## Changelog
+
+- **rev 2 (2026-05-22, post-contrarian-review):** mission ephemera moved from repo root to
+  `runs/<UTC>--<slug>/` (resolves data-loss / namespace-collision / false-uniformity);
+  `archive_run.sh` reworked to a transactional `git mv` (no root reset); added Part A.5
+  pre-flight gate (Task 4.2 executed + test-deps pinned + `pytest.ini` testpaths +
+  settings.json friction allowlist + scripts smoke-proven + loops-armed check); exit gate
+  replaced with an instrumented stimulus harness (4 qualitative claims demoted to secondary
+  corroboration); surface matrix expanded to cover terminal panes / stale badge / inject
+  round-trip / approve→respawn suppression / empty+error states; "all docs" scoped to 5
+  files; liveness grammar defined; `queue/` added to lifecycle.
+- **rev 1 (2026-05-22):** initial approved design.
