@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Archive a run dir: git mv runs/<UTC>--<slug>/ -> .archive/<UTC>--<slug>/,
-# then append one INDEX.md row. Best-effort integrity check (git mv is the
-# atomic primitive; the file-count check only catches concurrent races).
-# Idempotent: re-running after a crash ensures the INDEX row exists.
+# Archive a run dir: move runs/<UTC>--<slug>/ -> .archive/<UTC>--<slug>/, then
+# append one INDEX.md row. .archive/ is gitignored (local cold storage), so we
+# move on disk with `mv` and untrack the run from git with `git rm --cached`
+# (a `git mv` into an ignored path would force-track the archive against
+# convention). Durability during a run comes from runs/ being git-tracked.
+# Best-effort integrity check: same-filesystem mv is atomic; the file-count
+# check catches a truncated/concurrent move. Idempotent: re-running after a
+# crash ensures the INDEX row exists.
 #
 # Usage: scripts/archive_run.sh <run-dir> [--force]
 set -euo pipefail
@@ -62,9 +66,12 @@ fi
 
 SRC_COUNT="$(find "$RUN_DIR" -type f | wc -l | tr -d ' ')"
 assert_under_runs_or_archive "$DEST"
-git -C "$REPO_ROOT" mv "$RUN_DIR" "$DEST"
+mv "$RUN_DIR" "$DEST"
 DEST_COUNT="$(find "$DEST" -type f | wc -l | tr -d ' ')"
 [[ "$SRC_COUNT" == "$DEST_COUNT" ]] || { echo "ABORT: file count mismatch ($SRC_COUNT != $DEST_COUNT)" >&2; exit 1; }
+# Untrack the run from git (it lived under the tracked runs/ tree). No-op if it
+# was never committed. Operator commits the staged deletion.
+git -C "$REPO_ROOT" rm -r --cached --quiet "runs/$NAME" 2>/dev/null || true
 touch "$DEST/.archived"
 
 register_index

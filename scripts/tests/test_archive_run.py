@@ -20,6 +20,8 @@ def _make_repo(tmp_path):
     _git(["config", "user.name", "t"], work)
     (work / "scripts").symlink_to(REPO / "scripts")
     (work / "templates").symlink_to(REPO / "templates")
+    # Reproduce the real repo: .archive/ is gitignored (local cold storage).
+    (work / ".gitignore").write_text(".archive/\n")
     (work / ".archive").mkdir()
     (work / ".archive" / "INDEX.md").write_text(
         "# Index\n\n| Run ID | Mission | Started | Completed | Wall clock | Outputs |\n|---|---|---|---|---|---|\n"
@@ -64,6 +66,14 @@ def test_archive_moves_and_registers(tmp_path):
     assert (archived[0] / "findings" / "f1.md").exists()
     idx = (work / ".archive" / "INDEX.md").read_text()
     assert "--demo" in idx
+    # .archive is local-only cold storage: the archived run must NOT be tracked.
+    tracked = _git(["ls-files", ".archive/"], work).stdout.strip()
+    assert tracked == "", f"archive should be untracked, got: {tracked}"
+    # And the run must be untracked from runs/ (staged deletion after git rm --cached).
+    still_tracked = _git(["ls-files", f"runs/{rd.name}"], work).stdout.strip()
+    assert still_tracked == "", (
+        f"run should be untracked after archive: {still_tracked}"
+    )
 
 
 def test_refuses_live_run(tmp_path):

@@ -44,6 +44,7 @@ TMP="$(mktemp -d)"
   cd "$TMP"
   git init -q && git config user.email t@t && git config user.name t
   ln -s "$REPO_ROOT/scripts" scripts; ln -s "$REPO_ROOT/templates" templates
+  printf '.archive/\n' > .gitignore   # reproduce the real repo: .archive is gitignored
   mkdir .archive
   printf '# Index\n\n| Run ID | Mission | Started | Completed | Wall clock | Outputs |\n|---|---|---|---|---|---|\n' > .archive/INDEX.md
   RUN_LIB_REPO_ROOT="$TMP" bash scripts/new_run.sh smoke --title S --summary S >/dev/null
