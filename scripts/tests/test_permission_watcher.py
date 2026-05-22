@@ -141,11 +141,31 @@ def test_stale_stream_log_marker_suppressed_when_not_on_live_pane(tmp_path):
     assert watcher.pending()[0].lane_short == "A"
 
 
-def test_confirm_live_fails_open_without_socket(tmp_path):
-    """No injected capture_fn and no tmux socket → fail open (surface prompt).
+def test_live_pane_marker_surfaces_even_when_stream_log_scrolled_out(tmp_path):
+    """Regression (FM-1, the 195-min incident): a blocking prompt repaints a
+    spinner for minutes, scrolling the marker out of the stream-log tail. The
+    live pane still shows it, so the watcher must surface it from capture-pane.
+    """
+    fleet_dir = tmp_path / ".fleet"
+    fleet_dir.mkdir()
+    log = fleet_dir / "A.stream.log"
+    # Stream log no longer contains the marker (scrolled past TAIL_BYTES).
+    log.write_bytes(b"thinking spinner repaint noise\n" * 2000)
 
-    Preserves the "never hide a real prompt" invariant on hosts/tests with no
-    live fleet; matches legacy stream-log-only behaviour.
+    live_pane = {"A": SAMPLE_PROMPT_BLOCK}  # live screen still shows the prompt
+    watcher = PermissionWatcher(
+        tmp_path, [("A", "AUDIT")], capture_fn=lambda short: live_pane[short]
+    )
+    watcher._scan_once()
+    assert len(watcher.pending()) == 1, "live-pane prompt must surface"
+    assert "mkdir" in watcher.pending()[0].command_preview
+
+
+def test_falls_back_to_stream_log_without_socket(tmp_path):
+    """No injected capture_fn and no tmux socket → use the stream-log tail.
+
+    Preserves legacy stream-log-only behaviour on hosts/tests with no live
+    fleet (capture-pane is only authoritative when a live socket exists).
     """
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir()

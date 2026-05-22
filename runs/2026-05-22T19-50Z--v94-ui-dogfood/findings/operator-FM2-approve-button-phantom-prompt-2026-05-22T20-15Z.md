@@ -32,16 +32,22 @@ lands at the (now-idle) REPL main input as stray chat input.
 
 ## Fix
 
-Add a live-screen **confirmation gate**. A stream-log marker is only surfaced if
-`tmux capture-pane -p -t lane-<short>` also shows the marker on the *current*
-screen (resolved prompts vanish there). Injectable `capture_fn` for tests; the
-gate **fails open** (surfaces the prompt) when no socket/capture is available,
-preserving the "never hide a real prompt" invariant from the 195-min incident.
-Empirically, `capture-pane -p` renders the marker as clean contiguous text
-(unlike the char-fragmented pipe-pane log), so detection is also more robust.
+Make `tmux capture-pane -p -t lane-<short>` the **authoritative detection
+source**, falling back to the stream-log tail only when no live socket exists
+(unit tests / no fleet). The live screen is correct in both directions a
+blocking prompt is always on it; an answered one is always gone — so it fixes
+**both** the phantom (FM-2) and the scroll-out blindness (FM-1) at once.
 
-Regression tests: stale-log-marker-not-on-pane → suppressed; marker-on-pane →
-surfaced; no-socket → fail open. All 23 watcher tests green.
+A first attempt used capture-pane only as a *confirmation gate* on top of
+stream-log detection. That fixed phantoms but NOT scroll-out: when blocked
+agents repainted a thinking spinner for ~19 min, the marker scrolled out of the
+32 KB stream-log tail, detection found nothing, and the gate never ran — the
+dashboard showed zero prompts while all 6 lanes were genuinely blocked
+(reproduced live this run). Hence capture-pane had to be primary, not a gate.
+
+Injectable `capture_fn` for tests. Regression tests: stale-log-marker-not-
+on-pane → suppressed; live-pane marker with scrolled-out log → surfaced;
+no-socket → stream-log fallback. All 24 watcher tests green.
 
 ## Follow-up (v10 / backlog)
 

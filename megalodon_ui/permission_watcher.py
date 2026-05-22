@@ -322,22 +322,32 @@ class PermissionWatcher:
 
     def _scan_once(self) -> None:
         for short, name in self.lanes:
-            path = self.mission_dir / ".fleet" / f"{short}.stream.log"
-            try:
-                stripped = self._read_tail_stripped(path)
-            except FileNotFoundError:
-                continue
+            # Prefer the LIVE pane (authoritative current screen) over the
+            # append-only stream log. The log is wrong in BOTH directions:
+            #   • it retains an answered prompt's marker (the REPL erases the
+            #     screen, not the byte stream) → phantom prompts (FM-2); and
+            #   • under heavy repaint (e.g. a thinking spinner ticking for
+            #     minutes while blocked) a LIVE marker scrolls out of the
+            #     TAIL_BYTES window → the prompt goes invisible (FM-1, the
+            #     195-min incident).
+            # A blocking prompt is always on the live screen and an answered
+            # one is always gone, so capture-pane is correct for both. Fall
+            # back to the stream-log tail only when no live capture is
+            # available (unit tests / no running fleet).
+            live = self._capture_pane(short)
+            if live is not None:
+                stripped = _strip_ansi(live)
+            else:
+                path = self.mission_dir / ".fleet" / f"{short}.stream.log"
+                try:
+                    stripped = self._read_tail_stripped(path)
+                except FileNotFoundError:
+                    continue
             # Use the regex so we tolerate both contiguous and fragmented
             # renders of the prompt marker. Take the LAST match (most
             # recent prompt in the tail).
             matches = list(_PROMPT_MARKER_RE.finditer(stripped))
             if not matches:
-                self._pending[short] = None
-                continue
-            # The stream-log match may be a stale (already-answered) marker.
-            # Confirm it's on the live screen before surfacing; otherwise the
-            # operator approves a phantom and "1" lands at the REPL main input.
-            if not self._confirm_live(short):
                 self._pending[short] = None
                 continue
             idx = matches[-1].start()
@@ -367,19 +377,6 @@ class PermissionWatcher:
                 )
                 self._pending[short] = new_info
                 self._fire_change(short, new_info, None)
-
-    def _confirm_live(self, short: str) -> bool:
-        """Return True if a permission prompt is on lane ``short``'s live pane.
-
-        Fails OPEN: returns True (surface the prompt) when no capture function /
-        live tmux socket is available, or when capture errors — we never hide a
-        real prompt. Only an affirmative "captured the pane and the marker is
-        NOT there" returns False, which suppresses a stale stream-log marker.
-        """
-        text = self._capture_pane(short)
-        if text is None:
-            return True  # no live screen available → fail open
-        return bool(_PROMPT_MARKER_RE.search(_strip_ansi(text)))
 
     def _capture_pane(self, short: str) -> str | None:
         """Capture lane ``short``'s visible tmux pane as text, or None.
