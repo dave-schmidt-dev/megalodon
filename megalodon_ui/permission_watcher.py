@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -189,9 +190,22 @@ class PermissionWatcher:
         mission_dir: Path,
         lanes: list[tuple[str, str]],
         on_change: Callable[[str, PromptInfo | None, str | None], None] | None = None,
+        capture_fn: Callable[[str], str | None] | None = None,
     ) -> None:
         self.mission_dir = mission_dir
         self.lanes = lanes
+        # Live-screen confirmation. The stream log is append-only, so a prompt's
+        # marker text persists in the tail long after the operator answered it
+        # (the REPL erases it from the *screen* via CSI sequences, but those
+        # bytes stay in the captured log). After the v9.3.5 TAIL_BYTES 4K→32K
+        # bump a resolved marker lingers ~8 min, so the dashboard surfaced
+        # phantom prompts and "approve" sent "1" to the REPL's main input.
+        # We confirm a detected marker is ALSO on the live tmux pane before
+        # surfacing it. ``capture_fn(short) -> pane text | None`` is injectable
+        # for tests; the default captures ``lane-<short>`` from the mission's
+        # tmux socket. Confirmation FAILS OPEN (returns the prompt) on any error
+        # or when no live socket exists — never hide a real prompt.
+        self._capture_fn = capture_fn
         # Optional callback fired on every state transition:
         #   on_change(lane_short, new_info, action)
         # • pending-add: on_change(lane, PromptInfo, None)
@@ -320,6 +334,12 @@ class PermissionWatcher:
             if not matches:
                 self._pending[short] = None
                 continue
+            # The stream-log match may be a stale (already-answered) marker.
+            # Confirm it's on the live screen before surfacing; otherwise the
+            # operator approves a phantom and "1" lands at the REPL main input.
+            if not self._confirm_live(short):
+                self._pending[short] = None
+                continue
             idx = matches[-1].start()
             preview = _extract_command_preview(stripped, idx)
             fingerprint = f"{hash(preview):x}"
@@ -347,6 +367,52 @@ class PermissionWatcher:
                 )
                 self._pending[short] = new_info
                 self._fire_change(short, new_info, None)
+
+    def _confirm_live(self, short: str) -> bool:
+        """Return True if a permission prompt is on lane ``short``'s live pane.
+
+        Fails OPEN: returns True (surface the prompt) when no capture function /
+        live tmux socket is available, or when capture errors — we never hide a
+        real prompt. Only an affirmative "captured the pane and the marker is
+        NOT there" returns False, which suppresses a stale stream-log marker.
+        """
+        text = self._capture_pane(short)
+        if text is None:
+            return True  # no live screen available → fail open
+        return bool(_PROMPT_MARKER_RE.search(_strip_ansi(text)))
+
+    def _capture_pane(self, short: str) -> str | None:
+        """Capture lane ``short``'s visible tmux pane as text, or None.
+
+        Uses the injected ``capture_fn`` when set (tests); otherwise shells out
+        to ``tmux capture-pane`` against the mission's socket. Returns None when
+        the socket is absent (no live fleet) or capture fails.
+        """
+        if self._capture_fn is not None:
+            return self._capture_fn(short)
+        socket = self.mission_dir / ".fleet" / "tmux.sock"
+        if not socket.exists():
+            return None
+        try:
+            proc = subprocess.run(
+                [
+                    "tmux",
+                    "-S",
+                    str(socket),
+                    "capture-pane",
+                    "-p",
+                    "-t",
+                    f"lane-{short}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        return proc.stdout
 
     @staticmethod
     def _read_tail_stripped(path: Path) -> str:

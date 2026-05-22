@@ -114,6 +114,48 @@ def test_watcher_fingerprint_stable_across_scans(tmp_path):
     assert fp1 == fp2
 
 
+def test_stale_stream_log_marker_suppressed_when_not_on_live_pane(tmp_path):
+    """Regression: an answered prompt's marker lingers in the append-only stream
+    log, but the live pane no longer shows it. The watcher must NOT surface it
+    (else the operator "approves" a phantom and "1" lands at the REPL main
+    input). The capture_fn returns a live pane with no marker → suppressed.
+    """
+    fleet_dir = tmp_path / ".fleet"
+    fleet_dir.mkdir()
+    log = fleet_dir / "A.stream.log"
+    # Stale marker present in the append-only log tail.
+    log.write_bytes(SAMPLE_PROMPT_BLOCK.encode("utf-8"))
+
+    # Live pane has moved on — no prompt marker on screen.
+    live_pane = {"A": "agent is thinking... no prompt here\n"}
+    watcher = PermissionWatcher(
+        tmp_path, [("A", "AUDIT")], capture_fn=lambda short: live_pane[short]
+    )
+    watcher._scan_once()
+    assert watcher.pending() == [], "stale log marker must not surface as pending"
+
+    # When the live pane DOES show the prompt, it surfaces normally.
+    live_pane["A"] = SAMPLE_PROMPT_BLOCK
+    watcher._scan_once()
+    assert len(watcher.pending()) == 1
+    assert watcher.pending()[0].lane_short == "A"
+
+
+def test_confirm_live_fails_open_without_socket(tmp_path):
+    """No injected capture_fn and no tmux socket → fail open (surface prompt).
+
+    Preserves the "never hide a real prompt" invariant on hosts/tests with no
+    live fleet; matches legacy stream-log-only behaviour.
+    """
+    fleet_dir = tmp_path / ".fleet"
+    fleet_dir.mkdir()
+    (fleet_dir / "A.stream.log").write_bytes(SAMPLE_PROMPT_BLOCK.encode("utf-8"))
+
+    watcher = PermissionWatcher(tmp_path, [("A", "AUDIT")])  # no capture_fn
+    watcher._scan_once()
+    assert len(watcher.pending()) == 1
+
+
 def test_watcher_clear_lane_explicit(tmp_path):
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir()
