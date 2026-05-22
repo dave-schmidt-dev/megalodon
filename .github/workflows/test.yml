@@ -54,32 +54,19 @@ jobs:
         if: hashFiles('package-lock.json') != ''
         run: npm ci
 
+      # Use the pyproject `test` extra as the single source of test deps so CI
+      # and the local preflight (`uv run --extra test pytest ...`) cannot drift.
+      # A hand-maintained `--with` list previously dropped freezegun, breaking
+      # collection of test_state_read.py on every push.
       - name: Unit and integration tests
         run: >
-          uv run
-          --with pytest
-          --with fastapi
-          --with "uvicorn[standard]"
-          --with sse-starlette
-          --with pyyaml
-          --with pydantic
-          --with httpx
-          --with pytest-asyncio
+          uv run --extra test
           pytest scripts/tests ui/tests/integration ui/tests/unit
           -v -m "not isolated"
 
       - name: Forked isolation pass
         run: >
-          uv run
-          --with pytest
-          --with pytest-forked
-          --with pytest-asyncio
-          --with fastapi
-          --with "uvicorn[standard]"
-          --with sse-starlette
-          --with pyyaml
-          --with pydantic
-          --with httpx
+          uv run --extra test --with pytest-forked
           pytest -p forked -m isolated
           scripts/tests ui/tests/integration ui/tests/unit
           -v
