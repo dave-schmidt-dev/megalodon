@@ -1,9 +1,10 @@
-> **Active plan (v9.4 — IMPLEMENTATION COMPLETE 2026-05-20):** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (v2 — warp-complete). **Status: 30 of 31 tasks shipped.**
-> **Status**: IMPLEMENTATION COMPLETE. T4.3 (4-hour operator dogfood) is the remaining gate before final docs (T5.1).
-> **Next action**: Operator runs dogfood: re-run 6-lane mission with v9.4 dashboard, capture findings into `docs/v9/dogfood-2026-MM-DD/`. After dogfood completion, T5.1 updates README + HISTORY + TASKS.md with final entries.
+> **Active plan (v9.4 — IMPLEMENTATION COMPLETE 2026-05-20; lifecycle + harness COMPLETE 2026-05-22):** `docs/superpowers/plans/2026-05-22-v94-dogfood-and-run-lifecycle.md`. Dashboard plan: `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (v2 — warp-complete).
+> **Status**: T4.3 IN PROGRESS — lifecycle ready, dogfood is the next operator step.
+> **Next action**: `bash scripts/preflight.sh --dry-run` → must print `PREFLIGHT: PASS`. Then `bash scripts/new_run.sh v94-ui-dogfood --title "v9.4 UI self-observation dogfood" --summary "..."`. Lifecycle convention: `docs/v9/v9-4-RUN-LIFECYCLE.md`.
 > **Plan artifacts:** Implementation plan + tasks at `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19*.md`. Synthesis + reviews also archived in same directory.
 >
-> **Shipped:** Full FE rewrite (grid.js, lane_detail.js, approval_rules.js + 6 page rewrites + new components) + 5 new BE endpoints + activity wall + approval rules + stale-lanes detection. See HISTORY.md "V9.4 SHIPPED" for full manifest.
+> **Shipped (dashboard):** Full FE rewrite (grid.js, lane_detail.js, approval_rules.js + 6 page rewrites + new components) + 5 new BE endpoints + activity wall + approval rules + stale-lanes detection. See HISTORY.md "V9.4 SHIPPED" for full manifest.
+> **Shipped (lifecycle 2026-05-22):** `scripts/new_run.sh`, `scripts/archive_run.sh`, `scripts/preflight.sh`, `scripts/_run_liveness.py`, `scripts/run_lib.sh`, `templates/run/` (7 templates), `runs_harness/stimulus.py` (stale-lane + signal-fidelity checks), `ui/tests/e2e/visibility.spec.ts` (snap-back, tab-highlight, activity-wall fidelity, empty-state).
 >
 > ---
 >

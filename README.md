@@ -23,9 +23,9 @@ A blackboard multi-agent coordination protocol for parallel review, audit, synth
 - **Test mode:** the lifespan honors `MEGALODON_LIFESPAN_TEST_MODE=1` to bypass fleet spawn for integration tests that exercise request handlers without a real tmux. Set automatically by the `async_client_with_lifespan` fixture and the `scripts/tests/conftest.py` autouse fixture.
 - **Plan archive:** `~/Documents/Projects/.plans/megalodon/v9-2-tmux-headless-fleet-2026-05-17.md` (plan v1.4) + `…-tasks.md`. See `HISTORY.md` for the implementation log.
 
-## v9.4 — Dashboard rebuild (SHIPPED 2026-05-20)
+## v9.4 — Dashboard rebuild + run lifecycle (SHIPPED 2026-05-20 / lifecycle 2026-05-22)
 
-- **Status:** SHIPPED. Dashboard FE fully rewritten. 30 of 31 tasks complete; dogfood gate (T4.3) remains operator-driven.
+- **Status:** SHIPPED. Dashboard FE fully rewritten. 30 of 31 tasks complete; dogfood gate (T4.3) in progress (lifecycle + harness ready; dogfood is the next operator step).
 - **Grid page** (`/lane/:short`) — replaces flat terminal layout with N-pane grid (config-driven; click a lane tile to open lane_detail modal with inject form, stale badge, restart-loop button).
 - **Activity wall** — right-side panel merging 6 event sources (findings, signals, history, queue events, inject log, approval decisions). Filter chips by source type, pause button, expandable details drawer.
 - **Stale-lanes detection** — mission header shows count of lanes exceeding 15-min staleness threshold. Restart-loop button triggers per-lane loop restart.
@@ -36,6 +36,18 @@ A blackboard multi-agent coordination protocol for parallel review, audit, synth
 - **Migration note:** Fresh `.fleet/` required. Old `approval-rules.json` from prior runs is ignored (schema unversioned by design).
 - **Test coverage:** 795 Python tests pass (+126 v9.4 tests). Playwright 23 chromium-grid tests green. Pre-existing v9.3-era failures on deprecated surface (v92-dashboard, default) preserved intentionally.
 - **Plan archive:** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (plan v2 warp-complete) + tasks + synthesis + reviews. See `HISTORY.md` "V9.4 SHIPPED" for full manifest.
+
+## Run lifecycle (v9.4 convention)
+
+Every mission run is scaffolded into a self-contained `runs/<UTC>--<slug>/` subdir, then archived to `.archive/<UTC>--<slug>/` with an `INDEX.md` entry when complete. No run leaves ephemera in the repo root.
+
+- **Scaffold:** `scripts/new_run.sh <slug> [--title T] [--summary S] [--exit-criteria X] [--force]`
+- **Pre-flight gate:** `scripts/preflight.sh [--dry-run]` — four automated checks (pytest scope, test deps, friction allowlist, lifecycle smoke round-trip) plus a manual loops-armed gate.
+- **Archive:** `scripts/archive_run.sh <run-dir> [--force]` — transactional `git mv` to `.archive/`, registers one INDEX row.
+- **Liveness:** determined by `.mission-events` — terminal tokens are `COMPLETE | ABORTED | DEGRADED-CLOSE`.
+- **Dashboard visibility gate:** `runs_harness/stimulus.py` (stale-lane + signal-fidelity assertions) + `ui/tests/e2e/visibility.spec.ts` (snap-back, tab-highlight, activity-wall fidelity, empty-state).
+
+Full convention: `docs/v9/v9-4-RUN-LIFECYCLE.md`. API contract: `docs/v9/api-contract.md`.
 
 ## v9.1 startup sequence
 

@@ -48,6 +48,23 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-22 — V9.4 run lifecycle + dogfood prep
+
+**Plan:** `docs/superpowers/plans/2026-05-22-v94-dogfood-and-run-lifecycle.md` (spec rev 2)
+
+**What shipped:**
+
+- **Run lifecycle scripts + templates.** `scripts/new_run.sh` scaffolds `runs/<UTC>--<slug>/` from `templates/run/`; refuses if a live run exists. `scripts/archive_run.sh` archives via transactional `git mv` to `.archive/<UTC>--<slug>/`, verifies file count, writes `.archived` sentinel, and appends one deduped row to `.archive/INDEX.md` via `INDEX-entry.tmpl`. `scripts/run_lib.sh` provides shared helpers (UTC stamps, placeholder substitution, path guard). `scripts/_run_liveness.py` implements the liveness grammar: terminal tokens `COMPLETE | ABORTED | DEGRADED-CLOSE`; a run is live until the last non-blank `.mission-events` line's first token is terminal.
+- **Templates.** `templates/run/` — seven templates covering `MISSION`, `STATUS`, `TASKS`, `HISTORY`, `README`, `.mission-config.yaml`, and `INDEX-entry`. Minimum placeholders: `SLUG`, `UTC`, `DATE`, `LANES`, `MISSION_TITLE`, `MISSION_SUMMARY`, `EXIT_CRITERIA`.
+- **Preflight gate.** `scripts/preflight.sh [--dry-run]` — four automated checks: (1) pytest-scope (`pytest.ini` has `testpaths` + `norecursedirs` excluding `docs/` `.archive/` `runs/`), (2) test-deps (all deps resolve under `--extra test`; portable suite green, excluding `isolated`-marked real-tmux tests and the non-portable pipe-pane ANSI test), (3) friction-allowlist (`settings.json` contains the three helper-script wildcards that suppress the approval storm), (4) lifecycle-scripts smoke round-trip (`new_run.sh smoke` → terminal event → `archive_run.sh` → assert archive populated and `runs/` clean). Manual loops-armed gate skipped with `--dry-run`.
+- **Stimulus harness.** `runs_harness/stimulus.py` — two deterministic visibility checks against the live server: stale-lane (forces `_test/stale_override` → asserts `/api/v1/lanes/stale` reflects it) and signal-fidelity (writes unique `signals/*.md` → asserts `/api/v1/state` reflects it). CLI: `uv run python3 -m runs_harness.stimulus --base-url ... --json-out ...`; exits non-zero on any failure.
+- **Playwright visibility specs.** `ui/tests/e2e/visibility.spec.ts` — four suites: snap-back (URL stays on clicked tab; `_mountSeq` fix in `app.js`), tab-highlight (`aria-current="page"` on active nav link), activity-wall fidelity (real finding file → `.aw-row` in DOM), empty-state (`/signals` with no signals → `[data-testid="signals-empty"]`).
+- **Convention doc.** `docs/v9/v9-4-RUN-LIFECYCLE.md` — canonical reference for the run lifecycle.
+
+**Status of T4.3:** lifecycle and harness ready; dogfood is the next operator step. Run `scripts/preflight.sh --dry-run` before spawning.
+
+---
+
 ## 2026-05-19 — v9.4 dashboard rebuild plan complete (warp tier)
 
 After the v9.3 dogfood (`docs/v9/dogfood-2026-05-19/`) surfaced that the BE protocol works but the dashboard is the bottleneck, ran a full warp-tier plan for v9.4. Plan + tasks + synthesis + reviews archived at `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19*`.
