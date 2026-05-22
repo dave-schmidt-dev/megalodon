@@ -12,7 +12,12 @@ shift 2>/dev/null || true
 
 echo "Starting applier for mission: $MISSION_DIR"
 
-PROJECT_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || cd "$(dirname "$0")/.." && pwd)"
+# Resolve the repo root. Bind the fallback to its own assignment: the previous
+# `$(git ... || cd ... && pwd)` form parsed as `(git || cd) && pwd`, so when
+# `git rev-parse` succeeded `pwd` ALSO ran, yielding a two-line PROJECT_ROOT
+# that broke `uv --directory` with "os error 2".
+PROJECT_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null)" \
+  || PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 exec uv run --directory "$PROJECT_ROOT" \
     --with pyyaml --with pydantic \
