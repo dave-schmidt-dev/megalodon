@@ -10,6 +10,41 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-23 — Dashboard auto-open + lane-narrator layer + small-model benchmark
+
+**Dashboard auto-launch (P0 observability fix):** the `--spawn` path printed the
+dashboard URL but never opened a browser, so a live fleet was invisible. Added
+`_open_dashboard()` to `megalodon_ui/__main__.py` (after the listener binds, before
+the blocking uvicorn run, so the browser request queues — no connection-refused
+race), with a `--no-browser`/`MEGALODON_NO_BROWSER` opt-out and non-fatal failure.
+3 tests in `test_main_passes_fd_to_uvicorn.py`.
+
+**Bootstrap-prompt root cause + `launch.md` Step 0:** dogfood showed agents gating
+on permission prompts during bootstrap. Root cause was upstream of the allowlist —
+the spawn `/loop` prompt said "Read launch-X.md" with no path, so agents `find` it
+(gates). Added `launch.md` Step 0 (no orientation shell; inline dir + bounded-tool
+manifest). Also banked: `new_run.sh` doesn't validate socket-path length (late
+exit-10); META lane ran `python3` to compute its agent-id instead of using the
+baked one (stale instruction).
+
+**Narrator layer (`megalodon_ui/narrator/`):** `digest.py` parses a Claude session
+JSONL into a compact faithful event list (windowed last-14, per-line clipped,
+unanswered tool calls marked `[no result yet]`); `prompt.py` builds a few-shot
+prompt that summarizes the digest into a 1-line advisory status. Deterministic,
+model-free input layer; 6 unit tests.
+
+**Small-model benchmark (`scripts/narrator_bench.py`, `benchmarks/narrator/`):**
+benched 8 small local GGUF models on REAL captured v94h sessions through the
+production digest+prompt path. Captures wall-time/tok-s/GPU-util/peak-mem (GPU via
+`ioreg` Device Utilization %, no sudo). Emits md + html + json + a blinded-eval
+page (randomized per lane, model-hidden, reveal-and-tally). Three rounds of
+subagent faithfulness audits vs full-session ground truth showed **~80% of "model
+failures" were harness-induced** (vague prompt + ambiguous digest endings); fixing
+both took zero-fabrication candidates 2 -> 4 -> 6. Blinded human style pick ->
+**gemma-e2b locked as the production narrator default** (served GGUF on llama-server
+with `--chat-template-kwargs '{"enable_thinking":false}'` — required, Gemma 4 is a
+thinking model). Full eval writeup: `~/Documents/Projects/LLM/benchmarks/`.
+
 ## 2026-05-23 — Real-tmux test suite green (race fix + test-infra) — full suite 0 failures
 
 Investigated 8 long-standing real-tmux/ANSI test failures (initially assumed

@@ -1,0 +1,50 @@
+{
+  "ARCHITECT": [
+    "qwen3-1.7b",
+    "gemma-e2b",
+    "qwen3-4b-2507",
+    "smollm3-3b",
+    "gemma-e4b",
+    "gemma3-4b"
+  ],
+  "AUDIT": [
+    "gemma3-4b",
+    "gemma-e2b",
+    "gemma-e4b",
+    "qwen3-4b-2507",
+    "smollm3-3b",
+    "qwen3-1.7b"
+  ],
+  "BACKEND": [
+    "qwen3-4b-2507",
+    "qwen3-1.7b",
+    "gemma-e2b",
+    "gemma3-4b",
+    "gemma-e4b",
+    "smollm3-3b"
+  ],
+  "FRONTEND": [
+    "qwen3-1.7b",
+    "gemma-e2b",
+    "gemma-e4b",
+    "qwen3-4b-2507",
+    "smollm3-3b",
+    "gemma3-4b"
+  ],
+  "META": [
+    "qwen3-1.7b",
+    "gemma-e4b",
+    "smollm3-3b",
+    "gemma3-4b",
+    "qwen3-4b-2507",
+    "gemma-e2b"
+  ],
+  "TEST": [
+    "qwen3-1.7b",
+    "gemma-e4b",
+    "smollm3-3b",
+    "gemma-e2b",
+    "gemma3-4b",
+    "qwen3-4b-2507"
+  ]
+}

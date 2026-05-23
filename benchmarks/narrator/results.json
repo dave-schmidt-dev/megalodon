@@ -1,0 +1,597 @@
+{
+  "generated_utc": "2026-05-23T22:16:22Z",
+  "fixtures": [
+    {
+      "lane": "ARCHITECT",
+      "session_id": "00e0d14a-9013-4954-bd2a-adda39e47b32",
+      "n_events": 8,
+      "digest_text": "- ASKED: Read launch-ARCHITECT.md and execute one iteration.\n- SAID: I'll read the launch-ARCHITECT.md file to understand what one iteration involves.\n- TOOL: Read(launch-ARCHITECT.md)\n- RESULT: 1 # launch-ARCHITECT.md \u2014 pre-bound launch for ARCHITECT lane 2 3 > Generated from launch.md by scripts/gen_lane_launch\u2026\n- SAID: This is a Megalodon ARCHITECT-lane worker tick. Let me assess the current mission state before acting. Let me check key state files in parallel.\n- TOOL: Bash(cd /Users/dave/Documents/Projects/megalodon && ls -la && ec\u2026) \u2014 List mission dir and runs [no result yet]"
+    },
+    {
+      "lane": "AUDIT",
+      "session_id": "117d4835-6682-475d-a108-590c1d343797",
+      "n_events": 34,
+      "digest_text": "- RESULT: 1 > **Active plan (tool-surface hardening \u2014 IMPLEMENTED 2026-05-23, local commits, PENDING MANUAL GATE before push):**\u2026\n- SAID: The root `TASKS.md`/`STATUS.md` are the *project-level* trackers (run-2 from May 16, already COMPLETE). But my CWD is a fresh **v9.4 run scaffold** (`runs/2026-05-23T20-24Z--v94h/`) with its own miss\u2026\n- TOOL: Read(STATUS.md)\n- RESULT: 1 # Status board \u2014 v94-dogfood-hardened 2 3 States: `unclaimed | initialized | working: <task-id> | idle | BLOCKED | aw\u2026\n- TOOL: Read(TASKS.md)\n- RESULT: 1 # Tasks \u2014 v94-dogfood-hardened 2 3 Format: `[ ] [LANE-X] <task-id> \u2014 <description>` 4 States: `[ ]` open \u00b7 `[claimed:\u2026\n- TOOL: Read(MISSION.md)\n- RESULT: 1 # Mission \u2014 v9.4 UI dogfood on hardened tool-surface 2 3 - **Slug:** v94-dogfood-hardened 4 - **Started:** 2026-05-23\u2026\n- TOOL: Read(.mission-events)\n- RESULT: 1 RUN-START 2026-05-23T20-24Z slug=v94-dogfood-hardened 2\n- TOOL: Read(README.md)\n- RESULT: 1 # Run \u2014 v94-dogfood-hardened (2026-05-23) 2 3 Re-run the v9.4 UI self-observation dogfood on the bounded fleet allowl\u2026\n- SAID: Now the picture is clear. This is a **fresh v9.4 dogfood run at INIT phase**: - `.mission-events` shows only `RUN-START` \u2014 no phase flips yet - All 6 lanes `unclaimed`, TASKS.md phases empty - I'm th\u2026\n- TOOL: Bash(cd /Users/dave/Documents/Projects/megalodon && ls -la runs/\u2026) \u2014 Inspect queue dir, applier lock, and bootstrap scripts [no result yet]"
+    },
+    {
+      "lane": "BACKEND",
+      "session_id": "a3bbb58c-d186-40b1-a312-59fdbd75f927",
+      "n_events": 5,
+      "digest_text": "- ASKED: Read launch-BACKEND.md and execute one iteration.\n- SAID: I'll read `launch-BACKEND.md` first to understand what this loop should do, then execute the first iteration.\n- TOOL: Bash(find /Users/dave/Documents/Projects/megalodon -name \"launch\u2026) \u2014 Find launch-BACKEND.md in the project\n- RESULT: The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_stri\u2026"
+    },
+    {
+      "lane": "FRONTEND",
+      "session_id": "314fd996-0a06-43fd-beb7-8eb11ff624d2",
+      "n_events": 13,
+      "digest_text": "- ASKED: Read launch-FRONTEND.md and execute one iteration.\n- SAID: I'll read `launch-FRONTEND.md` now to understand what one iteration involves.\n- TOOL: Bash(find /Users/dave/Documents/Projects/megalodon/runs/2026-05-\u2026) \u2014 Find launch-FRONTEND.md in the working directory\n- RESULT: /Users/dave/Documents/Projects/megalodon/runs/2026-05-23T20-24Z--v94h/launch-FRONTEND.md\n- TOOL: Read(launch-FRONTEND.md)\n- RESULT: 1 # launch-FRONTEND.md \u2014 pre-bound launch for FRONTEND lane 2 3 > Generated from launch.md by scripts/gen_lane_launches\u2026\n- SAID: This is a Megalodon mission worker loop. I'm agent-2512, FRONTEND lane. Let me read the mission state files in parallel.\n- TOOL: Read(STATUS.md)\n- RESULT: 1 # Status board 2 3 One row per lane. Workers self-claim a lane by editing the row. 4 5 States: `unclaimed | initializ\u2026\n- TOOL: Bash(tail -5 /Users/dave/Documents/Projects/megalodon/queue/.app\u2026) \u2014 Check applier liveness heartbeat [no result yet]\n- TOOL: Bash(tail -3 /Users/dave/Documents/Projects/megalodon/.mission-e\u2026) \u2014 Read last mission events [no result yet]"
+    },
+    {
+      "lane": "META",
+      "session_id": "15e30973-b59f-4f13-8cb2-7649146d5110",
+      "n_events": 22,
+      "digest_text": "- SAID: Reading launch-META.md \u2014 this is a Megalodon v8 mission protocol. I'm agent-0d91 on the META lane. Let me now execute Step 1 by reading the protocol and mission files in order.\n- TOOL: Read(README.md)\n- RESULT: 1 # Megalodon Coordination Protocol 2 3 A blackboard multi-agent coordination protocol for parallel review, audit, synt\u2026\n- TOOL: Read(MISSION.md)\n- RESULT: 1 # Mission 2 3 **Mission ID:** `2026-05-16T17-30Z--megalodon-run2-make-it-work` 4 **Started:** *(set on first PHASE-FL\u2026\n- TOOL: Read(TASKS.md)\n- RESULT: 1 > **Active plan (tool-surface hardening \u2014 IMPLEMENTED 2026-05-23, local commits, PENDING MANUAL GATE before push):**\u2026\n- SAID: Now let me check the current mission state by reading .mission-events and STATUS.md to understand where we are:\n- TOOL: Read(.mission-events)\n- RESULT: File does not exist. Note: your current working directory is /Users/dave/Documents/Projects/megalodon/runs/2026-05-23T2\u2026\n- TOOL: Read(STATUS.md)\n- RESULT: 1 # Status board 2 3 One row per lane. Workers self-claim a lane by editing the row. 4 5 States: `unclaimed | initializ\u2026\n- SAID: Let me check the mission root directory to understand the setup:\n- TOOL: Bash(cd /Users/dave/Documents/Projects/megalodon && ls -la | hea\u2026) \u2014 Check mission root directory structure [no result yet]"
+    },
+    {
+      "lane": "TEST",
+      "session_id": "9c069b4f-068d-4083-948a-25ec97900459",
+      "n_events": 37,
+      "digest_text": "- SAID: Let me check what files exist in this run directory and the run's TASKS.md.\n- TOOL: Bash(ls /Users/dave/Documents/Projects/megalodon/runs/2026-05-23\u2026) \u2014 List files in the current run directory\n- RESULT: claims feedback findings HISTORY.md launch-ARCHITECT.md launch-AUDIT.md launch-BACKEND.md launch-FRONTEND.md launch-MET\u2026\n- TOOL: Read(TASKS.md)\n- RESULT: 1 # Tasks \u2014 v94-dogfood-hardened 2 3 Format: `[ ] [LANE-X] <task-id> \u2014 <description>` 4 States: `[ ]` open \u00b7 `[claimed:\u2026\n- TOOL: Read(MISSION.md)\n- RESULT: 1 # Mission \u2014 v9.4 UI dogfood on hardened tool-surface 2 3 - **Slug:** v94-dogfood-hardened 4 - **Started:** 2026-05-23\u2026\n- SAID: The TASKS.md is empty \u2014 this run is freshly scaffolded. Let me check the applier heartbeat and queue structure before claiming anything.\n- TOOL: Bash(ls /Users/dave/Documents/Projects/megalodon/runs/2026-05-23\u2026) \u2014 Check queue directory contents\n- RESULT: applied journal.log pending rejected exists\n- TOOL: Read(heartbeat.txt)\n- RESULT: 1 2026-05-23T20:47:07Z 2\n- SAID: The applier heartbeat is fresh (20:47:07Z). Let me check if scripts are available relative to the run directory or at the megalodon root.\n- TOOL: Bash(ls /Users/dave/Documents/Projects/megalodon/runs/2026-05-23\u2026) \u2014 Check scripts location [no result yet]"
+    }
+  ],
+  "results": [
+    {
+      "model": "gemma-e2b",
+      "lane": "ARCHITECT",
+      "output": "Read launch-ARCHITECT.md and is assessing the current mission state by listing files in the mission directory.",
+      "latency_s": 0.1495042500027921,
+      "words": 16,
+      "sentences": 2,
+      "tok_s": 168.39454108826803,
+      "completion_tokens": 23
+    },
+    {
+      "model": "gemma-e2b",
+      "lane": "AUDIT",
+      "output": "Read STATUS.md, TASKS.md, MISSION.md, and .mission-events to assess the current state of the v9.4 dogfood run.",
+      "latency_s": 0.35359329101629555,
+      "words": 16,
+      "sentences": 6,
+      "tok_s": 156.95630336514316,
+      "completion_tokens": 35
+    },
+    {
+      "model": "gemma-e2b",
+      "lane": "BACKEND",
+      "output": "Attempted to find launch-BACKEND.md in the project, but the tool use was rejected.",
+      "latency_s": 0.19847741699777544,
+      "words": 13,
+      "sentences": 2,
+      "tok_s": 163.1200415214651,
+      "completion_tokens": 22
+    },
+    {
+      "model": "gemma-e2b",
+      "lane": "FRONTEND",
+      "output": "Read launch-FRONTEND.md and STATUS.md, and is checking applier liveness heartbeat and mission events.",
+      "latency_s": 0.24115129199344665,
+      "words": 13,
+      "sentences": 3,
+      "tok_s": 159.34731340429602,
+      "completion_tokens": 25
+    },
+    {
+      "model": "gemma-e2b",
+      "lane": "META",
+      "output": "Read README.md, MISSION.md, and TASKS.md, and checked .mission-events and STATUS.md.",
+      "latency_s": 0.26480266702128574,
+      "words": 10,
+      "sentences": 6,
+      "tok_s": 157.6752823555519,
+      "completion_tokens": 27
+    },
+    {
+      "model": "gemma-e2b",
+      "lane": "TEST",
+      "output": "Checked run directory files and queue contents, found pending rejected, and confirmed a fresh applier heartbeat.",
+      "latency_s": 0.2254287079849746,
+      "words": 16,
+      "sentences": 1,
+      "tok_s": 161.24202427844193,
+      "completion_tokens": 21
+    },
+    {
+      "model": "gemma-e4b",
+      "lane": "ARCHITECT",
+      "output": "Read launch-ARCHITECT.md and is running a command to list the mission directory contents.",
+      "latency_s": 0.19745237499591894,
+      "words": 13,
+      "sentences": 2,
+      "tok_s": 110.50822733752527,
+      "completion_tokens": 20
+    },
+    {
+      "model": "gemma-e4b",
+      "lane": "AUDIT",
+      "output": "Ran a directory listing in the runs/ folder to inspect the queue directory and bootstrap scripts.",
+      "latency_s": 0.3817429590271786,
+      "words": 16,
+      "sentences": 1,
+      "tok_s": 105.7200089027376,
+      "completion_tokens": 19
+    },
+    {
+      "model": "gemma-e4b",
+      "lane": "BACKEND",
+      "output": "Tried to find launch-BACKEND.md using find, but the operator rejected the tool use.",
+      "latency_s": 0.30042600000160746,
+      "words": 13,
+      "sentences": 2,
+      "tok_s": 104.87519851376862,
+      "completion_tokens": 21
+    },
+    {
+      "model": "gemma-e4b",
+      "lane": "FRONTEND",
+      "output": "Read launch-FRONTEND.md, STATUS.md, and is running tail commands on mission event and applier files.",
+      "latency_s": 0.37652554200030863,
+      "words": 14,
+      "sentences": 3,
+      "tok_s": 107.0461039335326,
+      "completion_tokens": 26
+    },
+    {
+      "model": "gemma-e4b",
+      "lane": "META",
+      "output": "Read README.md, MISSION.md, and TASKS.md, then ran Bash(cd /Users/dave/Documents/Projects/megalodon && ls -la | hea...) to check the mission root directory structure.",
+      "latency_s": 0.6231100829900242,
+      "words": 21,
+      "sentences": 5,
+      "tok_s": 102.47015818046458,
+      "completion_tokens": 49
+    },
+    {
+      "model": "gemma-e4b",
+      "lane": "TEST",
+      "output": "Listed files in the run directory, read TASKS.md and MISSION.md, and ran ls on the queue directory.",
+      "latency_s": 0.3942138749989681,
+      "words": 17,
+      "sentences": 3,
+      "tok_s": 105.21459731136237,
+      "completion_tokens": 26
+    },
+    {
+      "model": "gemma3-4b",
+      "lane": "ARCHITECT",
+      "output": "Read launch-ARCHITECT.md and is listing the mission directory.",
+      "latency_s": 0.12424229198950343,
+      "words": 8,
+      "sentences": 2,
+      "tok_s": 148.97357208831153,
+      "completion_tokens": 15
+    },
+    {
+      "model": "gemma3-4b",
+      "lane": "AUDIT",
+      "output": "Read mission, tasks, and run files to assess the fresh v9.4 dogfood run.",
+      "latency_s": 0.3076677090139128,
+      "words": 13,
+      "sentences": 2,
+      "tok_s": 139.46353028683,
+      "completion_tokens": 21
+    },
+    {
+      "model": "gemma3-4b",
+      "lane": "BACKEND",
+      "output": "Tried to locate launch-BACKEND.md, but the operator rejected the tool use.",
+      "latency_s": 0.20969520797370933,
+      "words": 11,
+      "sentences": 2,
+      "tok_s": 146.51449722393582,
+      "completion_tokens": 19
+    },
+    {
+      "model": "gemma3-4b",
+      "lane": "FRONTEND",
+      "output": "Read launch-FRONTEND.md and STATUS.md to prepare for the mission iteration.",
+      "latency_s": 0.235356374992989,
+      "words": 10,
+      "sentences": 3,
+      "tok_s": 141.49327534591382,
+      "completion_tokens": 19
+    },
+    {
+      "model": "gemma3-4b",
+      "lane": "META",
+      "output": "Read launch-META.md, MISSION.md, TASKS.md, and mission events to understand the mission state.",
+      "latency_s": 0.29918125001131557,
+      "words": 12,
+      "sentences": 4,
+      "tok_s": 139.3138258255684,
+      "completion_tokens": 26
+    },
+    {
+      "model": "gemma3-4b",
+      "lane": "TEST",
+      "output": "Checked run directory, TASKS.md, and heartbeat to assess the test environment.",
+      "latency_s": 0.24379295800463296,
+      "words": 11,
+      "sentences": 2,
+      "tok_s": 139.12183207994866,
+      "completion_tokens": 18
+    },
+    {
+      "model": "granite-h-1b",
+      "lane": "ARCHITECT",
+      "output": "Read launch-ARCHITECT.md and checked mission directory; awaiting further instructions.",
+      "latency_s": 0.10766220901859924,
+      "words": 9,
+      "sentences": 2,
+      "tok_s": 184.16605277982404,
+      "completion_tokens": 17
+    },
+    {
+      "model": "granite-h-1b",
+      "lane": "AUDIT",
+      "output": "The audit run is a fresh v9.4 dogfood initiation with unclaimed lanes, awaiting user direction.",
+      "latency_s": 0.3161657080054283,
+      "words": 15,
+      "sentences": 2,
+      "tok_s": 180.464342599785,
+      "completion_tokens": 23
+    },
+    {
+      "model": "granite-h-1b",
+      "lane": "BACKEND",
+      "output": "Read launch-BACKEND.md but rejected the tool; paused awaiting further instructions.",
+      "latency_s": 0.15378633301588707,
+      "words": 10,
+      "sentences": 2,
+      "tok_s": 182.7780107301444,
+      "completion_tokens": 17
+    },
+    {
+      "model": "granite-h-1b",
+      "lane": "FRONTEND",
+      "output": "Read launch-FRONTEND.md and STATUS.md to understand the mission loop.",
+      "latency_s": 0.1854485000076238,
+      "words": 9,
+      "sentences": 3,
+      "tok_s": 181.86875494789993,
+      "completion_tokens": 17
+    },
+    {
+      "model": "granite-h-1b",
+      "lane": "META",
+      "output": "Checked mission root directory; no .mission-events file found.",
+      "latency_s": 0.17322620801860467,
+      "words": 8,
+      "sentences": 2,
+      "tok_s": 184.41285783187223,
+      "completion_tokens": 13
+    },
+    {
+      "model": "granite-h-1b",
+      "lane": "TEST",
+      "output": "Checked run directory, TASKS.md, and heartbeat; no scripts found, applier heartbeat fresh.",
+      "latency_s": 0.22306704099173658,
+      "words": 12,
+      "sentences": 2,
+      "tok_s": 179.1014225770136,
+      "completion_tokens": 21
+    },
+    {
+      "model": "lfm2-2.6b",
+      "lane": "ARCHITECT",
+      "output": "Read launch-ARCHITECT.md and is now assessing mission state files in parallel.",
+      "latency_s": 0.08866441700956784,
+      "words": 11,
+      "sentences": 2,
+      "tok_s": 229.62112514351318,
+      "completion_tokens": 18
+    },
+    {
+      "model": "lfm2-2.6b",
+      "lane": "AUDIT",
+      "output": "Read TASKS.md, STATUS.md, MISSION.md, and .mission-events to verify the fresh v9.4 dogfood run state and pipeline readiness.",
+      "latency_s": 0.3076272080070339,
+      "words": 17,
+      "sentences": 6,
+      "tok_s": 221.67369631901838,
+      "completion_tokens": 37
+    },
+    {
+      "model": "lfm2-2.6b",
+      "lane": "BACKEND",
+      "output": "Read launch-BACKEND.md from the specified path but the tool use was rejected; awaiting operator input.",
+      "latency_s": 0.18041570897912607,
+      "words": 15,
+      "sentences": 2,
+      "tok_s": 226.6233126416396,
+      "completion_tokens": 23
+    },
+    {
+      "model": "lfm2-2.6b",
+      "lane": "FRONTEND",
+      "output": "Agent-2512 is inspecting the launch-FRONTEND.md and reading the status file to analyze the mission state of the FRONTEND lane.",
+      "latency_s": 0.2654104999965057,
+      "words": 19,
+      "sentences": 2,
+      "tok_s": 223.07424189613107,
+      "completion_tokens": 32
+    },
+    {
+      "model": "lfm2-2.6b",
+      "lane": "META",
+      "output": "Read README.md, MISSION.md, and .mission-events; currently checking mission root directory structure for setup details.",
+      "latency_s": 0.22962670799461193,
+      "words": 14,
+      "sentences": 4,
+      "tok_s": 223.6654627389907,
+      "completion_tokens": 27
+    },
+    {
+      "model": "lfm2-2.6b",
+      "lane": "TEST",
+      "output": "Checked queue and scripts directory; heartbeat is fresh but applier heartbeat rejected; awaiting script availability.",
+      "latency_s": 0.20734316599555314,
+      "words": 15,
+      "sentences": 1,
+      "tok_s": 227.1084959223702,
+      "completion_tokens": 22
+    },
+    {
+      "model": "qwen3-1.7b",
+      "lane": "ARCHITECT",
+      "output": "Read launch-ARCHITECT.md to understand the pre-bound launch for ARCHITECT lane.",
+      "latency_s": 0.08353020800859667,
+      "words": 10,
+      "sentences": 2,
+      "tok_s": 275.39863953072074,
+      "completion_tokens": 20
+    },
+    {
+      "model": "qwen3-1.7b",
+      "lane": "AUDIT",
+      "output": "Read STATUS.md, TASKS.md, MISSION.md, .mission-events, and README.md to understand the current state of the audit.",
+      "latency_s": 0.18112404199200682,
+      "words": 15,
+      "sentences": 6,
+      "tok_s": 267.58691961319846,
+      "completion_tokens": 29
+    },
+    {
+      "model": "qwen3-1.7b",
+      "lane": "BACKEND",
+      "output": "Ran a find to locate launch-BACKEND.md, but the operator rejected the command; now paused awaiting direction.",
+      "latency_s": 0.12514733299030922,
+      "words": 16,
+      "sentences": 2,
+      "tok_s": 273.72362672856474,
+      "completion_tokens": 25
+    },
+    {
+      "model": "qwen3-1.7b",
+      "lane": "FRONTEND",
+      "output": "Read launch-FRONTEND.md and STATUS.md to understand the mission state and workflow.",
+      "latency_s": 0.1172130000195466,
+      "words": 11,
+      "sentences": 3,
+      "tok_s": 273.19654334478844,
+      "completion_tokens": 19
+    },
+    {
+      "model": "qwen3-1.7b",
+      "lane": "META",
+      "output": "Read README.md, MISSION.md, TASKS.md, and check the mission root directory to understand the setup.",
+      "latency_s": 0.14174149997415952,
+      "words": 14,
+      "sentences": 4,
+      "tok_s": 273.42325920524974,
+      "completion_tokens": 24
+    },
+    {
+      "model": "qwen3-1.7b",
+      "lane": "TEST",
+      "output": "Checked files in the run directory and read TASKS.md, MISSION.md to understand the run's state.",
+      "latency_s": 0.14017883298220113,
+      "words": 15,
+      "sentences": 3,
+      "tok_s": 269.29561633570626,
+      "completion_tokens": 23
+    },
+    {
+      "model": "qwen3-4b-2507",
+      "lane": "ARCHITECT",
+      "output": "Read launch-ARCHITECT.md and is listing mission directory files to assess current state.",
+      "latency_s": 0.1334401250060182,
+      "words": 12,
+      "sentences": 2,
+      "tok_s": 157.42942604545567,
+      "completion_tokens": 19
+    },
+    {
+      "model": "qwen3-4b-2507",
+      "lane": "AUDIT",
+      "output": "Readed STATUS.md, TASKS.md, MISSION.md, README.md, and .mission-events; inspected runs directory. Current run is in INIT phase with all lanes unclaimed.",
+      "latency_s": 0.41324824999901466,
+      "words": 20,
+      "sentences": 7,
+      "tok_s": 149.800922458312,
+      "completion_tokens": 38
+    },
+    {
+      "model": "qwen3-4b-2507",
+      "lane": "BACKEND",
+      "output": "Tried to locate launch-BACKEND.md, but the operator rejected the tool use; now paused awaiting direction.",
+      "latency_s": 0.2245089170173742,
+      "words": 15,
+      "sentences": 2,
+      "tok_s": 154.3249569176162,
+      "completion_tokens": 24
+    },
+    {
+      "model": "qwen3-4b-2507",
+      "lane": "FRONTEND",
+      "output": "Read launch-FRONTEND.md, STATUS.md, and checked app heartbeat and mission events for activity.",
+      "latency_s": 0.24436904198955745,
+      "words": 12,
+      "sentences": 3,
+      "tok_s": 152.57646161314932,
+      "completion_tokens": 22
+    },
+    {
+      "model": "qwen3-4b-2507",
+      "lane": "META",
+      "output": "Read README.md, MISSION.md, TASKS.md, and STATUS.md; attempted to inspect mission root directory structure.",
+      "latency_s": 0.28429270899505354,
+      "words": 13,
+      "sentences": 5,
+      "tok_s": 148.1025106337603,
+      "completion_tokens": 25
+    },
+    {
+      "model": "qwen3-4b-2507",
+      "lane": "TEST",
+      "output": "Listed run directory files, read TASKS.md, MISSION.md, and heartbeat.txt; checking scripts in run directory.",
+      "latency_s": 0.2929740420076996,
+      "words": 14,
+      "sentences": 4,
+      "tok_s": 149.83777179707357,
+      "completion_tokens": 26
+    },
+    {
+      "model": "smollm3-3b",
+      "lane": "ARCHITECT",
+      "output": "Read launch-ARCHITECT.md to understand the current iteration and assess the mission state.",
+      "latency_s": 0.10794099999475293,
+      "words": 12,
+      "sentences": 2,
+      "tok_s": 193.29962459178168,
+      "completion_tokens": 19
+    },
+    {
+      "model": "smollm3-3b",
+      "lane": "AUDIT",
+      "output": "Inspecting the project-level trackers and run-level state to orient itself on the current audit phase.",
+      "latency_s": 0.19937091699102893,
+      "words": 15,
+      "sentences": 1,
+      "tok_s": 189.44237636516914,
+      "completion_tokens": 20
+    },
+    {
+      "model": "smollm3-3b",
+      "lane": "BACKEND",
+      "output": "Operator rejected the tool use, so the agent is now paused awaiting further instructions.",
+      "latency_s": 0.1459424999775365,
+      "words": 14,
+      "sentences": 1,
+      "tok_s": 184.23790532339171,
+      "completion_tokens": 17
+    },
+    {
+      "model": "smollm3-3b",
+      "lane": "FRONTEND",
+      "output": "Reading the launch-FRONTEND.md file to understand the mission worker loop and the current lane status.",
+      "latency_s": 0.19592616701265797,
+      "words": 15,
+      "sentences": 2,
+      "tok_s": 184.24226182500337,
+      "completion_tokens": 22
+    },
+    {
+      "model": "smollm3-3b",
+      "lane": "META",
+      "output": "Inspecting the mission protocol, mission files, and current state to understand the mission setup and execution flow.",
+      "latency_s": 0.2110681670019403,
+      "words": 17,
+      "sentences": 1,
+      "tok_s": 181.66204254194741,
+      "completion_tokens": 22
+    },
+    {
+      "model": "smollm3-3b",
+      "lane": "TEST",
+      "output": "Checking the applier heartbeat and queue structure before claiming tasks in the freshly scaffolded run directory.",
+      "latency_s": 0.19560925001860596,
+      "words": 16,
+      "sentences": 1,
+      "tok_s": 187.84281313396949,
+      "completion_tokens": 20
+    }
+  ],
+  "stats": [
+    {
+      "model": "gemma-e2b",
+      "load_s": 1.022030124993762,
+      "infer_wall_s": 1.433766583999386,
+      "avg_tok_s": 161.1225843355277,
+      "peak_gpu_util": 88,
+      "avg_gpu_util": 85.0,
+      "peak_mem_mb": 3278.65625
+    },
+    {
+      "model": "gemma-e4b",
+      "load_s": 1.0132499590108637,
+      "infer_wall_s": 2.2743012080027256,
+      "avg_tok_s": 105.97238236323183,
+      "peak_gpu_util": 100,
+      "avg_gpu_util": 85.85714285714286,
+      "peak_mem_mb": 5313.40625
+    },
+    {
+      "model": "gemma3-4b",
+      "load_s": 1.0140924169973005,
+      "infer_wall_s": 1.420787167007802,
+      "avg_tok_s": 142.48008880841803,
+      "peak_gpu_util": 93,
+      "avg_gpu_util": 88.8,
+      "peak_mem_mb": 3473.34375
+    },
+    {
+      "model": "granite-h-1b",
+      "load_s": 0.5079887909814715,
+      "infer_wall_s": 1.1600832499971148,
+      "avg_tok_s": 182.13190691108989,
+      "peak_gpu_util": 94,
+      "avg_gpu_util": 90.25,
+      "peak_mem_mb": 1422.5
+    },
+    {
+      "model": "lfm2-2.6b",
+      "load_s": 0.5109956250234973,
+      "infer_wall_s": 1.279811458021868,
+      "avg_tok_s": 225.2943891102772,
+      "peak_gpu_util": 95,
+      "avg_gpu_util": 88.25,
+      "peak_mem_mb": 1821.109375
+    },
+    {
+      "model": "qwen3-1.7b",
+      "load_s": 0.5095087499939837,
+      "infer_wall_s": 0.7897327500104439,
+      "avg_tok_s": 272.10410079303807,
+      "peak_gpu_util": 89,
+      "avg_gpu_util": 71.66666666666667,
+      "peak_mem_mb": 2074.25
+    },
+    {
+      "model": "qwen3-4b-2507",
+      "load_s": 0.5079768329742365,
+      "infer_wall_s": 1.5934341669781134,
+      "avg_tok_s": 152.01200824422784,
+      "peak_gpu_util": 95,
+      "avg_gpu_util": 89.2,
+      "peak_mem_mb": 3660.0625
+    },
+    {
+      "model": "smollm3-3b",
+      "load_s": 0.5043982920178678,
+      "infer_wall_s": 1.0567144159867894,
+      "avg_tok_s": 186.78783729687711,
+      "peak_gpu_util": 91,
+      "avg_gpu_util": 88.5,
+      "peak_mem_mb": 2538.1875
+    }
+  ]
+}

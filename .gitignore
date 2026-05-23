@@ -90,3 +90,6 @@ node_modules/
 !.fleet-ledger/.gitkeep
 !scripts/tests/fixtures/**/.fleet-ledger/
 !scripts/tests/fixtures/**/.fleet-ledger/**
+
+# narrator benchmark transient audit working-file
+benchmarks/narrator/_audit_input.md
