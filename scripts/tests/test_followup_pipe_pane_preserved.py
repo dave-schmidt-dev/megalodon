@@ -7,17 +7,19 @@ silent — the SSE never delivers a new chunk and the browser pane appears
 frozen.
 
 This test:
-  1. Spawns a real tmux session running stub_harness mode=long.
+  1. Spawns a real tmux session running stub_harness mode=emit (a line every
+     0.2s), so the stream log grows only while pipe-pane is attached.
   2. Wires pipe-pane to ``.fleet/<short>.stream.log``.
-  3. Records the byte count after a baseline write.
-  4. Calls FleetSpawner.respawn() with a new argv (still stub_harness).
-  5. Polls the stream log size and asserts it continues to grow within
-     500 ms of the respawn (the sentinel alone is ~25 bytes; a stub harness
-     run adds more).
+  3. Records the byte count after a baseline interval.
+  4. Calls FleetSpawner.respawn() with a new argv (still stub_harness emit).
+  5. Asserts the stream log keeps growing after the respawn — proving
+     respawn re-established pipe-pane (if it didn't, the new pane's output
+     would never reach the file and the log would freeze).
 
 Marked ``@pytest.mark.isolated`` — runs under ``pytest -p forked -m isolated``
-on CI. Local macOS hits the 104-byte socket-path limit on tmp_path; CI Linux
-is fine.
+on CI. Uses the ``short_mission_dir`` fixture so the ``<mission>/.fleet/tmux.sock``
+socket stays under the 104-byte ``sun_path`` limit (the default pytest tmp_path
+would exceed it on macOS).
 """
 
 from __future__ import annotations
@@ -61,20 +63,20 @@ def _make_config() -> MissionConfig:
 
 
 @pytest.mark.asyncio
-async def test_pipe_pane_preserved_across_respawn(tmp_path: Path):
+async def test_pipe_pane_preserved_across_respawn(short_mission_dir: Path):
     if shutil.which("tmux") is None:
         pytest.skip("tmux not available on this runner")
     if not _STUB.is_file() or not os.access(_STUB, os.X_OK):
         pytest.skip("stub_harness.sh missing or not executable")
 
-    mission_dir = tmp_path / "m"
+    mission_dir = short_mission_dir
     (mission_dir / ".fleet").mkdir(parents=True)
     sock = mission_dir / ".fleet" / "tmux.sock"
     stream_log = mission_dir / ".fleet" / "S.stream.log"
 
     adapter = MagicMock()
     adapter.build_argv = MagicMock(
-        return_value=([str(_STUB), "long"], {}),
+        return_value=([str(_STUB), "emit"], {}),
     )
     adapter.session_log_dir = MagicMock(return_value=None)
     spawner = FleetSpawner(
@@ -88,9 +90,10 @@ async def test_pipe_pane_preserved_across_respawn(tmp_path: Path):
         size_before = stream_log.stat().st_size
 
         # Respawn with the same long-running stub argv.
-        await spawner.respawn("S", [str(_STUB), "long"], {})
+        await spawner.respawn("S", [str(_STUB), "emit"], {})
 
-        # Stream log must continue to grow — the sentinel alone is ~25 bytes.
+        # Stream log must keep growing post-respawn (emit writes 'tick' @5 Hz);
+        # a frozen log means respawn failed to re-establish pipe-pane (PM-3).
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             await asyncio.sleep(0.1)

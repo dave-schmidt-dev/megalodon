@@ -68,6 +68,23 @@ def tmux_socket():
 
 
 @pytest.fixture
+def short_mission_dir():
+    """Short-path mission dir for real-tmux tests whose socket lives at
+    ``<mission>/.fleet/tmux.sock``.
+
+    Same 104-byte ``sun_path`` constraint as ``tmux_socket``: the default pytest
+    ``tmp_path`` is too long, so a mission dir derived from it pushes the socket
+    over the limit. Rooting the mission under a short ``/tmp`` dir keeps it well
+    under 104 bytes.
+    """
+    d = Path(tempfile.mkdtemp(prefix="mgld-m-", dir="/tmp"))
+    try:
+        yield d
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture
 def default_config():
     """v9.0 back-compat MissionConfig synthesized from a tmp path.
 

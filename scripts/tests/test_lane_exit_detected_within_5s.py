@@ -11,8 +11,9 @@ This test:
   3. Asserts the response transitions to ``{running: false, exited_rc: 17}``.
 
 Marked ``@pytest.mark.isolated`` — runs under ``pytest -p forked -m isolated``
-on CI. Local macOS hits the 104-byte socket-path limit on tmp_path; CI Linux
-is fine.
+on CI. Uses the ``short_mission_dir`` fixture so the ``<mission>/.fleet/tmux.sock``
+socket stays under the 104-byte ``sun_path`` limit (the default pytest tmp_path
+would exceed it on macOS).
 """
 
 from __future__ import annotations
@@ -78,14 +79,14 @@ def _stub_error_resolver(stub_script: Path):
 
 @pytest_asyncio.fixture
 async def authed_client_with_real_spawn(
-    tmp_path: Path, monkeypatch
+    short_mission_dir: Path, monkeypatch
 ) -> AsyncGenerator[tuple, None]:
     if shutil.which("tmux") is None:
         pytest.skip("tmux not installed")
     if not _STUB.is_file() or not os.access(_STUB, os.X_OK):
         pytest.skip("stub_harness.sh fixture missing or not executable")
 
-    mission_dir = tmp_path / "m"
+    mission_dir = short_mission_dir
     (mission_dir / ".fleet").mkdir(parents=True)
     token = "cv8-token"
     write_token_atomic(mission_dir / ".fleet" / "ui.token", token)

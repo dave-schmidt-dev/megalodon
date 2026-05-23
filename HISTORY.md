@@ -34,11 +34,20 @@ environmental). Systematic debugging found **three** root causes, not one:
    captures future output only) → commands now lead with a short sleep so the
    attach precedes emission (mirrors the passing respawn test).
 
-`stub_harness.sh` left at its tracked `100644`: the 2 tests gated on its
-executability stay skipped-by-design (documented CI-Linux-only), so no
-regression. Result: **858 passed, 36 skipped, 3 xfailed, 0 failed** (was 8
-failed). Unrelated to the tool-surface policy code, but bundled in the same
-local branch.
+Result: **858 passed, 36 skipped, 3 xfailed, 0 failed** (was 8 failed).
+Unrelated to the tool-surface policy code, but bundled in the same local branch.
+
+**Follow-up (same day): activated the 2 real-tmux tests that were skip-gated on
+a non-executable `stub_harness.sh`** (`test_followup_pipe_pane_preserved`,
+`test_lane_exit_detected_within_5s`). Made the stub executable (`100644`→`100755`),
+added a shared `short_mission_dir` fixture (their socket lives at
+`<mission>/.fleet/tmux.sock`, so the mission root must also be short), and gave the
+stub an `emit` mode. The pipe-pane-preserved test had a broken premise — it spawned
+the SILENT `long` mode and asserted the stream-log *file* grew from the respawn
+"sentinel", but the sentinel is pushed to in-memory subscriber queues, not the file;
+a silent pane can never grow the log. Switched it to `emit` (a line every 0.2s) so
+the log grows iff pipe-pane re-attaches — correctly guarding PM-3. Suite now
+**860 passed, 34 skipped, 0 failed**.
 
 ---
 
