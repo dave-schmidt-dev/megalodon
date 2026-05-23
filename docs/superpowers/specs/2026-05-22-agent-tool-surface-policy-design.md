@@ -137,7 +137,8 @@ through raw `python`/compound. This design closes them.
 - [x] `launch.md` contains no `python3 -c` / `python -m` / compound bash in agent steps —
   enforced by `test_launch_protocol_no_interpreters.py` (template + rendered per-lane).
 - [x] All new tools have tests; full suite green; CI green — 56 policy tests green;
-  full suite green except 8 pre-existing environmental tmux failures (Unix-socket path
-  length, unrelated to this change).
+  **full suite 858 passed / 0 failed**. (The 8 real-tmux failures first observed were
+  root-caused and fixed in a follow-up — a remain-on-exit spawn race + a too-long
+  test socket path; see HISTORY 2026-05-23.)
 - [ ] Then: re-run the v9.4 UI dogfood on the hardened surface (the visibility charter
   finally gets to run) — **operator follow-up after the gate.**
