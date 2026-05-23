@@ -65,12 +65,10 @@ def test_build_argv_text_default():
 
 
 def test_build_argv_live_repl_omits_print_and_prompt():
-    """v9.3 dogfood: live_repl=True returns REPL argv (no --print, no prompt).
+    """live_repl=True returns REPL argv with a BOUNDED --allowedTools surface.
 
-    Now also injects a tight --allowedTools so the agent doesn't prompt for
-    every protocol primitive (claim mkdir, claim rm, Read/Edit/Write); but
-    Python and general Bash are explicitly NOT auto-approved — those surface
-    to the operator via the dashboard's permission_watcher.
+    Policy (2026-05-22 tool-surface): no unbounded interpreter is allowlisted.
+    Agents reach every operation through native tools or path-scoped scripts.
     """
     argv, env = ADAPTER.build_argv(
         "ignored-because-repl-takes-input-via-send-keys",
@@ -82,59 +80,165 @@ def test_build_argv_live_repl_omits_print_and_prompt():
     assert "claude-opus-4-7" in argv
     assert "--print" not in argv
     assert env == {}
-    # allowedTools must be present and contain protocol primitives only
     assert "--allowedTools" in argv
-    allowed_idx = argv.index("--allowedTools") + 1
-    allowed = argv[allowed_idx]
-    # Protocol primitives auto-approved
-    assert "Bash(mkdir claims/*)" in allowed
-    assert "Bash(rm -rf claims/*)" in allowed
-    assert "ScheduleWakeup" in allowed
-    assert "Read" in allowed and "Edit" in allowed and "Write" in allowed
-    # Read-only workspace shell ops auto-approved (v9.3 — "read from project
-    # workspace" is a basic capability, not a per-command decision).
-    for safe in [
+    allowed = argv[argv.index("--allowedTools") + 1]
+
+    # --- ALLOWED: native tools ---
+    for tool in ["Read", "Edit", "Write", "Grep", "Glob", "ScheduleWakeup"]:
+        assert tool in allowed, f"missing native tool: {tool}"
+
+    # --- ALLOWED: path-scoped scripts (the only mutation/inspection paths) ---
+    for pat in [
+        "Bash(scripts/poll.py:*)",
+        "Bash(scripts/atomic_close.py:*)",
+        "Bash(scripts/claim.sh:*)",
+        "Bash(scripts/queue_submit.py:*)",
+        "Bash(scripts/run_e2e.sh:*)",
+        "Bash(./scripts/run_e2e.sh:*)",
+        "Bash(scripts/run_tests.sh:*)",
+    ]:
+        assert pat in allowed, f"missing bounded tool: {pat}"
+
+    # --- NOT explicitly allowlisted: git is auto-run read-only by Claude;
+    #     explicit Bash(git diff*) would broaden to `git diff --output=<file>`
+    #     writes (CR-5/CR-7). Any explicit git pattern is a regression. ---
+    assert "Bash(git" not in allowed, (
+        "explicit git patterns must be dropped (CR-5/CR-7)"
+    )
+
+    # --- ALLOWED: bounded non-interpreter utilities (O-2) ---
+    for pat in ["Bash(sleep:*)", "Bash(date:*)", "Bash(printf:*)"]:
+        assert pat in allowed, f"missing bounded utility: {pat}"
+
+    # --- NEVER ALLOWED: unbounded interpreters / escapes (the keystone guard) ---
+    forbidden_substrings = [
+        "Bash(python",  # python / python3 -c / -m
+        "Bash(uv run",  # uv run … python -c
+        "Bash(bash",  # bash -c
+        "Bash(sh ",  # sh -c
+        "Bash(eval",
+        "Bash(curl",  # NO curl at all (queue now via queue_submit.py)
+        "Bash(wget",
+        "Bash(find:*)",  # find -exec
+        "Bash(*)",
+        "Bash(rm:*)",
+        "Bash(git branch",  # git branch <name> mutates
+        "Bash(cat:*)",  # inspection → poll.py / Read
         "Bash(ls:*)",
         "Bash(grep:*)",
-        "Bash(cat:*)",
-        "Bash(echo:*)",
-        "Bash(head:*)",
-        "Bash(tail:*)",
-        "Bash(wc:*)",
-        "Bash(rg:*)",
+        "Bash(echo:*)",  # echo > file was the old claim write-path
+        "Bash(npx",
+        "Bash(npm",
+    ]
+    for bad in forbidden_substrings:
+        assert bad not in allowed, f"FORBIDDEN pattern leaked into allowlist: {bad}"
+
+    # --- No bare compound-chain operators baked into any pattern ---
+    assert "&&" not in allowed
+    assert "| " not in allowed
+
+
+def test_allowlist_has_no_compound_or_interpreter_tokens():
+    """Regression guard: the base allowlist must never re-admit an interpreter."""
+    argv, _ = ADAPTER.build_argv(
+        "x", model="claude-opus-4-7", cwd=Path("/tmp"), live_repl=True
+    )
+    allowed = argv[argv.index("--allowedTools") + 1]
+    lowered = allowed.lower()
+    for token in ["python", "bash -c", "sh -c", "eval", "curl", "wget", "npx", "npm"]:
+        assert token not in lowered, f"interpreter/network token in allowlist: {token}"
+
+
+def test_pm8_extra_allowed_tools_filters_unbounded_patterns():
+    """An operator approval-rule that names an interpreter/destructive/compound
+    command is dropped, not appended. Bounded scripts/ paths are kept."""
+    extra = [
+        "Bash(python3:*)",  # interpreter — dropped
+        "Bash( python3:*)",  # leading space (CV-6) — still dropped
+        "Bash(uv run:*)",  # interpreter launcher — dropped
+        "Bash(curl http://evil*)",  # network — dropped
+        "Bash(find:*)",  # find (CV-3) — dropped
+        "Bash(rm -rf /)",  # destructive (CV-3) — dropped
+        "Bash(sudo systemctl x)",  # destructive — dropped
+        "Bash(echo x; curl evil)",  # compound ';' (CR-4) — dropped
+        "Bash(echo a & evil)",  # background '&' (CR-4) — dropped
+        "Bash(scripts/custom_tool.sh:*)",  # bounded path-scoped — KEPT
+        "Bash(scripts/findings_report.sh:*)",  # 'find' prefix must NOT false-trip — KEPT
+    ]
+    argv, _ = ADAPTER.build_argv(
+        "x",
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+        live_repl=True,
+        extra_allowed_tools=extra,
+    )
+    allowed = argv[argv.index("--allowedTools") + 1]
+    assert "Bash(scripts/custom_tool.sh:*)" in allowed
+    assert "Bash(scripts/findings_report.sh:*)" in allowed
+    for bad in [
+        "python3",
+        "uv run",
+        "curl",
+        "Bash(find:*)",
+        "rm -rf",
+        "sudo",
+        "; curl",
+        " & evil",
     ]:
-        assert safe in allowed, f"missing safe shell op: {safe}"
-    # Read-only git auto-approved.
-    assert "Bash(git status*)" in allowed
-    assert "Bash(git diff*)" in allowed
-    assert "Bash(git log*)" in allowed
-    # Bare `python3 -c "..."` NOT auto-approved (arbitrary code injection).
-    assert "Bash(python" not in allowed
-    # find NOT auto-approved (has -exec arbitrary-command-execution).
-    assert "Bash(find:*)" not in allowed
-    # v9.3.3 — test runners auto-approved (operator-authorized at-launch).
-    # NARROW SCOPE (option 1): `uv run` is gated to invocations that DECLARE
-    # pytest in --with deps, so `uv run --with pytest ... pytest ...` from
-    # the launch template auto-approves but `uv run --with badpkg python -c
-    # "..."` still prompts.
-    assert "Bash(pytest:*)" in allowed
-    assert "Bash(uv run --with pytest*)" in allowed
-    assert "Bash(./scripts/run_e2e.sh*)" in allowed
-    assert "Bash(npx playwright:*)" in allowed
-    # Crucially the BROAD `Bash(uv run:*)` pattern is NOT present — that was
-    # the medium-risk surface the operator explicitly rejected.
-    assert "Bash(uv run:*)" not in allowed
-    # Wildcard / dangerous-rm NOT auto-approved.
-    assert "Bash(rm:*)" not in allowed
-    assert "Bash(*)" not in allowed
-    # Network ops NOT auto-approved EXCEPT localhost-scoped curl for queue endpoints.
-    assert "Bash(wget" not in allowed
-    # General-purpose curl (no host scope) must NOT be auto-approved.
-    assert "Bash(curl:*)" not in allowed
-    assert "Bash(curl -X*)" not in allowed
-    # But localhost-scoped curl IS allowed (agents call queue endpoints).
-    assert "Bash(curl -s http://127.0.0.1*)" in allowed
-    assert "Bash(curl -s -X POST http://127.0.0.1*)" in allowed
+        assert bad not in allowed, f"unbounded pattern leaked: {bad}"
+
+
+def test_is_unbounded_tool_unit():
+    """Direct coverage of the filter predicate, incl. boundary cases."""
+    from megalodon_ui.harnesses.claude import _is_unbounded_tool
+
+    for p in [
+        "Bash(python3:*)",
+        "Bash( python3:*)",
+        "Bash(uv run:*)",
+        "Bash(find:*)",
+        "Bash(rm -rf /)",
+        "Bash(curl x)",
+        "Bash(a && b)",
+        "Bash(a | b)",
+        "Bash(a & b)",
+        "Bash(./python3 x)",
+        "Bash(scripts/../python3 x)",
+        "Bash(scripts/../../etc/passwd)",
+    ]:
+        assert _is_unbounded_tool(p) is True, p
+    for p in [
+        "Bash(scripts/findings_report.sh:*)",
+        "Bash(scripts/poll.py:*)",
+        "Bash(sleep:*)",
+        "Read",
+        "Edit",
+        "Bash(scripts/run_tests.sh:*)",
+    ]:
+        assert _is_unbounded_tool(p) is False, p
+
+
+def test_forbidden_constants_are_single_source(monkeypatch):
+    """DRY (CV-9): the contract test asserts against claude.py's exported
+    forbidden heads, so the filter and the test can't drift."""
+    from megalodon_ui.harnesses.claude import _FORBIDDEN_HEAD_CMDS
+
+    assert "python" in _FORBIDDEN_HEAD_CMDS and "uv run" in _FORBIDDEN_HEAD_CMDS
+    argv, _ = ADAPTER.build_argv(
+        "x", model="claude-opus-4-7", cwd=Path("/tmp"), live_repl=True
+    )
+    allowed = argv[argv.index("--allowedTools") + 1].lower()
+    # No forbidden head appears as a Bash(<head> ...) token in the base allowlist.
+    import re
+
+    heads = [m.group(1) for m in re.finditer(r"bash\(([^):*]+)", allowed)]
+    for h in heads:
+        h = h.strip().lstrip("./")
+        if h.startswith("scripts/"):
+            continue
+        assert not any(h.startswith(c) for c in _FORBIDDEN_HEAD_CMDS), (
+            f"forbidden head in base: {h}"
+        )
 
 
 def test_build_argv_live_repl_ignores_output_format():

@@ -22,6 +22,62 @@ import pathlib
 
 from .base import Capabilities, Event, ModelSpec
 
+# Forbidden command heads (2026-05-22 tool-surface policy): interpreters, network
+# tools, installers, and destructive non-interpreters that policy never auto-
+# approves — even via an operator approval-rule. Prefix-matched against the head
+# of a Bash(<cmd> ...) pattern; scripts/ paths are bounded by location and exempt.
+_FORBIDDEN_HEAD_CMDS = (
+    "python",
+    "uv run",
+    "bash",
+    "sh",
+    "eval",
+    "curl",
+    "wget",
+    "ssh",
+    "scp",
+    "pip",
+    "npm",
+    "npx",
+    "find",
+    "rm",
+    "sudo",
+    "chmod",
+    "chown",
+    "dd",
+    "mv",
+    "tee",
+    "ln",
+)
+# Compound/background separators Claude Code's Bash matcher recognizes
+# (code.claude.com/docs/en/permissions): && || ; | |& & newline — plus command
+# substitution. Any presence marks the candidate pattern unbounded.
+_COMPOUND_OPERATORS = ("&&", "||", ";", "|", "&", "\n", "$(", "`")
+
+
+def _is_unbounded_tool(pattern: str) -> bool:
+    """True if a candidate --allowedTools pattern names an unbounded interpreter,
+    network tool, installer, destructive command, or shell escape. Filters
+    operator-supplied PM-8 patterns so 'approve & remember' cannot re-admit them.
+
+    A pattern whose Bash head is a ``scripts/`` path is bounded by location (the
+    sanctioned tool dir) — consistent with the threat model (the concern is python
+    re-admission and accidental broadening, not malicious scripts). Everything else
+    is prefix-matched against the forbidden heads; compound separators anywhere
+    also mark the pattern unbounded.
+    """
+    low = pattern.lower()
+    if any(op in low for op in _COMPOUND_OPERATORS):
+        return True
+    if "bash(" not in low:
+        return False  # native-tool patterns (Read/Edit/...) are always bounded
+    head = low.split("bash(", 1)[1].strip().lstrip("./").strip()
+    if ".." in head:
+        return True  # path traversal escapes any location bound (scripts/../python3)
+    if head.startswith("scripts/"):
+        return False  # path-scoped script — bounded by location
+    return any(head.startswith(cmd) for cmd in _FORBIDDEN_HEAD_CMDS)
+
 
 class ClaudeAdapter:
     """Concrete HarnessAdapter for the Claude Code CLI."""
@@ -59,77 +115,62 @@ class ClaudeAdapter:
         extra_allowed_tools: list[str] | None = None,
     ) -> tuple[list[str], dict[str, str]]:
         if live_repl:
-            # --allowedTools policy for live_repl agents:
+            # --allowedTools policy (2026-05-22 tool-surface hardening):
+            #
+            # PRINCIPLE: never allowlist an unbounded interpreter. Every agent
+            # operation reaches a native tool or a dedicated, path-scoped script.
+            # Origin: v94-ui-dogfood approval-friction finding + operator
+            # constraint "i am not approving python".
             #
             # AUTO-APPROVED (no operator prompt):
-            #  * Claude file tools: Read / Edit / Write / Grep / Glob
-            #  * /loop runtime + in-session task tools: ScheduleWakeup, Task*
-            #  * Read-only project-workspace shell ops (ls/grep/rg/cat/head/
-            #    tail/wc/echo/diff/stat/file/realpath/basename/dirname/pwd/
-            #    tree/which/date/true/false). Operators authorize these by
-            #    accepting the agent into the mission — read-from-workspace
-            #    is a basic capability, not a per-command decision.
-            #  * Read-only git (status/diff/log/show/branch/rev-parse/ls-files
-            #    /config --get).
-            #  * v9 protocol primitives (mkdir/rm/rmdir against claims/).
+            #  * Native tools: Read/Edit/Write/Grep/Glob, ScheduleWakeup, Task*.
+            #    All file reads + ad-hoc inspection go through Read/Grep.
+            #  * Path-scoped scripts (the sanctioned shell mutation/inspection
+            #    paths — added here; they are NOT in the pre-policy allowlist):
+            #      poll.py (state inspection), atomic_close.py (RULE-10 close),
+            #      claim.sh (claims/ mutex), queue_submit.py (queue intents),
+            #      run_e2e.sh (Playwright), run_tests.sh (full pytest suite).
+            #  * Bounded non-interpreter utilities: sleep/date/printf (stagger
+            #    wait, UTC stamp, terminal title — no code-exec, no -exec escape).
             #
-            # PROMPTS THE OPERATOR (surfaces via dashboard permission banner):
-            #  * python3 / uv / pytest / npx — runtime execution
-            #  * find — has -exec arbitrary-command-execution capability
-            #  * Bash compound `&&` / `|` / `;` shells
-            #  * Network ops (curl / wget / ssh / scp)
-            #  * Writes outside claims/findings/feedback (those go through
-            #    the Write tool which IS auto-approved, scoped by caller)
+            # DELIBERATELY NOT LISTED (Claude auto-runs these read-only builtins
+            # without a prompt in every mode — code.claude.com/docs/en/permissions):
+            #  * cat/ls/grep/find/head/tail/wc/echo/pwd/which/diff/stat AND
+            #    read-only git (status/diff/log/show/rev-parse/ls-files). Listing
+            #    them is redundant, and an explicit `Bash(git diff*)` would BROADEN
+            #    to write-forms like `git diff --output=<file>` (CR-5). Write-form
+            #    git (branch/commit/push) and write-form builtins still prompt.
+            #
+            # PERMANENTLY OFF THE ALLOWLIST (surface to operator if ever needed):
+            #  * python / python3 / uv run / bare pytest (arbitrary code or
+            #    missing test-extra deps — tests run via run_tests.sh)
+            #  * bash -c / sh -c / eval / compound chains (&& | ; & newline)
+            #  * curl / wget / ssh / scp (queue now via queue_submit.py)
+            #  * find (-exec), rm/sudo/chmod/dd, installers
             allowed = (
                 # Claude-native tools
                 "Read Edit Write Grep Glob "
                 "ScheduleWakeup TaskCreate TaskUpdate TaskGet TaskList TaskOutput "
-                # Read-only project-workspace shell ops
-                "Bash(ls:*) Bash(grep:*) Bash(rg:*) Bash(cat:*) "
-                "Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(echo:*) "
-                "Bash(diff:*) Bash(stat:*) Bash(file:*) Bash(realpath:*) "
-                "Bash(basename:*) Bash(dirname:*) Bash(pwd:*) Bash(tree:*) "
-                "Bash(which:*) Bash(date:*) Bash(true:*) Bash(false:*) "
-                # Read-only git
-                "Bash(git status*) Bash(git diff*) Bash(git log*) "
-                "Bash(git show*) Bash(git branch*) Bash(git rev-parse*) "
-                "Bash(git ls-files*) Bash(git config --get*) "
-                # v9 protocol primitives (claims/ mutex)
-                "Bash(mkdir claims/*) Bash(rm -rf claims/*) Bash(rmdir claims/*) "
-                # v9.3 queue endpoints — agents call localhost-scoped curl to
-                # route TASKS.md / STATUS.md / HISTORY.md mutations through
-                # the in-process applier instead of direct file edits. Scope
-                # is localhost ONLY (matches `127.0.0.1*` prefix), no
-                # external network surface.
-                "Bash(curl -s -b /tmp/*) Bash(curl -s -c /tmp/*) "
-                "Bash(curl -s http://127.0.0.1*) "
-                "Bash(curl -s -X POST http://127.0.0.1*) "
-                "Bash(curl -s -X POST -H Content-Type:* http://127.0.0.1*) "
-                # v9.3.3 test runners — TEST lane runs Playwright + pytest
-                # constantly; BACKEND/FRONTEND verify their own changes per
-                # the launch template's "run tests before claiming done" rule.
-                # Operator explicitly authorized these at-launch (2026-05-19).
-                #
-                # NARROW SCOPE (operator chose option 1, 2026-05-19T19:11Z):
-                #  * `Bash(pytest:*)`             — bare pytest
-                #  * `Bash(uv run --with pytest*)` — uv invocations that DECLARE
-                #    pytest in their --with deps. Matches the launch template's
-                #    documented test command. Does NOT match `uv run --with
-                #    arbitrary-pkg python -c "..."` — that still prompts.
-                #  * `Bash(./scripts/run_e2e.sh*)` / `Bash(scripts/run_e2e.sh*)`
-                #    — the project's playwright runner (checked-in script).
-                #  * `Bash(npx playwright:*)`     — playwright via npx only.
-                #  * `Bash(npm test*)` / `Bash(npm run test*)` — node test scripts.
-                "Bash(pytest:*) Bash(uv run --with pytest*) "
-                "Bash(./scripts/run_e2e.sh*) Bash(scripts/run_e2e.sh*) "
-                "Bash(npx playwright:*) Bash(npm test*) Bash(npm run test*)"
+                # Path-scoped scripts — the sanctioned shell paths
+                "Bash(scripts/poll.py:*) Bash(scripts/atomic_close.py:*) "
+                "Bash(scripts/claim.sh:*) Bash(scripts/queue_submit.py:*) "
+                "Bash(scripts/run_e2e.sh:*) Bash(./scripts/run_e2e.sh:*) "
+                "Bash(scripts/run_tests.sh:*) "
+                # Bounded non-interpreter utilities (read-only git + cat/ls/grep
+                # are NOT listed — Claude auto-runs read-only builtins regardless)
+                "Bash(sleep:*) Bash(date:*) Bash(printf:*)"
             )
-            # PM-8: append operator-approved patterns from .fleet/approval-rules.json.
-            # Patterns are space-separated as additional entries in the single
-            # --allowedTools value string (same format as the static allowlist above;
-            # confirmed by T3.0 doc: CLI accepts space-separated patterns in one arg).
+            # PM-8: append operator-approved patterns from .fleet/approval-rules.json,
+            # but FILTER unbounded patterns first (2026-05-22 tool-surface policy).
+            # An operator "approve & remember" must never silently re-admit
+            # python/uv-run/curl/compound shells via approval-rules.json — the
+            # exact loop that broadened the surface during the v94 dogfood.
             if extra_allowed_tools:
-                allowed = allowed + " " + " ".join(extra_allowed_tools)
+                safe_extra = [
+                    p for p in extra_allowed_tools if not _is_unbounded_tool(p)
+                ]
+                if safe_extra:
+                    allowed = allowed + " " + " ".join(safe_extra)
             return ["claude", "--model", model, "--allowedTools", allowed], {}
         argv = ["claude", "--print", "--model", model]
         if output_format == "stream-json":
