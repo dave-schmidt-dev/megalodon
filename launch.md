@@ -23,58 +23,67 @@ After reading, confirm in your own working notes (not to operator) that you unde
 
 ---
 
-## Step 2 — Generate your agent ID and cache it
+## Step 2 — Your agent ID is pre-baked
 
-Preferred (V9 A4 — deterministic, reproducible across crash/compact):
+Your agent ID is baked into this launch file at spawn time:
 
-```bash
-python3 -c "from scripts._agent_id import deterministic_agent_id; \
-print(deterministic_agent_id('<mission-id>', '<LANE>', '<launch-utc>'))"
+```
+{{AGENT_ID}}
 ```
 
-Where `<mission-id>` is the mission directory basename, `<LANE>` is your lane
-(AUDIT/ARCHITECT/BACKEND/FRONTEND/TEST/META), and `<launch-utc>` is the UTC
-timestamp the orchestrator stamped at fleet launch (in your lane-bound
-launch file header, or fall back to `date -u +%Y-%m-%dT%H:%M:%SZ` at first
-tick and cache it).
-
-Legacy fallback (pre-A4):
-
-```bash
-python3 -c "import secrets; print('agent-'+secrets.token_hex(2))"
-```
-
-Output looks like `agent-9f3a`. **This is your agent ID for the entire mission.** Write it in your own scratch notes. Reuse it every tick. Never regenerate it. A4 determinism means a re-launch with the same mission+lane+launch_utc will reproduce the same ID — useful for crash recovery.
+**Do not run any command to compute it.** This is your agent ID for the entire
+mission — write it in your scratch notes, reuse it every tick, never regenerate
+it. It persists in this file across crash/recompact, so re-reading recovers the
+same ID. (If you ever see a literal `{{AGENT_ID}}` here — an unbaked launch file,
+which should not happen via the server spawn path — recover your prior ID from
+your existing STATUS.md heartbeat row, per Step 7. Never invent a new one.)
 
 ---
 
-## Step 3 — Claim a lane in STATUS.md
+## Step 3 — Claim a lane in STATUS.md (queue-routed)
 
-Open `STATUS.md`. Find the **first row with `Agent = unclaimed`** in this lane order: AUDIT, ARCHITECT, BACKEND, FRONTEND, TEST, META.
+Find the first row with `Agent = unclaimed` in lane order (AUDIT, ARCHITECT,
+BACKEND, FRONTEND, TEST, META). Claim it through the queue applier — never a
+direct Edit (RULE-15; a direct Edit races the applier and corrupts STATUS.md):
 
-Edit that single row in place:
-- Replace `unclaimed` with your agent ID from step 2.
-- Set `State` to `initialized`.
-- Set `Last UTC` to current UTC: run `date -u +%Y-%m-%dT%H:%MZ` and use that exact string.
-- Set `Notes` to: `bootstrap; v8; will claim P1-<X> next tick` (replace `<X>` with your lane letter: A/B/C/D/E/F).
+```bash
+scripts/queue_submit.py --mission-dir . --agent {{AGENT_ID}} --lane <LANE> \
+  status --state initialized --notes "bootstrap; v8; will claim P1-<X> next tick"
+```
 
-Use the Edit tool with `old_string` matching the full row line so you do not accidentally race. If your Edit fails with "modified since read", re-read STATUS.md and retry up to 3 times. If you find that another worker claimed the row you wanted between your read and your edit, just claim the next unclaimed row.
-
-**Race resolution:** if two workers somehow end up on the same row, earlier UTC wins on the next tick; the loser re-claims the next unclaimed row.
+The applier stamps `Last UTC` server-side. If the applier heartbeat is stale (read
+`queue/.applier.lock/heartbeat.txt` with the Read tool; >30s old), set
+`BLOCKED-APPLIER-DOWN` and halt mutations until the operator restarts it. If two
+workers race the same row, earlier UTC wins next tick; the loser re-submits for the
+next unclaimed row.
 
 ---
 
 ## Step 4 — Claim your P1 task and start working
 
-Your P1 task is `P1-<your-lane-letter>` (e.g., AUDIT = `P1-A`, BACKEND = `P1-C`). It is listed in `TASKS.md` under "PHASE 1 — PLAN".
+Your P1 task is `P1-<your-lane-letter>` (AUDIT = `P1-A`, BACKEND = `P1-C`, …),
+listed in `TASKS.md` under "PHASE 1 — PLAN".
+
+Claim paths — two distinct mechanisms, do not confuse them (CV-5):
+- `scripts/claim.sh P1-<X> {{AGENT_ID}}` — the **initial pre-queue P1 directory
+  mutex**: atomically creates `claims/P1-<X>/` + `owner.txt`. This is the ONLY
+  sanctioned way to *create* a claim dir.
+- `scripts/queue_submit.py … claim-done --task P1-<X>` — the **queue-routed
+  lifecycle marker** the applier applies on RULE-10 close (also reachable via
+  `scripts/atomic_close.py`). The applier owns lifecycle markers; `claim.sh` owns
+  the initial create. They never both create the same dir.
 
 Claim it now:
 
 ```bash
-mkdir claims/P1-<X>
+scripts/claim.sh P1-<X> {{AGENT_ID}}
 ```
 
-Then read your P1 task description in TASKS.md and **begin doing the work immediately.** Write your finding to `findings/<your-agent-id>-<lane-letter>-P1-<topic>-<UTC>.md` with YAML frontmatter (see README.md §3 finding format; `lineage: v8` is mandatory).
+Exit 0 = claimed (or you already own it); exit 3 = another agent holds it (claim
+the next unclaimed P1 instead). Then read your task in TASKS.md and **begin work
+immediately.** Write your finding to
+`findings/<your-agent-id>-<lane-letter>-P1-<topic>-<UTC>.md` with YAML
+frontmatter (README.md §3; `lineage: v8` mandatory).
 
 ---
 
@@ -106,11 +115,13 @@ This re-invokes you every 5 minutes. (Updated from 3m in v8.x: 3m caused excess 
    - Update STATUS.md to `idle` (or next task)
    Then run the Rule 10 self-check before declaring the tick done.
 
-### §5.A Fleet ledger (V9 A9)
+### §5.A Fleet ledger (V9 A9) — operator-run, not agent-run
 
-Workers SHOULD call `scripts._fleet_tick.record_tick(mission_dir, lane=LANE, agent=AGENT, ...)` once per /loop tick. Captures tasks completed, CAS retries, REPAIR injections received, SIGNAL ACK latency. Operator runs `scripts/aggregate_fleet_perf.py --mission-dir <m>` post-mission to merge with token data from `scripts/parse_session_tokens.py`.
-
-Optional but useful — feeds A3 fleet matrix decisions for next mission.
+Fleet-tick telemetry is collected by the **operator** post-mission
+(`scripts/aggregate_fleet_perf.py --mission-dir <m>` + token data from
+`scripts/parse_session_tokens.py`). Workers do **not** call any telemetry
+function during /loop ticks — it required `python` and is dropped from the agent
+path (2026-05-22 tool-surface policy).
 
 ---
 
@@ -120,8 +131,12 @@ Optional but useful — feeds A3 fleet matrix decisions for next mission.
 - **YAML frontmatter on every finding.** Required fields: `lineage: v8`, `finding-type:`, `severity:`, `lane:`, `task-id:`, `agent:`, `utc:`. Missing frontmatter = invalid finding.
 - **V9 RULE 15 — queue-routed mutations.** Shared-state mutations (STATUS.md, TASKS.md, HISTORY.md, .mission-events, claims/) MUST flow through the queue applier:
   - Use `scripts/atomic_close.py` (4-step RULE-10 close — already queue-routed via M1 backend swap).
-  - Or `python -m megalodon_ui.queue.queue_client` for direct intent submission.
-  - **Operator MUST start the applier daemon BEFORE workers via `./scripts/start_applier.sh <mission-dir> &`**. Workers can verify with `cat <mission>/queue/.applier.lock/heartbeat.txt` (UTC stamp within last 5s).
+  - Or `scripts/queue_submit.py --mission-dir <m> --agent <id> --lane <LANE> <intent> …`
+    for direct intent submission (status/claim/done/history/event/claim-dir/claim-done).
+    NEVER `python -m megalodon_ui.queue.queue_client` — that is an unbounded `python -m`.
+  - **Operator MUST start the applier daemon BEFORE workers via `./scripts/start_applier.sh <mission-dir> &`**.
+    Workers verify applier liveness by **reading** `queue/.applier.lock/heartbeat.txt`
+    with the Read tool (UTC stamp within last 5s). Use Read, never shell `cat`.
   - If the heartbeat is stale (>30s), set your STATUS row to `BLOCKED-APPLIER-DOWN` and halt mutations until the operator restarts the applier.
   - Pre-v9 free-form Edit-tool writes are NO LONGER permitted. Use the queue.
 - **CAS pattern on STATUS.md / TASKS.md writes.** (Legacy v8 — superseded by RULE 15 under v9. Retain for back-compat scripts that bypass the queue.)
@@ -239,6 +254,13 @@ remain acceptable and preferred over compound bash.
 For Playwright E2E runs, workers MUST use `./scripts/run_e2e.sh [args]`.
 NEVER use `cd /abs/path && uv run npx playwright test ...` compound (same prompt-block risk).
 
+### RULE 14b — Test runs via run_tests.sh
+
+For the full pytest suite (TEST lane, and any lane verifying its own changes),
+workers MUST use `scripts/run_tests.sh [pytest args]`. It runs
+`uv run --extra test pytest` (the test extra carries freezegun et al.). NEVER run
+bare `pytest` (missing test-extra deps) or `uv run …` directly (not allowlisted).
+
 ### RULE 16 — Optional watchdog daemon (V9 A1)
 
 Operator MAY start the watchdog daemon via `./scripts/start_watchdog.sh <mission-dir> &`
@@ -250,12 +272,12 @@ SIGNAL the lane, or dismiss. Per-lane dedup suppresses repeat alerts until the
 lane recovers or transitions to a new failure type. PID-file discovery uses
 `~/.megalodon-pids/<lane>.pid`; lanes without a PID file are skipped silently.
 
-### Python+fcntl reservation (refinement)
+### Interpreter reservation — REMOVED (2026-05-22 tool-surface policy)
 
-Python heredocs with fcntl remain acceptable ONLY for cross-lane CAS writes where
-parallel writers race the same row — primarily STATUS heartbeats during contended
-phase-flip windows and `.mission-events` appends during flip-win races.
-Lane-prefixed REPAIRs have zero race risk → Edit tool suffices; no heredoc needed.
+There is no python carve-out. All shared-state mutations flow through
+`scripts/queue_submit.py` or `scripts/atomic_close.py` (queue-routed, serialized
+by the applier). The queue removes the CAS-race rationale that previously
+justified `python3`+`fcntl` heredocs. `python` is never allowlisted.
 
 ### V9 A8 — SIGNAL grammar cross-reference
 
