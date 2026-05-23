@@ -15,11 +15,24 @@ async def new_session(
     cols: int,
     rows: int,
 ) -> int:
-    """Create a new detached tmux session, set remain-on-exit, and mark it fleet-owned."""
+    """Create a new detached tmux session with remain-on-exit ON, fleet-owned.
+
+    ``remain-on-exit`` is set GLOBALLY and CHAINED ahead of ``new-session`` in a
+    single tmux invocation, so it applies before the pane's command can run. The
+    earlier ordering (new-session, THEN a separate set-option) raced: a command
+    that exits instantly (e.g. a harness that crashes on spawn) destroyed the
+    pane — and the single-session server — before the option was applied, so the
+    session vanished instead of staying visible for inspection.
+    """
     proc = await asyncio.create_subprocess_exec(
         "tmux",
         "-S",
         str(socket),
+        "set-option",
+        "-g",
+        "remain-on-exit",
+        "on",
+        ";",
         "new-session",
         "-d",
         "-s",
@@ -36,20 +49,6 @@ async def new_session(
     rc = await proc.wait()
     if rc != 0:
         return rc
-
-    proc2 = await asyncio.create_subprocess_exec(
-        "tmux",
-        "-S",
-        str(socket),
-        "set-option",
-        "-t",
-        name,
-        "remain-on-exit",
-        "on",
-    )
-    rc2 = await proc2.wait()
-    if rc2 != 0:
-        return rc2
 
     proc3 = await asyncio.create_subprocess_exec(
         "tmux",

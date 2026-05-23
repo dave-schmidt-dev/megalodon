@@ -23,10 +23,8 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def tmux_socket(tmp_path: Path) -> Path:
-    """Return a per-test socket path under tmp_path."""
-    return tmp_path / "tmux.sock"
+# tmux_socket: shared short-path fixture from conftest.py (the deep pytest
+# tmp_path exceeds the 104-byte sun_path limit; conftest binds under /tmp).
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -122,10 +120,13 @@ async def test_pipe_pane_byte_delivery(tmux_socket: Path, tmp_path: Path) -> Non
     stream_log = tmp_path / "stream.log"
     stream_log.touch()
 
+    # Lead with a short sleep so pipe-pane attaches BEFORE the echo fires —
+    # pipe-pane (-O) captures future pane output only, so output emitted before
+    # the attach is missed (the passing respawn test relies on the same ordering).
     rc = await tmux.new_session(
         tmux_socket,
         "test-lane",
-        ["sh", "-c", "echo hello-pipe; sleep 5"],
+        ["sh", "-c", "sleep 0.5; echo hello-pipe; sleep 5"],
         tmp_path,
         {},
         80,
@@ -136,7 +137,7 @@ async def test_pipe_pane_byte_delivery(tmux_socket: Path, tmp_path: Path) -> Non
     pipe_rc = await tmux.pipe_pane(tmux_socket, "test-lane", stream_log)
     assert pipe_rc == 0
 
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.5)
 
     content = stream_log.read_bytes()
     assert b"hello-pipe" in content, (

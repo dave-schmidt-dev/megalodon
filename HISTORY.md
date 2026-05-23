@@ -10,6 +10,38 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-23 — Real-tmux test suite green (race fix + test-infra) — full suite 0 failures
+
+Investigated 8 long-standing real-tmux/ANSI test failures (initially assumed
+environmental). Systematic debugging found **three** root causes, not one:
+
+1. **Socket-path length (all 8):** the tmux control socket was bound under the
+   deep pytest `tmp_path` (~121 bytes), exceeding the macOS `sun_path` limit
+   (104). Fixed with a shared short-`/tmp` `tmux_socket` fixture in
+   `scripts/tests/conftest.py` — the same ≤104-byte precondition production
+   enforces (`__main__.py` exits 10 on an over-limit mission path).
+2. **Product race in `megalodon_ui/tmux.py:new_session` (bug, fixed):**
+   `remain-on-exit on` was applied as a *separate command after* `new-session`.
+   A pane whose command exits instantly (a harness that crashes on spawn)
+   destroyed the single-session server *before* the option applied, so the
+   session vanished instead of staying visible. Now set GLOBALLY and CHAINED
+   (`set-option -g remain-on-exit on \; new-session …`) in one invocation, so it
+   applies before the pane can exit. Regression-guarded by the rewritten
+   `test_tmux.py::test_new_session_two_calls` (2-call structure).
+3. **Test-infra drift:** the spawn test's stub adapter lacked `session_log_dir`
+   (drifted from the base adapter API) → added (returns None); the pipe-pane
+   byte/ANSI tests emitted output *before* pipe-pane attached (pipe-pane `-O`
+   captures future output only) → commands now lead with a short sleep so the
+   attach precedes emission (mirrors the passing respawn test).
+
+`stub_harness.sh` left at its tracked `100644`: the 2 tests gated on its
+executability stay skipped-by-design (documented CI-Linux-only), so no
+regression. Result: **858 passed, 36 skipped, 3 xfailed, 0 failed** (was 8
+failed). Unrelated to the tool-surface policy code, but bundled in the same
+local branch.
+
+---
+
 ## 2026-05-23 — Agent tool-surface policy (IMPLEMENTED; pending manual gate)
 
 Executed the warp-reviewed plan via subagent-driven development (supersedes the

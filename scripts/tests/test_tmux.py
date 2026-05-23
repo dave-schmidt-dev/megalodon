@@ -33,9 +33,15 @@ SOCKET = Path("/tmp/test.sock")
 
 
 @pytest.mark.asyncio
-async def test_new_session_three_calls():
-    """new_session must make exactly 3 subprocess_exec calls in order."""
-    procs = [_mock_proc(0), _mock_proc(0), _mock_proc(0)]
+async def test_new_session_two_calls():
+    """new_session makes exactly 2 subprocess_exec calls in order:
+
+    1. ``set-option -g remain-on-exit on`` CHAINED (``;``) ahead of
+       ``new-session`` in a single tmux invocation, so the option applies before
+       the pane's command can exit (race fix — see tmux.new_session docstring).
+    2. ``set-environment`` for the fleet-owned marker.
+    """
+    procs = [_mock_proc(0), _mock_proc(0)]
 
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(side_effect=procs)
@@ -45,12 +51,19 @@ async def test_new_session_three_calls():
         )
 
     assert rc == 0
-    assert mock_exec.call_count == 3
+    assert mock_exec.call_count == 2
 
     first_args = mock_exec.call_args_list[0][0]
     assert "tmux" == first_args[0]
     assert "-S" in first_args
+    # remain-on-exit set globally, chained BEFORE new-session.
+    assert "set-option" in first_args
+    assert "-g" in first_args
+    assert "remain-on-exit" in first_args
+    assert "on" in first_args
+    assert ";" in first_args  # tmux command separator
     assert "new-session" in first_args
+    assert first_args.index("set-option") < first_args.index("new-session")
     assert "-d" in first_args
     assert "-s" in first_args
     assert "lane-AUDIT" in first_args
@@ -62,21 +75,16 @@ async def test_new_session_three_calls():
     assert "30" in first_args
 
     second_args = mock_exec.call_args_list[1][0]
-    assert "set-option" in second_args
-    assert "remain-on-exit" in second_args
-    assert "on" in second_args
+    assert "set-environment" in second_args
+    assert "MEGALODON_FLEET_OWNED" in second_args
+    assert "1" in second_args
     assert "lane-AUDIT" in second_args
-
-    third_args = mock_exec.call_args_list[2][0]
-    assert "set-environment" in third_args
-    assert "MEGALODON_FLEET_OWNED" in third_args
-    assert "1" in third_args
-    assert "lane-AUDIT" in third_args
 
 
 @pytest.mark.asyncio
 async def test_new_session_aborts_on_first_failure():
-    """If new-session fails (rc!=0), set-option and set-environment are NOT called."""
+    """If the first chained (set-option + new-session) call fails (rc!=0), the
+    follow-up set-environment call is NOT made."""
     fail_proc = _mock_proc(1)
 
     with patch.object(

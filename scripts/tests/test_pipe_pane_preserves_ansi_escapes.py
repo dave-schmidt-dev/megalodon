@@ -14,9 +14,9 @@ Marked ``@pytest.mark.isolated`` (CI ``pytest -p forked -m isolated``)
 because shared event-loop state between this test and a fast follow-up
 test can interleave pipe-pane fd writes.
 
-Skipped where tmux is not installed; on macOS the deep pytest tmp_path
-can exceed the 104-byte socket-path limit — that's a pre-existing env
-limitation, not a regression here.
+Skipped where tmux is not installed. The tmux control socket binds under a
+short /tmp dir (shared ``tmux_socket`` fixture in conftest.py) so it fits the
+104-byte sun_path limit — the deep pytest tmp_path would otherwise blow it.
 """
 
 from __future__ import annotations
@@ -37,9 +37,8 @@ pytestmark = [
 ]
 
 
-@pytest.fixture
-def tmux_socket(tmp_path: Path) -> Path:
-    return tmp_path / "tmux.sock"
+# tmux_socket: shared short-path fixture from conftest.py (avoids the 104-byte
+# sun_path limit that the deep pytest tmp_path would otherwise exceed).
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -71,10 +70,13 @@ async def test_pipe_pane_preserves_canonical_sgr_escape_sequences(
         r"\033[1;7mhighlight\033[0m"
         r"\033[2J\033[H"
     )
+    # Lead with a short sleep so pipe-pane attaches BEFORE printf emits —
+    # pipe-pane (-O) only captures future pane output; bytes printed before the
+    # attach are missed. The 3s poll-loop below then catches the post-attach emit.
     rc = await tmux.new_session(
         tmux_socket,
         "test-lane",
-        ["sh", "-c", f"printf '{payload}'; sleep 5"],
+        ["sh", "-c", f"sleep 0.5; printf '{payload}'; sleep 5"],
         tmp_path,
         {},
         80,

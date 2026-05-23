@@ -1,6 +1,7 @@
 """Shared pytest fixtures for scripts/tests/."""
 
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,24 @@ def queue_mission(tmp_path: Path) -> Path:
 @pytest.fixture
 def agent() -> str:
     return "agent-abcd"
+
+
+@pytest.fixture
+def tmux_socket():
+    """Short-path tmux control socket for real-tmux integration tests.
+
+    A Unix-domain socket path must fit the OS ``sun_path`` limit (104 bytes on
+    macOS). The default pytest ``tmp_path`` (``/private/var/folders/.../
+    pytest-of-<user>/...``) is ~120 bytes and blows it, so real-tmux tests would
+    fail with ``error connecting to … (File name too long)``. Bind under a short
+    ``/tmp`` dir instead — the same ≤104-byte precondition production enforces
+    (``megalodon_ui/__main__.py`` exits 10 on an over-limit mission path).
+    """
+    d = Path(tempfile.mkdtemp(prefix="mgld-tmux-", dir="/tmp"))
+    try:
+        yield d / "s.sock"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture

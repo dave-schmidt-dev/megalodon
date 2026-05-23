@@ -86,6 +86,11 @@ def _stub_resolver(stub_script: Path):
         def build_argv(self, prompt: str, *, model: str, cwd: Path, **_):
             return [str(stub_script), "long"], {}
 
+        def session_log_dir(self, cwd: Path):
+            # Stub harness persists no on-disk sessions → None, per the base
+            # adapter contract (FleetSpawner's PM-6 snapshot diff handles None).
+            return None
+
     adapter = _InlineStubAdapter()
 
     def resolver(cli: str):
@@ -100,7 +105,7 @@ def _stub_resolver(stub_script: Path):
 
 
 @pytest.mark.asyncio
-async def test_real_tmux_start_all_creates_sessions(tmp_path: Path):
+async def test_real_tmux_start_all_creates_sessions(tmp_path: Path, tmux_socket: Path):
     """start_all must create one tmux session per configured lane on the real socket."""
     # Ensure stub harness is executable; if not, skip gracefully
     if not STUB_HARNESS_PATH.exists():
@@ -108,7 +113,9 @@ async def test_real_tmux_start_all_creates_sessions(tmp_path: Path):
 
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir(parents=True, exist_ok=True)
-    socket = fleet_dir / "tmux.sock"
+    # Short-path socket (conftest fixture): the deep pytest tmp_path under
+    # .fleet/ would exceed the 104-byte sun_path limit (production exits 10).
+    socket = tmux_socket
 
     config = _make_3lane_config(tmp_path)
     resolver = _stub_resolver(STUB_HARNESS_PATH)
