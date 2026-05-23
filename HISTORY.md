@@ -27,6 +27,18 @@ manifest). Also banked: `new_run.sh` doesn't validate socket-path length (late
 exit-10); META lane ran `python3` to compute its agent-id instead of using the
 baked one (stale instruction).
 
+**Bootstrap-prompt template fix (2026-05-23, follow-up):** landed the actual
+root-cause fix the Step 0 mitigation deferred. Changed the v9.3 bootstrap prompt
+to a cwd-relative `./launch-<NAME>.md` path (`mission_config/default_v9_3_live_repl.py`
++ `templates/run/.mission-config.yaml.tmpl`). The agent spawns with cwd = mission
+dir and Claude Code injects that cwd into its environment, so the Read tool
+resolves the path with NO shell — eliminating the orienting `ls`/`find` that gated.
+This is the only instruction delivered before the first read of `launch.md`, so it
+must itself prevent the probe. Kept under the ~57-char send-keys paste-detection
+ceiling (`run` vs `execute`; max lane = 55). Regression test
+`scripts/tests/test_loop_prompt_path.py` (3 tests: cwd-relative path + no bare
+filename, paste ceiling, factory↔template sync).
+
 **Narrator layer (`megalodon_ui/narrator/`):** `digest.py` parses a Claude session
 JSONL into a compact faithful event list (windowed last-14, per-line clipped,
 unanswered tool calls marked `[no result yet]`); `prompt.py` builds a few-shot

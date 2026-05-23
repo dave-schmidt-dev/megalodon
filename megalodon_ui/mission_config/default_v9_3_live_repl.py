@@ -33,11 +33,22 @@ from .schema import (
 
 
 # Short inline prompt: stays under Claude Code's TUI paste-detection heuristic
-# (~50 chars). The full per-iteration instructions live in launch-<NAME>.md
-# files in the mission directory; /loop re-fires this short prompt each tick,
-# the agent re-reads the file each tick, so operators can edit the file
-# mid-mission without restarting any lane.
-_LOOP_PROMPT_TEMPLATE = "/loop Read launch-{name}.md and execute one iteration."
+# (~57 chars max, observed-safe; over it, send-keys is buffered as a "[Pasted
+# text]" placeholder and the bootstrap never fires). The full per-iteration
+# instructions live in launch-<NAME>.md files in the mission directory; /loop
+# re-fires this short prompt each tick, the agent re-reads the file each tick,
+# so operators can edit the file mid-mission without restarting any lane.
+#
+# The "./" prefix is load-bearing, not cosmetic. The agent is spawned with cwd =
+# mission dir (where launch-<NAME>.md lives) and Claude Code injects that cwd
+# into its environment — so a cwd-relative path resolves with the Read tool and
+# NO shell. A bare filename instead makes the agent run `ls`/`find` to locate
+# the file before reading; under the hardened tool surface those gate to a
+# permission prompt that stalls the lane indefinitely when the operator is AFK.
+# This is the only instruction delivered *before* the first read of launch.md,
+# so it must itself prevent that orienting probe (launch.md's own no-explore
+# rule can't help until after the file it forbids exploring for has been read).
+_LOOP_PROMPT_TEMPLATE = "/loop Read ./launch-{name}.md and run one iteration."
 
 
 def _initial_prompt(name: str) -> str:
