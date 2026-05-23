@@ -100,3 +100,29 @@ def test_exit_criteria_flag_substituted(tmp_path, monkeypatch):
     assert res.returncode == 0, res.stderr
     rd = next((work / "runs").glob("*--crit"))
     assert "CUSTOM-EXIT-XYZ" in (rd / "MISSION.md").read_text()
+
+
+def test_new_run_seeds_no_broad_approval_rules(tmp_path, monkeypatch):
+    """new_run.sh must not seed a broad .fleet/approval-rules.json.
+
+    The bounded allowlist lives in claude.py; a seeded approval-rules file that
+    re-broadened the surface would defeat it. Either no file is seeded (current
+    behavior — vacuously safe), or any seeded file is interpreter/compound-free.
+    """
+    import json
+
+    work = tmp_path / "repo"
+    work.mkdir()
+    (work / "templates").symlink_to(REPO / "templates")
+    (work / "scripts").symlink_to(REPO / "scripts")
+    monkeypatch.setenv("RUN_LIB_REPO_ROOT", str(work))
+    res = _run(["guard", "--force"], cwd=work)
+    assert res.returncode == 0, f"new_run.sh failed: {res.stderr}"
+    created = list((work / "runs").glob("*--guard"))
+    assert created, "new_run.sh did not create a run dir under the overridden root"
+    for d in created:
+        rules = d / ".fleet" / "approval-rules.json"
+        if rules.exists():
+            patterns = json.dumps(json.loads(rules.read_text())).lower()
+            for bad in ["python", "uv run", "bash -c", "curl", "&&"]:
+                assert bad not in patterns, f"broad seed pattern leaked: {bad}"
