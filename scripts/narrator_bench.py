@@ -31,7 +31,6 @@ import glob
 import html as _html
 import json
 import os
-import random
 import re
 import subprocess
 import sys
@@ -649,177 +648,6 @@ def write_json(
     print(f"JSON results written: {out_path}")
 
 
-def write_blinded_eval_html(
-    out_path: Path, fixtures: list[Fixture], results: list[Result], models: list[str]
-) -> None:
-    """Interactive blinded A/B/C page: pick the best narrative per lane, then reveal.
-
-    Per lane: shows the source digest ("the blurp" each model worked from) and the
-    candidate narratives in RANDOMIZED order as Option A/B/C… with model identity
-    hidden. The reader picks one per lane; a Reveal button unmasks the models and
-    tallies which model the reader preferred. Model→option mapping is embedded but
-    only exposed on reveal (honest self-eval).
-    """
-    lanes_data = []
-    for fx in fixtures:
-        opts = []
-        for m in models:
-            r = next((x for x in results if x.model == m and x.lane == fx.lane), None)
-            if r is None:
-                continue
-            opts.append({"model": m, "text": r.output.strip() or "(no output)"})
-        random.shuffle(opts)  # blind: order carries no model signal
-        lanes_data.append(
-            {
-                "lane": fx.lane,
-                "n_events": fx.n_events,
-                "digest": fx.digest_text,
-                "full_session": fx.full_session,
-                "options": opts,
-            }
-        )
-    data_json = json.dumps(lanes_data)
-    gen = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
-
-    doc = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Narrator — blinded eval</title>
-<style>
-  :root {
-    --bg:#0b0d10; --panel:#14171c; --border:#262b33; --text:#d7dbe0; --muted:#8b939e;
-    --accent:#6ea8fe; --good:#3fb950; --pick:#6ea8fe; --mono:ui-monospace,Menlo,monospace;
-  }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text);
-    font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
-  .wrap { max-width:980px; margin:0 auto; padding:28px 20px 140px; }
-  h1 { font-size:23px; margin:0 0 6px; }
-  .sub { color:var(--muted); font-size:13px; margin:0 0 24px; }
-  .lane { margin:0 0 30px; border:1px solid var(--border); border-radius:10px; background:var(--panel); overflow:hidden; }
-  .lane h2 { font-size:15px; margin:0; padding:12px 16px; border-bottom:1px solid var(--border);
-    background:#10131a; }
-  .lane h2 .meta { color:var(--muted); font-weight:400; font-size:12px; }
-  .digest { font-family:var(--mono); font-size:12.5px; white-space:pre-wrap; color:#aeb6c0;
-    background:#0d1014; border-bottom:1px solid var(--border); padding:12px 16px; max-height:200px; overflow:auto; }
-  .digest .lbl { color:var(--muted); text-transform:uppercase; letter-spacing:.05em; font-size:11px; display:block; margin-bottom:6px; }
-  .digest-det { border-bottom:1px solid var(--border); }
-  .digest-det summary { cursor:pointer; color:var(--muted); font-size:12px; padding:8px 16px; user-select:none; }
-  .digest-det summary:hover { color:var(--accent); }
-  .digest.mini { max-height:160px; border-bottom:none; color:#7d8590; }
-  .opts { padding:12px 16px; display:flex; flex-direction:column; gap:8px; }
-  .opt { display:flex; gap:12px; align-items:flex-start; padding:11px 14px; border:1px solid var(--border);
-    border-radius:8px; cursor:pointer; transition:border-color .12s, background .12s; }
-  .opt:hover { border-color:var(--accent); }
-  .opt.picked { border-color:var(--pick); background:rgba(110,168,254,.10); }
-  .opt .tag { font-family:var(--mono); font-weight:700; color:var(--accent); min-width:22px; }
-  .opt .body { flex:1; }
-  .opt .reveal { display:none; font-family:var(--mono); font-size:12px; color:var(--good); margin-top:5px; }
-  body.revealed .opt .reveal { display:block; }
-  .bar { position:fixed; left:0; right:0; bottom:0; background:#0d1014; border-top:1px solid var(--border);
-    padding:12px 20px; display:flex; gap:16px; align-items:center; justify-content:space-between; }
-  .bar .status { color:var(--muted); font-size:13px; }
-  button { background:var(--accent); color:#06223f; border:0; border-radius:7px; padding:9px 18px;
-    font-size:14px; font-weight:650; cursor:pointer; }
-  button:disabled { opacity:.4; cursor:not-allowed; }
-  #tally { max-width:980px; margin:0 auto 20px; }
-  #tally .card { background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--good);
-    border-radius:10px; padding:16px; display:none; }
-  body.revealed #tally .card { display:block; }
-  #tally h3 { margin:0 0 8px; }
-  #tally .row { display:flex; justify-content:space-between; padding:3px 0; font-size:14px; }
-  #tally .mono { font-family:var(--mono); }
-</style></head>
-<body><div class="wrap">
-  <h1>Narrator — blinded eval</h1>
-  <p class="sub">For each lane, read the <b>source activity</b>, then pick the status line you'd want on the dashboard. Model names are hidden until you reveal. __GEN__</p>
-  <div id="tally"><div class="card"></div></div>
-  <div id="lanes"></div>
-</div>
-<div class="bar">
-  <span class="status" id="status"></span>
-  <button id="revealBtn" disabled>Reveal models</button>
-</div>
-<script>
-const DATA = __DATA__;
-const picks = {};
-const TAGS = ["A","B","C","D","E","F","G"];
-
-function el(t, props, ...kids){ const e=document.createElement(t); Object.assign(e,props||{});
-  for(const k of kids){ if(k!=null) e.append(k.nodeType?k:document.createTextNode(k)); } return e; }
-
-function updateStatus(){
-  const done=Object.keys(picks).length, total=DATA.length;
-  document.getElementById("status").textContent = done + " / " + total + " lanes picked";
-  document.getElementById("revealBtn").disabled = done < total;
-}
-
-const lanesEl=document.getElementById("lanes");
-DATA.forEach((lane, li)=>{
-  const sec=el("section",{className:"lane"});
-  sec.append(el("h2",{},lane.lane+" ", el("span",{className:"meta"},"· "+lane.n_events+" events")));
-  // Primary source = the FULL readable session (ground truth) — judge fidelity against this.
-  const full=el("div",{className:"digest"},
-    el("span",{className:"lbl"},"Full session — what the agent actually did (ground truth)"),
-    lane.full_session);
-  sec.append(full);
-  // Secondary, collapsible: the compacted digest the models actually received.
-  const det=el("details",{className:"digest-det"});
-  det.append(el("summary",{},"Show the compacted digest the models received"));
-  det.append(el("div",{className:"digest mini"}, lane.digest));
-  sec.append(det);
-  const opts=el("div",{className:"opts"});
-  lane.options.forEach((opt,oi)=>{
-    const card=el("div",{className:"opt"});
-    card.append(el("span",{className:"tag"},TAGS[oi]));
-    const body=el("div",{className:"body"}, el("div",{},opt.text),
-      el("div",{className:"reveal"}, "→ "+opt.model));
-    card.append(body);
-    card.onclick=()=>{
-      picks[li]=oi;
-      [...opts.children].forEach(c=>c.classList.remove("picked"));
-      card.classList.add("picked");
-      updateStatus();
-    };
-    opts.append(card);
-  });
-  sec.append(opts);
-  lanesEl.append(sec);
-});
-updateStatus();
-
-document.getElementById("revealBtn").onclick=()=>{
-  document.body.classList.add("revealed");
-  const counts={};
-  DATA.forEach((lane,li)=>{ const oi=picks[li]; if(oi==null) return;
-    const m=lane.options[oi].model; counts[m]=(counts[m]||0)+1; });
-  const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
-  const card=document.querySelector("#tally .card");
-  while(card.firstChild) card.removeChild(card.firstChild);
-  card.append(el("h3",{},"Your preferences"));
-  sorted.forEach(([m,n])=>card.append(el("div",{className:"row"},
-    el("span",{className:"mono"},m), el("span",{},n+" / "+DATA.length+" lanes"))));
-  if(sorted.length){ card.append(el("div",{className:"row",style:"margin-top:8px;color:var(--good);font-weight:650"},
-    el("span",{},"Your favorite"), el("span",{className:"mono"},sorted[0][0]))); }
-  window.scrollTo({top:0,behavior:"smooth"});
-  document.getElementById("revealBtn").disabled=true;
-};
-</script>
-</body></html>
-"""
-    doc = doc.replace("__DATA__", data_json).replace("__GEN__", f"Generated {gen}.")
-    out_path.write_text(doc, encoding="utf-8")
-    print(f"Blinded eval written: {out_path}")
-
-    # Persist the option→model key so picks can be decoded either way: the page's
-    # own Reveal button, OR the reader relaying letters ("ARCHITECT: B") to the
-    # agent, who reads key[lane][1]. TAGS order = A,B,C… = option index.
-    key = {ld["lane"]: [o["model"] for o in ld["options"]] for ld in lanes_data}
-    key_path = out_path.with_name("blinded_eval_key.json")
-    key_path.write_text(json.dumps(key, indent=2), encoding="utf-8")
-    print(f"Blinded eval key written: {key_path}")
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--models-dir", default="~/models/narrator-bench")
@@ -858,9 +686,6 @@ def main(argv: list[str] | None = None) -> int:
         out.with_suffix(".html"), fixtures, all_results, model_names, all_stats
     )
     write_json(out.with_suffix(".json"), fixtures, all_results, all_stats)
-    write_blinded_eval_html(
-        out.with_name("blinded_eval.html"), fixtures, all_results, model_names
-    )
     return 0
 
 

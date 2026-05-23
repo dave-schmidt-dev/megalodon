@@ -36,8 +36,10 @@ model-free input layer; 6 unit tests.
 **Small-model benchmark (`scripts/narrator_bench.py`, `benchmarks/narrator/`):**
 benched 8 small local GGUF models on REAL captured v94h sessions through the
 production digest+prompt path. Captures wall-time/tok-s/GPU-util/peak-mem (GPU via
-`ioreg` Device Utilization %, no sudo). Emits md + html + json + a blinded-eval
-page (randomized per lane, model-hidden, reveal-and-tally). Three rounds of
+`ioreg` Device Utilization %, no sudo). Emits md + html + json. (A one-off
+blinded-eval page — randomized per lane, model-hidden, reveal-and-tally — drove
+the style pick below, then was removed post-decision once gemma-e2b was locked.)
+Three rounds of
 subagent faithfulness audits vs full-session ground truth showed **~80% of "model
 failures" were harness-induced** (vague prompt + ambiguous digest endings); fixing
 both took zero-fabrication candidates 2 -> 4 -> 6. Blinded human style pick ->
