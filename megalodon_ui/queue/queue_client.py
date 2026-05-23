@@ -334,9 +334,9 @@ def wait_until_applied(
 
 # ---- CLI for shell-friendly invocations (handles cas_write use case directly) ----
 
-if __name__ == "__main__":
+
+def main(argv: list[str] | None = None) -> int:
     import argparse
-    import sys
 
     p = argparse.ArgumentParser(description="Megalodon v9 queue client")
     p.add_argument("--mission-dir", required=True, type=Path)
@@ -369,7 +369,7 @@ if __name__ == "__main__":
     sp = sub.add_parser("claim-done")
     sp.add_argument("--task", required=True)
 
-    args = p.parse_args()
+    args = p.parse_args(argv)
     common = dict(mission_dir=args.mission_dir, agent=args.agent, lane=args.lane)
 
     if args.cmd == "status":
@@ -395,6 +395,13 @@ if __name__ == "__main__":
         rid = claim_dir_done(**common, task_id=args.task)
     else:
         p.print_help()
-        sys.exit(2)
+        return 2
 
     print(rid)
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))

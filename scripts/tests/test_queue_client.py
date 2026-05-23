@@ -284,3 +284,34 @@ def test_wait_until_applied_detects_rejected(queue_mission):
         )
         == "rejected"
     )
+
+
+def test_main_callable_status_forwards(tmp_path, monkeypatch):
+    """queue_client.main(argv) is importable and forwards to status_update."""
+    import megalodon_ui.queue.queue_client as qc
+
+    captured = {}
+
+    def fake_status_update(**kwargs):
+        captured.update(kwargs)
+        return "req-123"
+
+    monkeypatch.setattr(qc, "status_update", fake_status_update)
+    rc = qc.main(
+        [
+            "--mission-dir",
+            str(tmp_path),
+            "--agent",
+            "agent-abcd",
+            "--lane",
+            "BACKEND",
+            "status",
+            "--state",
+            "idle",
+            "--notes",
+            "hb",
+        ]
+    )
+    assert rc == 0
+    assert captured["new_state"] == "idle"
+    assert captured["agent"] == "agent-abcd"
