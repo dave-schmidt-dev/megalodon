@@ -12,6 +12,7 @@ import errno
 import os
 import socket
 import sys
+import webbrowser
 from pathlib import Path
 
 import uvicorn
@@ -56,6 +57,33 @@ def _write_dashboard_url_atomic(url_path: Path, url: str) -> None:
         os.umask(old_umask)
 
 
+def _open_dashboard(url: str, *, enabled: bool, log) -> None:
+    """Auto-open the dashboard in the operator's browser.
+
+    Fleet observability is the product's whole point: a spawned fleet the
+    operator cannot see is a failed launch. So the spawn path opens the
+    dashboard automatically. The listener socket is already bound and
+    ``listen()``-ing before this runs, so the browser's connection is queued by
+    the kernel and served the instant uvicorn accepts — no connection-refused
+    race.
+
+    A browser-launch failure (headless host, no default browser) must NEVER
+    crash the server: we log and fall back to the URL already printed to stdout.
+    """
+    if not enabled:
+        log.info("Dashboard auto-open disabled (--no-browser); open manually: %s", url)
+        return
+    try:
+        opened = webbrowser.open(url, new=2)
+    except Exception as exc:  # noqa: BLE001 — browser launch must not be fatal
+        log.warning("Could not auto-open dashboard (%s); open manually: %s", exc, url)
+        return
+    if opened:
+        log.info("Opened dashboard in browser: %s", url)
+    else:
+        log.warning("No browser available to auto-open; open manually: %s", url)
+
+
 def main() -> None:
     """Parse args, bind socket, write token + URL, hand fd to uvicorn."""
     parser = argparse.ArgumentParser(
@@ -80,6 +108,12 @@ def main() -> None:
         "--debug",
         action="store_true",
         default=os.environ.get("MEGALODON_DEBUG") == "1",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        default=os.environ.get("MEGALODON_NO_BROWSER") == "1",
+        help="Do not auto-open the dashboard in a browser (for headless/CI runs).",
     )
     args = parser.parse_args()
 
@@ -140,6 +174,11 @@ def main() -> None:
         print(dashboard_url, flush=True)
         log.info("Dashboard: %s", dashboard_url)
         _write_dashboard_url_atomic(url_path, dashboard_url)
+
+        # Step 8b: auto-open the dashboard. The listener is already bound +
+        # listening (Step 5), so the browser's request queues until uvicorn
+        # accepts it below — no connection-refused race. Non-fatal on failure.
+        _open_dashboard(dashboard_url, enabled=not args.no_browser, log=log)
 
         # Step 9: hand fd to uvicorn — it adopts the socket, no re-bind.
         config = uvicorn.Config(

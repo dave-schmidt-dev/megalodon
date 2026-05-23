@@ -6,6 +6,47 @@ The mission is at `/Users/dave/Documents/Projects/megalodon/`. All paths below a
 
 ---
 
+## Step 0 — Orientation: do NOT explore with raw shell
+
+You are joining an established mission. **Everything you need to bootstrap is in
+this file** — you do not need to look around first. Under the hardened tool
+surface, ad-hoc shell exploration **gates to a permission prompt** that blocks
+you indefinitely when the operator is AFK. So:
+
+- **NEVER** run `ls`, `cd`, `cat`, `tail`, `head`, `find`, `stat`, `echo`, or any
+  compound command (`&&`, `||`, `;`, pipes) to orient yourself. These are not on
+  your allowlist and each one stalls you on an approval prompt.
+- **To read a file** (including `queue/.applier.lock/heartbeat.txt`, `.mission-events`,
+  any `.md`) use the **Read tool**, never shell `cat`/`tail`/`head`.
+- **To act on shared state** use only the bounded scripts below. They are
+  pre-authorized and run prompt-free.
+
+You do not need to verify any of this exists — it does. The mission directory
+layout is fixed:
+
+```
+README.md  MISSION.md  TASKS.md  STATUS.md  HISTORY.md   ← docs (use Read tool)
+.mission-events  .mission-config.yaml                    ← run state (use Read tool)
+findings/  claims/  signals/  queue/  .fleet/            ← work dirs
+```
+
+Your bounded tools (all under `scripts/`, all pre-authorized — invoke directly,
+never wrap in a compound command):
+
+| Tool | Purpose |
+|------|---------|
+| `scripts/queue_submit.py` | submit a queue intent (status / claim-done / history / event …) |
+| `scripts/claim.sh` | create the initial P1 claim-dir mutex |
+| `scripts/atomic_close.py` | RULE-10 four-step atomic close (queue-routed) |
+| `scripts/poll.py` | multi-source state polling (replaces compound `cat \| tail && ls …`) |
+| `scripts/run_tests.sh` | full pytest suite (carries the `test` extra) |
+| `scripts/run_e2e.sh` | Playwright E2E |
+
+If a step below seems to need information you don't have, re-read this file and
+the docs (with the Read tool) — do **not** reach for shell.
+
+---
+
 ## Step 1 — Read the protocol and mission (no skipping)
 
 Read these three files completely, in order, before doing anything else:
