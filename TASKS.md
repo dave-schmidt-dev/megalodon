@@ -1,3 +1,5 @@
+> **Active plan (NEXT — tool-surface hardening, warp-reviewed 2026-05-22, ready to execute):** `docs/superpowers/plans/2026-05-22-agent-tool-surface-policy.md` · tasks: `~/Documents/Projects/.plans/megalodon/agent-tool-surface-policy-2026-05-22-tasks.md` · synthesis: same dir. Removes python/compound from the fleet allowlist + bounded tools (`claim.sh`, `queue_submit.py`, `run_tests.sh`); then re-run the v9.4 UI dogfood on the hardened surface.
+>
 > **Active plan (v9.4 — IMPLEMENTATION COMPLETE 2026-05-20; lifecycle + harness COMPLETE 2026-05-22):** `docs/superpowers/plans/2026-05-22-v94-dogfood-and-run-lifecycle.md`. Dashboard plan: `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (v2 — warp-complete).
 > **Status**: T4.3 IN PROGRESS — lifecycle ready, dogfood is the next operator step.
 > **Next action**: `bash scripts/preflight.sh --dry-run` → must print `PREFLIGHT: PASS`. Then `bash scripts/new_run.sh v94-ui-dogfood --title "v9.4 UI self-observation dogfood" --summary "..."`. Lifecycle convention: `docs/v9/v9-4-RUN-LIFECYCLE.md`.
