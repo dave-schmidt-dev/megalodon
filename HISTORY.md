@@ -10,6 +10,22 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-22/23 — Agent tool-surface policy (warp-reviewed plan; ready to execute)
+
+**Plan:** `docs/superpowers/plans/2026-05-22-agent-tool-surface-policy.md` · **Spec:** `docs/superpowers/specs/2026-05-22-agent-tool-surface-policy-design.md` · **Synthesis/tasks/reviews:** `~/Documents/Projects/.plans/megalodon/agent-tool-surface-policy-2026-05-22-*`.
+
+**Origin.** The `v94-ui-dogfood` run was abandoned (`DEGRADED-CLOSE`, archived to `.archive/2026-05-22T19-50Z--v94-ui-dogfood/`, 4 findings banked) because six agents hit a permission prompt on nearly every bash command — the dashboard was mechanically fine but operationally unusable. Operator constraint: **never approve `python`.**
+
+**Live bugs fixed during the dogfood (already committed/pushed, independent of the plan):** `scripts/start_applier.sh` PROJECT_ROOT parse bug (`(git || cd) && pwd`); CI freezegun parity drift (CI now uses `uv run --extra test`); approve-button regression (`permission_watcher.py` now reads the live tmux pane via capture-pane as the authoritative source, not the append-only stream log).
+
+**The plan (NOT yet implemented).** Removes `python`/`uv run`/compound/`curl` from the spawned-fleet `--allowedTools` surface (`megalodon_ui/harnesses/claude.py`); routes bootstrap through bounded path-scoped tools — new `scripts/claim.sh`, `scripts/queue_submit.py`, `scripts/run_tests.sh`, plus the existing `{{AGENT_ID}}` spawn-bake; adds a PM-8 `_is_unbounded_tool` filter so operator "approve & remember" cannot re-admit `python`; inverts `test_harness_claude.py` as the keystone enforcement test; rewrites `launch.md` to bounded tools only.
+
+**Warp review (4 cross-model passes).** GPT-5.5 (contrarian) + Gemini 3.1 Pro (auditor) + Opus (constructive) + Kimi K2.5 (pre-mortem): **17 accept / 2 acknowledge / 1 reject / 1 escalate(resolved)**. Highest-value find (verified against Claude Code docs): **dropped explicit read-only-git patterns** — Claude auto-runs read-only git/cat/ls/grep as built-ins, and `Bash(git diff*)` was *broadening* the surface to `--output` writes. Threat model confirmed: friction + anti-re-admission, **not** hostile-agent sandboxing.
+
+**Next:** execute the plan via subagent-driven development (off the live system), then re-run the v9.4 UI dogfood on the hardened surface — the visibility charter that never got to run.
+
+---
+
 ## V9.4 SHIPPED — Dashboard Rebuild (warp-tier plan)
 
 **Date:** 2026-05-20
