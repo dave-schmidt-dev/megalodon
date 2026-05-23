@@ -10,6 +10,57 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-23 — Agent tool-surface policy (IMPLEMENTED; pending manual gate)
+
+Executed the warp-reviewed plan via subagent-driven development (supersedes the
+"ready to execute" entry below). Local commits only — **not pushed**; the manual
+fresh-spawn acceptance gate is the push precondition.
+
+**What shipped (local commits on `main`):**
+- `refactor(queue)`: extracted `queue_client.main(argv)` so the CLI is importable.
+- `feat(scripts)`: `claim.sh` (bounded claims/ mutex, replaces `mkdir && echo`),
+  `queue_submit.py` (path-scoped wrapper, replaces `python -m …queue_client`),
+  `run_tests.sh` (bounded `uv run --extra test pytest`, replaces bare `pytest`).
+- `feat(harness)`: narrowed the `live_repl` `--allowedTools` surface in
+  `claude.py` to native tools + path-scoped scripts (`poll`/`atomic_close`/`claim`/
+  `queue_submit`/`run_e2e`/`run_tests`) + `sleep`/`date`/`printf` — **nothing else**.
+  Dropped `python`/`uv run`/`pytest`/`curl`/explicit-git/`cat`/`ls`/`find` and all
+  compound chains. Added `_is_unbounded_tool` (exported `_FORBIDDEN_HEAD_CMDS`/
+  `_COMPOUND_OPERATORS`) filtering the PM-8 approval-rules append so "approve &
+  remember" can never re-admit an interpreter; **incl. a `scripts/../python3`
+  path-traversal guard** found in independent review. Keystone test inverted.
+- `docs(launch)`: `launch.md` routes every agent op through bounded tools (baked
+  `{{AGENT_ID}}`, `queue_submit.py` for STATUS/queue, `claim.sh`, `run_tests.sh`;
+  python+fcntl carve-out removed; heartbeat read via the Read tool, not `cat`).
+- `test(launch)`: `test_launch_protocol_no_interpreters.py` lints template + rendered
+  per-lane files. `test(new_run)`: guard against a broad approval-rules seed.
+
+**Regression reconciled:** `test_spawn_reads_approval_rules.py::test_two_rules_merged…`
+encoded the OLD contract (operator curl/find rules *appended*; static curl/npm present).
+Rewritten to the new contract — bounded `scripts/` operator rule kept; unbounded
+`curl`/`find` rules **filtered out** in the real spawn path. (Renamed
+`test_rules_merged_bounded_kept_unbounded_filtered`.)
+
+**Operator-settings hygiene (separate surface, done at operator request):**
+`.claude/settings.json` now *prompts* (rather than silently allowing) `python -c`/
+`python3 -c`, and `chmod` moved off the deny list to *prompt* — an allowed `python -c`
+could route around a `chmod` deny, so the deny wasn't a real boundary. This is the
+operator's interactive session, distinct from the fleet harness string (this edit is
+local-only; `.claude/settings.json` is gitignored).
+
+**Validation:** 56 policy tests green; full suite green **except 8 pre-existing
+environmental failures** in real-tmux/ANSI integration tests (`test_tmux_real.py`,
+`test_real_tmux_spawn.py`, `test_pipe_pane_preserves_ansi_escapes.py`) — root cause is
+the macOS Unix-socket path-length limit on long pytest temp dirs (`error connecting to
+…tmux.sock (File name too long)`), unrelated to this change.
+
+**Still pending (operator):** the manual fresh-spawn acceptance gate (one lane bootstraps
+with zero permission prompts; compound-tail spot-check still prompts; capture
+`claude --version`). Push only after green; then re-run the v9.4 UI dogfood on the
+hardened surface.
+
+---
+
 ## 2026-05-22/23 — Agent tool-surface policy (warp-reviewed plan; ready to execute)
 
 **Plan:** `docs/superpowers/plans/2026-05-22-agent-tool-surface-policy.md` · **Spec:** `docs/superpowers/specs/2026-05-22-agent-tool-surface-policy-design.md` · **Synthesis/tasks/reviews:** `~/Documents/Projects/.plans/megalodon/agent-tool-surface-policy-2026-05-22-*`.

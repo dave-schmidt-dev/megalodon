@@ -29,7 +29,7 @@ A blackboard multi-agent coordination protocol for parallel review, audit, synth
 - **Grid page** (`/lane/:short`) — replaces flat terminal layout with N-pane grid (config-driven; click a lane tile to open lane_detail modal with inject form, stale badge, restart-loop button).
 - **Activity wall** — right-side panel merging 6 event sources (findings, signals, history, queue events, inject log, approval decisions). Filter chips by source type, pause button, expandable details drawer.
 - **Stale-lanes detection** — mission header shows count of lanes exceeding 15-min staleness threshold. Restart-loop button triggers per-lane loop restart.
-- **Approve & remember flow** — operator selects a finding → extracts pattern via regex modal → persists rule to `.fleet/approval-rules.json` → merged into `--allowedTools` at next spawn. Complete audit trail in approval-rules page (CRUD UI).
+- **Approve & remember flow** — operator selects a finding → extracts pattern via regex modal → persists rule to `.fleet/approval-rules.json` → merged into `--allowedTools` at next spawn, **after the `_is_unbounded_tool` filter drops any interpreter/network/compound pattern** (2026-05-22 tool-surface policy — "approve & remember" can never re-admit `python`/`curl`). Complete audit trail in approval-rules page (CRUD UI).
 - **Page rewrites** — 6 pages migrated to v9.4 patterns: findings (severity filter + search), signals (sortable columns), mission (orchestrator actions), tasks (kanban board), approval_rules (new page), grid (N-pane layout).
 - **Backend endpoints** — 5 new: `POST /api/v1/lane/{short}/inject`, `POST /api/v1/lane/{short}/restart-loop`, `GET /api/v1/lanes/stale`, `GET /api/v1/activity-wall` + `POST /api/v1/activity-wall/snapshot`, `GET|POST|DELETE /api/v1/approval-rules` + `POST /api/v1/approval-rules/extract`.
 - **PermissionWatcher.on_change callback** — (lane, info, action) signature where action is approve/approve_remember/deny. Activity wall surfaces these lifecycle events.
@@ -124,6 +124,13 @@ The wildcard is safe because the scripts — not the allowlist — enforce input
 
 See RULES 12, 13, 14 in `launch.md` for the worker-side discipline these scripts enable.
 
+> **Two distinct surfaces.** The above is the *operator's own* interactive session
+> allowlist (`.claude/settings.json`). The **spawned-fleet** allowlist is separate —
+> a bounded set built in `megalodon_ui/harnesses/claude.py` (`build_argv`, `live_repl`):
+> native tools + path-scoped scripts (`poll.py`, `atomic_close.py`, `claim.sh`,
+> `queue_submit.py`, `run_e2e.sh`, `run_tests.sh`) + `sleep`/`date`/`printf`, and
+> nothing else — no `python`/`uv run`/`curl`/compound (2026-05-22 tool-surface policy).
+
 ---
 
 ## V9 startup sequence (M1 queue applier)
@@ -158,8 +165,10 @@ workers.
 
 5. **Workers** (per launch.md RULE 15): all shared-state writes go
    through `scripts/atomic_close.py` (queue-routed via M1 backend swap)
-   or `python -m megalodon_ui.queue.queue_client`. Direct Edit-tool
-   writes to shared state are NO LONGER permitted.
+   or `scripts/queue_submit.py` (the bounded path-scoped wrapper over
+   `queue_client.main`; `python -m megalodon_ui.queue.queue_client` is no
+   longer an agent path under the 2026-05-22 tool-surface policy). Direct
+   Edit-tool writes to shared state are NO LONGER permitted.
 
 6. **(Optional, V9 A1) Start the watchdog daemon** for crash/silent/hung
    worker detection:
@@ -273,8 +282,12 @@ Re-arm your next wakeup before any work each tick.
 ## RULE 1 — Heartbeat every tick
 Update your STATUS row's `Last UTC` every tick, even mid-task. A worker stale >15 min is presumed dead and reclaimed.
 
-## RULE 2 — Atomic claim by mkdir
-`mkdir claims/<task-id>` is the lock. Exit 0 = you own it. Exit nonzero = pick another. TASKS.md is informational; `claims/` is authoritative.
+## RULE 2 — Atomic claim via claim.sh
+`scripts/claim.sh <task-id> <agent-id>` is the lock (a bounded wrapper over the
+`mkdir claims/<task-id>` mutex + `owner.txt`). Exit 0 = you own it (or idempotent
+re-claim); exit 3 = another agent holds it, pick another. The bare `mkdir claims/`
+chain is no longer an agent path under the 2026-05-22 tool-surface policy. TASKS.md
+is informational; `claims/` is authoritative.
 
 ## RULE 3 — Hybrid review stance (Pass-1 / Pass-2)
 - **Pass 1 (FRESH EYES):** form your view from the artifact alone. Do NOT read prior verifications or peer findings. This is the load-bearing safeguard against anchoring.

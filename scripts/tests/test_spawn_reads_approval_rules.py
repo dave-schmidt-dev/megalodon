@@ -1,7 +1,9 @@
 """v9.4 T3.3 — approval-rules wired into spawn (PM-8).
 
 Four cases:
-1. 2 rules merged: patterns appear in --allowedTools AFTER the static allowlist.
+1. Rules merged with tool-surface filtering (2026-05-22): bounded scripts/ rules
+   are appended; unbounded operator rules (curl/find) are dropped by the PM-8
+   filter, never reaching --allowedTools.
 2. No rules file: argv has static allowlist only (regression test).
 3. Corrupt rules file: spawn warns and uses static allowlist only.
 4. Empty rules list: file with {rules: []} behaves like no-file.
@@ -86,23 +88,33 @@ def _get_allowed_value(captured_argv: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Case 1: 2 rules merged — both patterns appear after the static allowlist
+# Case 1: rules merged through the tool-surface filter (2026-05-22 policy) —
+# bounded scripts/ rule appended; unbounded curl/find rules dropped.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_two_rules_merged_into_allowedtools(tmp_path: Path):
-    """Two entries in approval-rules.json must appear in --allowedTools value."""
-    # Write the rules file (raw JSON list — not wrapped in {rules: ...}).
+async def test_rules_merged_bounded_kept_unbounded_filtered(tmp_path: Path):
+    """approval-rules.json flows through spawn into --allowedTools, but the PM-8
+    filter (_is_unbounded_tool) drops interpreter/network/find patterns even from
+    an operator 'approve & remember'. Only bounded scripts/ patterns are appended.
+    """
+    # Raw JSON list (not wrapped in {rules: ...}). Two unbounded patterns that the
+    # OLD policy would have appended, plus one bounded scripts/ pattern.
     rules = [
         {
-            "pattern": "Bash(curl -s http://127.0.0.1:8765/*)",
+            "pattern": "Bash(curl -s http://127.0.0.1:8765/*)",  # network → dropped
             "added_at_utc": "2026-05-20T00:00:00+00:00",
             "added_by_session": "sess-abc",
         },
         {
-            "pattern": "Bash(find:*)",
+            "pattern": "Bash(find:*)",  # find -exec → dropped
             "added_at_utc": "2026-05-20T00:01:00+00:00",
+            "added_by_session": "sess-abc",
+        },
+        {
+            "pattern": "Bash(scripts/custom_tool.sh:*)",  # bounded path → kept
+            "added_at_utc": "2026-05-20T00:02:00+00:00",
             "added_by_session": "sess-abc",
         },
     ]
@@ -138,30 +150,21 @@ async def test_two_rules_merged_into_allowedtools(tmp_path: Path):
     assert "--allowedTools" in captured_argv, "Expected --allowedTools in spawn argv"
     allowed = _get_allowed_value(captured_argv)
 
-    # Static allowlist entries must still be present.
-    assert "Bash(mkdir claims/*)" in allowed, (
-        "Static allowlist missing from merged argv"
-    )
-    assert "Bash(curl -s http://127.0.0.1*)" in allowed, "Static localhost curl missing"
+    # Bounded static allowlist is present (no curl/npm under the 2026-05-22 policy).
     assert "Read" in allowed, "Static Read tool missing"
+    assert "Bash(scripts/queue_submit.py:*)" in allowed, "Static bounded script missing"
 
-    # Both operator-approved patterns must appear AFTER the static allowlist.
-    assert "Bash(curl -s http://127.0.0.1:8765/*)" in allowed, (
-        f"First approval-rule pattern missing from --allowedTools: {allowed!r}"
-    )
-    assert "Bash(find:*)" in allowed, (
-        f"Second approval-rule pattern missing from --allowedTools: {allowed!r}"
-    )
+    # Unbounded operator rules MUST be filtered out — never re-admitted via PM-8.
+    assert "Bash(curl" not in allowed, "curl approval-rule must be filtered out"
+    assert "Bash(find:*)" not in allowed, "find approval-rule must be filtered out"
 
-    # Confirm ordering: extra patterns come after the static ones.
-    static_end = allowed.rindex("Bash(npm run test*)")
-    curl_pos = allowed.index("Bash(curl -s http://127.0.0.1:8765/*)")
-    find_pos = allowed.index("Bash(find:*)")
-    assert curl_pos > static_end, (
-        "First extra pattern must appear after static allowlist"
+    # The bounded scripts/ operator rule IS appended, after the static allowlist.
+    assert "Bash(scripts/custom_tool.sh:*)" in allowed, (
+        f"Bounded approval-rule pattern missing from --allowedTools: {allowed!r}"
     )
-    assert find_pos > static_end, (
-        "Second extra pattern must appear after static allowlist"
+    static_end = allowed.rindex("Bash(printf:*)")
+    assert allowed.index("Bash(scripts/custom_tool.sh:*)") > static_end, (
+        "Bounded extra pattern must appear after the static allowlist"
     )
 
 

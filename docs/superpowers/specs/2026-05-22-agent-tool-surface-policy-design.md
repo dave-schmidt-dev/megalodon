@@ -1,7 +1,7 @@
 # Agent Tool-Surface Policy — Design
 
 **Date:** 2026-05-22
-**Status:** design (awaiting operator review)
+**Status:** implemented (2026-05-23) — code + tests landed via subagent-driven execution; **manual fresh-spawn acceptance gate still pending operator** before push (see "Done when").
 **Origin:** v94-ui-dogfood finding `operator-FM2-approval-friction-tool-surface-policy`
 (`.archive/2026-05-22T19-50Z--v94-ui-dogfood/findings/`).
 
@@ -129,10 +129,15 @@ through raw `python`/compound. This design closes them.
 
 ## Done when
 
-- The base allowlist contains zero unbounded patterns (enforced by test).
-- A fresh `new_run.sh` + spawn produces a fleet that completes bootstrap (agent ID,
-  claim, first queue submit) with **zero permission prompts**.
-- `launch.md` contains no `python3 -c` / `python -m` / compound bash in agent steps.
-- All new tools have tests; full suite green; CI green.
-- Then: re-run the v9.4 UI dogfood on the hardened surface (the visibility charter
-  finally gets to run).
+- [x] The base allowlist contains zero unbounded patterns (enforced by test) —
+  `test_harness_claude.py` keystone + filter tests, incl. a `scripts/../` traversal guard.
+- [ ] A fresh `new_run.sh` + spawn produces a fleet that completes bootstrap (agent ID,
+  claim, first queue submit) with **zero permission prompts** — **MANUAL operator gate,
+  not automatable; pending. Push only after this is green.**
+- [x] `launch.md` contains no `python3 -c` / `python -m` / compound bash in agent steps —
+  enforced by `test_launch_protocol_no_interpreters.py` (template + rendered per-lane).
+- [x] All new tools have tests; full suite green; CI green — 56 policy tests green;
+  full suite green except 8 pre-existing environmental tmux failures (Unix-socket path
+  length, unrelated to this change).
+- [ ] Then: re-run the v9.4 UI dogfood on the hardened surface (the visibility charter
+  finally gets to run) — **operator follow-up after the gate.**
