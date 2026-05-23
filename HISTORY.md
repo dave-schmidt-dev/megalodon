@@ -10,6 +10,32 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-23 — Cleanup, bootstrap fix, narrator summary-board plan (warp)
+
+**Benchmark cleanup:** removed the one-off blinded-eval (`benchmarks/narrator/blinded_eval.*`
++ `write_blinded_eval_html()` generator + orphaned `import random`) now that gemma-e2b is
+locked; pruned the bench model set to gemma-e2b + smollm3-3b + qwen3-1.7b (~13 GB
+reclaimed); refreshed the 3 stale MLX Gemma-4 chat templates (weights unchanged). Commit
+`24cf2df`.
+
+**Bootstrap-prompt template fix:** see the dedicated entry below — the v9.3 `/loop` prompt
+now uses a cwd-relative `./launch-<NAME>.md` path so agents stop `find`-ing the file and
+gating on a permission prompt. Commit `d6c9072`, regression test `test_loop_prompt_path.py`.
+
+**Narrator summary-board — design + warp plan (NOT YET IMPLEMENTED).** Brainstormed and
+specced a summary-first board to replace the unusable 6-tile grid: per-lane Last/Now/Goal
+(hybrid — deterministic task IDs/Goal + a gemma-e2b "Now" phrase), a megalodon-supervised
+`llama-server` runtime, a watcher-gated server-side scheduler over a dedicated
+`/api/v1/narrative-stream` SSE endpoint (30s, tunable to 15s), inline approve/deny on the
+existing endpoint, a terminal drawer, and grid deletion. Spec:
+`docs/superpowers/specs/2026-05-23-narrator-summary-board-design.md` (commit `e04c819`).
+Full warp plan cycle (self-pass + 3 reviewers + Kimi pre-mortem; auditor 0 discrepancies /
+15 verified; 0 escalations) → plan + tasks at
+`~/Documents/Projects/.plans/megalodon/narrator-summary-board-2026-05-23*.md`. TASKS.md
+pointer commit `0067b17`. **Implementation is a separate session.**
+
+---
+
 ## 2026-05-23 — Dashboard auto-open + lane-narrator layer + small-model benchmark
 
 **Dashboard auto-launch (P0 observability fix):** the `--spawn` path printed the
