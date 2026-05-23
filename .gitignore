@@ -35,6 +35,9 @@ claims/*
 .claude/settings.json
 .claude/settings.local.json
 
+# Operational fleet run dirs (transient; archived to .archive/ on completion)
+runs/
+
 # Brainstorm / scratch session state
 .superpowers/
 .session-state/
