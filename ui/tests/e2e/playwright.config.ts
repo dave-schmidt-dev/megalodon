@@ -96,7 +96,10 @@ const ports = {
 const SERVER_CMD = (port: number, missionDir: string) =>
   `uv run --directory ${path.resolve(__dirname, '..', '..', '..')} ` +
   `--with fastapi --with "uvicorn[standard]" --with sse-starlette --with pyyaml ` +
-  `python3 -m megalodon_ui --port ${port} --mission-dir ${missionDir}`;
+  // --no-browser: test webServers must NEVER auto-open the dashboard. Without
+  // it every project's webServer calls webbrowser.open(), so an unfiltered
+  // `npx playwright test` (all ~11 projects) spawns ~11 real browser tabs.
+  `python3 -m megalodon_ui --port ${port} --mission-dir ${missionDir} --no-browser`;
 
 // Parse `--project=<name>` / `--project <name>` from argv so we only spin up
 // the webServer(s) needed for the selected project. Without this, all 10
