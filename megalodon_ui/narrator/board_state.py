@@ -47,7 +47,10 @@ class LaneRow:
         lane: Short lane code (e.g. ``"A"``).
         lane_name: Long lane name (e.g. ``"AUDIT"``).
         state: Lane state string (e.g. ``"claimed"``).
-        last: Latest DONE task as ``{"task_id": ..., "desc": ...}``, or None.
+        last: Latest DONE task as ``{"task_id": ..., "desc": ..., "phrase": None}``,
+            or None.  ``phrase`` is always None here; the scheduler fills it with
+            an advisory "just-completed" narrative (OQ1) — the deterministic
+            ``desc`` remains the fallback.
         now: Latest CLAIMED task as ``{"task_id": ..., "desc": ..., "phrase": None}``,
             or None.  ``phrase`` is always None here; the scheduler fills it.
         goal: Human-readable goal: now.desc, else last.desc, else the lane role.
@@ -223,6 +226,7 @@ def assemble_lane_rows(
             last = {
                 "task_id": latest_done["task_id"],
                 "desc": latest_done.get("description", ""),
+                "phrase": None,  # scheduler fills this (OQ1); desc is the fallback
             }
 
         now: dict[str, Any] | None = None

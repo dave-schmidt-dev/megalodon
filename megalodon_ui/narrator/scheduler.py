@@ -3,8 +3,9 @@
 A watcher-gated loop that, on each tick:
 
 1. Builds deterministic lane rows via an injected ``build_rows`` coroutine.
-2. Asks the narrator to phrase the "Now" line for each *narratable* lane
-   concurrently (lanes with a transcript digest, when the runtime is ready).
+2. Asks the narrator to phrase the "Now" line for each *narratable* lane and,
+   via a separate single-phrase call, the "Last" line for lanes with a closed
+   task — all concurrently (lanes with a transcript digest, when ready).
 3. Updates a shared cache (``cache[short] = row.to_dict()``).
 4. Publishes a snapshot frame to the :class:`NarrativeHub`.
 
@@ -36,7 +37,7 @@ import logging
 from typing import Awaitable, Callable
 
 from .board_state import LaneRow
-from .client import narrate
+from .client import narrate, narrate_last
 from .hub import NarrativeHub
 from .runtime import NarratorRuntime
 
@@ -67,16 +68,23 @@ def clamp_interval_s(raw: float | None) -> float:
 
 
 async def narrate_rows(rows: dict[str, LaneRow], runtime: NarratorRuntime) -> None:
-    """Narrate the narratable lanes concurrently, mutating ``rows`` in place.
+    """Narrate the Now AND Last phrases concurrently, mutating ``rows`` in place.
 
-    A lane is narrated only when it has a transcript (``digest_text is not
-    None``) AND the runtime is ready. All such lanes are narrated concurrently
-    via :func:`asyncio.gather` with ``return_exceptions=True`` so one slow or
-    failing lane never delays or breaks the others. On a non-None result the
-    row's ``now["phrase"]`` is set (only if ``now`` exists) and
-    ``narrator_ok`` flips True. On None / timeout / exception the phrase stays
-    None and ``narrator_ok`` stays False. Deterministic-only rows and every
-    row when the runtime is not ready are left untouched.
+    A lane's "Now" is narrated when it has a transcript (``digest_text is not
+    None``) AND the runtime is ready. Independently, a lane's "Last" is narrated
+    via a SEPARATE single-phrase call (OQ1) when it has BOTH a closed ``last``
+    task AND a transcript (``digest_text is not None``) AND the runtime is ready.
+
+    ALL calls — Now-per-lane and Last-per-lane — run concurrently via a single
+    :func:`asyncio.gather` with ``return_exceptions=True`` so one slow or failing
+    call never delays or breaks the others (a Last failure cannot affect Now or
+    any other lane). Each call carries the per-call timeout. On a non-None Now
+    result the row's ``now["phrase"]`` is set (only if ``now`` exists) and
+    ``narrator_ok`` flips True. On a non-None Last result the row's
+    ``last["phrase"]`` is set. On None / timeout / exception the relevant phrase
+    stays None (the deterministic ``desc`` remains the fallback) and
+    ``narrator_ok`` is unaffected by the Last call. Deterministic-only rows and
+    every row when the runtime is not ready are left untouched.
 
     Args:
         rows: Mapping of lane short code to :class:`LaneRow`, mutated in place.
@@ -86,12 +94,8 @@ async def narrate_rows(rows: dict[str, LaneRow], runtime: NarratorRuntime) -> No
     if not runtime.is_ready():
         return
 
-    narratable = [r for r in rows.values() if r.digest_text is not None]
-    if not narratable:
-        return
-
-    async def _one(row: LaneRow) -> None:
-        # digest_text is non-None by construction of ``narratable``.
+    async def _now(row: LaneRow) -> None:
+        # digest_text is non-None by construction of the task list below.
         result = await narrate(
             runtime.client,
             runtime.base_url,
@@ -104,14 +108,42 @@ async def narrate_rows(rows: dict[str, LaneRow], runtime: NarratorRuntime) -> No
                 row.now["phrase"] = result
             row.narrator_ok = True
 
-    # return_exceptions=True: a per-lane failure is isolated; the gather still
-    # resolves for every other lane. Failed lanes simply keep narrator_ok False.
-    results = await asyncio.gather(
-        *(_one(row) for row in narratable), return_exceptions=True
-    )
-    for row, res in zip(narratable, results):
+    async def _last(row: LaneRow) -> None:
+        # last + digest_text are non-None by construction of the task list below.
+        result = await narrate_last(
+            runtime.client,
+            runtime.base_url,
+            row.lane_name,
+            row.last["desc"],
+            row.digest_text,
+            timeout_s=runtime.narrate_timeout_s,
+        )
+        if result is not None:
+            row.last["phrase"] = result
+
+    # Build the full set of independent calls. A row contributes a Now call iff
+    # it has a transcript; it ALSO contributes a Last call iff it has a closed
+    # last task. Both are gathered together so the tick stays concurrent+bounded.
+    coros: list = []
+    labels: list[tuple[str, str]] = []  # (lane, "now"|"last") parallel to coros
+    for row in rows.values():
+        if row.digest_text is None:
+            continue
+        coros.append(_now(row))
+        labels.append((row.lane, "now"))
+        if row.last is not None:
+            coros.append(_last(row))
+            labels.append((row.lane, "last"))
+
+    if not coros:
+        return
+
+    # return_exceptions=True: a per-call failure is isolated; the gather still
+    # resolves every other call. Failed calls simply leave their phrase None.
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    for (lane, kind), res in zip(labels, results):
         if isinstance(res, Exception):
-            _log.debug("narrator: lane %s narrate failed: %s", row.lane, res)
+            _log.debug("narrator: lane %s %s narrate failed: %s", lane, kind, res)
 
 
 async def narrator_tick(

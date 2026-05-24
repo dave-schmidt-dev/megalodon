@@ -165,6 +165,75 @@ test.describe('board narrative: rows render Last/Now/Goal/tokens + pill', () => 
 });
 
 // ---------------------------------------------------------------------------
+// Test 1b: Last column renders narrator phrase, falls back to desc (OQ1)
+// ---------------------------------------------------------------------------
+
+test.describe('board narrative: Last column phrase-or-desc (OQ1)', () => {
+
+  // The narrative_cache persists across tests in this worker; reset every lane
+  // we seed back to a neutral all-null payload so a later test can't observe a
+  // stale Last phrase.
+  test.afterEach(async ({ page }, testInfo) => {
+    try {
+      const token = readUiToken(testInfo);
+      await authenticateAndGotoBoard(page, token);
+      await seedNarrative(page, {
+        A: payload({ lane: 'A', lane_name: 'agent-a', state: 'open' }),
+        B: payload({ lane: 'B', lane_name: 'agent-b', state: 'open' }),
+        C: payload({ lane: 'C', lane_name: 'agent-c', state: 'open' }),
+      });
+    } catch {
+      /* best-effort reset */
+    }
+  });
+
+  test('last.phrase preferred over desc; null phrase falls back to last.desc', async ({ page }, testInfo) => {
+    const token = readUiToken(testInfo);
+    await stubNoStaleLanes(page);
+    await authenticateAndGotoBoard(page, token);
+
+    await seedNarrative(page, {
+      // Lane A: last has a narrator phrase → phrase shown, desc NOT shown.
+      A: payload({
+        lane: 'A',
+        lane_name: 'agent-a',
+        state: 'claimed',
+        last: {
+          task_id: 'T100',
+          desc: 'A-LAST-desc-fallback',
+          phrase: 'A-LAST-finished-wiring-the-banner',
+        },
+        now: { task_id: 'T101', desc: 'A-NOW', phrase: 'A-NOW-phrase' },
+        goal: 'A-GOAL',
+        tokens: 100,
+        narrator_ok: true,
+      }),
+      // Lane B: last.phrase null → board falls back to last.desc.
+      B: payload({
+        lane: 'B',
+        lane_name: 'agent-b',
+        state: 'open',
+        last: { task_id: 'T200', desc: 'B-LAST-desc-shown', phrase: null },
+        now: { task_id: 'T201', desc: 'B-NOW', phrase: null },
+        goal: 'B-GOAL',
+        tokens: 200,
+        narrator_ok: true,
+      }),
+    });
+
+    // Lane A: narrator phrase wins; deterministic desc is NOT shown.
+    const rowA = page.locator('[data-testid="board-row-A"]');
+    await expect(rowA).toContainText('A-LAST-finished-wiring-the-banner', { timeout: 8_000 });
+    await expect(rowA).not.toContainText('A-LAST-desc-fallback');
+
+    // Lane B: null phrase → deterministic desc fallback shown.
+    const rowB = page.locator('[data-testid="board-row-B"]');
+    await expect(rowB).toContainText('B-LAST-desc-shown');
+  });
+
+});
+
+// ---------------------------------------------------------------------------
 // Test 2: narrator-status-dot offline iff any payload narrator_ok=false
 // ---------------------------------------------------------------------------
 

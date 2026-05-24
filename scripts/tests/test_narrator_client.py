@@ -11,8 +11,8 @@ import json
 import httpx
 import pytest
 
-from megalodon_ui.narrator.client import healthy, narrate
-from megalodon_ui.narrator.prompt import build_messages
+from megalodon_ui.narrator.client import healthy, narrate, narrate_last
+from megalodon_ui.narrator.prompt import build_last_messages, build_messages
 
 BASE_URL = "http://localhost:8080"
 LANE = "AUDIT"
@@ -85,6 +85,75 @@ async def test_narrate_builds_correct_request_body() -> None:
     assert body["stream"] is False
     assert body["temperature"] == pytest.approx(0.2)
     assert body["max_tokens"] == 80
+
+
+# ---------------------------------------------------------------------------
+# narrate_last() — separate single-phrase Last/completed call (OQ1)
+# ---------------------------------------------------------------------------
+
+LAST_TASK = "Ship the authentication banner"
+
+
+@pytest.mark.asyncio
+async def test_narrate_last_success_returns_stripped_content() -> None:
+    """200 response → stripped completion sentence returned."""
+    raw = "  Completed the auth banner.  "
+    handler = _make_handler([(200, _ok_response(raw))])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await narrate_last(
+            client, BASE_URL, LANE, LAST_TASK, DIGEST, timeout_s=TIMEOUT
+        )
+    assert result == raw.strip()
+
+
+@pytest.mark.asyncio
+async def test_narrate_last_builds_last_prompt_body() -> None:
+    """Request body uses the Last prompt (build_last_messages), not the Now prompt."""
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured.append(body)
+        return httpx.Response(200, content=_ok_response("Completed the task."))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await narrate_last(client, BASE_URL, LANE, LAST_TASK, DIGEST, timeout_s=TIMEOUT)
+
+    assert len(captured) == 1
+    body = captured[0]
+    assert body["model"] == "narrator"
+    assert body["messages"] == build_last_messages(LANE, LAST_TASK, DIGEST)
+    # Distinct from the Now prompt — a separate single-phrase call.
+    assert body["messages"] != build_messages(LANE, DIGEST)
+
+
+@pytest.mark.asyncio
+async def test_narrate_last_returns_none_on_500() -> None:
+    """Non-2xx status → None (deterministic desc remains the board fallback)."""
+    handler = _make_handler([(500, b"err")])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await narrate_last(
+            client, BASE_URL, LANE, LAST_TASK, DIGEST, timeout_s=TIMEOUT
+        )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_narrate_with_injected_messages_uses_them() -> None:
+    """narrate(..., messages=...) sends the injected messages verbatim."""
+    captured: list[dict] = []
+    custom = build_last_messages(LANE, LAST_TASK, DIGEST)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, content=_ok_response("ok"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await narrate(
+            client, BASE_URL, LANE, DIGEST, timeout_s=TIMEOUT, messages=custom
+        )
+
+    assert captured[0]["messages"] == custom
 
 
 # ---------------------------------------------------------------------------

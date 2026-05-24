@@ -337,8 +337,12 @@ function applyNarrativeText(refs, payload) {
   const now = payload && payload.now;
   const goal = payload && payload.goal;
 
-  // Last from last.desc (+ task_id when present).
-  if (last && last.desc) {
+  // Last from last.phrase (narrator advisory, OQ1), falling back to last.desc
+  // when phrase is null (mirrors how Now renders phrase-or-desc). task_id is
+  // prefixed only on the deterministic desc fallback, not the narrator phrase.
+  if (last && last.phrase) {
+    refs.lastEl.textContent = String(last.phrase);
+  } else if (last && last.desc) {
     const id = last.task_id ? `${last.task_id} · ` : "";
     refs.lastEl.textContent = `${id}${last.desc}`;
   } else {

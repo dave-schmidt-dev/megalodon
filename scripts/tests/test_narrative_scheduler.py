@@ -61,19 +61,29 @@ def _row(
     short: str,
     *,
     with_now: bool = True,
+    with_last: bool = False,
     digest_text: str | None = "digest",
 ) -> LaneRow:
-    """Build a canned LaneRow. ``digest_text=None`` => deterministic-only."""
+    """Build a canned LaneRow. ``digest_text=None`` => deterministic-only.
+
+    ``with_last=True`` attaches a closed last task with phrase=None so the
+    scheduler can narrate the Last column (OQ1).
+    """
     now = (
         {"task_id": f"T-{short}", "desc": f"work {short}", "phrase": None}
         if with_now
+        else None
+    )
+    last = (
+        {"task_id": f"L-{short}", "desc": f"done {short}", "phrase": None}
+        if with_last
         else None
     )
     return LaneRow(
         lane=short,
         lane_name=f"LANE-{short}",
         state="claimed",
-        last=None,
+        last=last,
         now=now,
         goal=f"goal {short}",
         tokens=123 if digest_text is not None else None,
@@ -95,7 +105,7 @@ def _make_build_rows(rows: dict[str, LaneRow], counter: list[int]):
                 lane=r.lane,
                 lane_name=r.lane_name,
                 state=r.state,
-                last=r.last,
+                last=dict(r.last) if r.last is not None else None,
                 now=dict(r.now) if r.now is not None else None,
                 goal=r.goal,
                 tokens=r.tokens,
@@ -270,6 +280,215 @@ async def test_narrate_rows_phrase_skipped_when_now_none(monkeypatch):
     assert rows["A"].now is None
     # narrator_ok still flips True on a successful result even without now.
     assert rows["A"].narrator_ok is True
+
+
+# ---------------------------------------------------------------------------
+# 2b. narrate_rows — Last column (OQ1): a SEPARATE single-phrase call
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_narrate_rows_narrates_both_now_and_last(monkeypatch):
+    """A row with a closed last + digest + ready → BOTH Now and Last narrated."""
+    now_calls: list[str] = []
+    last_calls: list[tuple[str, str]] = []
+
+    async def fake_narrate(client, base_url, lane, digest_text, *, timeout_s):
+        now_calls.append(lane)
+        return f"now {lane}"
+
+    async def fake_narrate_last(
+        client, base_url, lane, last_task_desc, digest_text, *, timeout_s
+    ):
+        last_calls.append((lane, last_task_desc))
+        return f"last {lane}"
+
+    monkeypatch.setattr(scheduler_mod, "narrate", fake_narrate)
+    monkeypatch.setattr(scheduler_mod, "narrate_last", fake_narrate_last)
+
+    rows = {"A": _row("A", with_last=True, digest_text="digest-A")}
+    runtime = FakeRuntime(ready=True)
+
+    await narrate_rows(rows, runtime)
+
+    assert now_calls == ["LANE-A"]
+    assert last_calls == [("LANE-A", "done A")]  # closed-task desc passed through
+    assert rows["A"].now["phrase"] == "now LANE-A"
+    assert rows["A"].last["phrase"] == "last LANE-A"
+    assert rows["A"].narrator_ok is True
+
+
+@pytest.mark.asyncio
+async def test_narrate_rows_last_not_narrated_without_closed_last(monkeypatch):
+    """No closed last task → Last is never narrated (Now still is)."""
+    last_calls: list[str] = []
+
+    async def fake_narrate(client, base_url, lane, digest_text, *, timeout_s):
+        return f"now {lane}"
+
+    async def fake_narrate_last(
+        client, base_url, lane, last_task_desc, digest_text, *, timeout_s
+    ):
+        last_calls.append(lane)
+        return "last"
+
+    monkeypatch.setattr(scheduler_mod, "narrate", fake_narrate)
+    monkeypatch.setattr(scheduler_mod, "narrate_last", fake_narrate_last)
+
+    rows = {"A": _row("A", with_last=False, digest_text="digest-A")}
+    runtime = FakeRuntime(ready=True)
+
+    await narrate_rows(rows, runtime)
+
+    assert last_calls == []  # no last → no Last call
+    assert rows["A"].now["phrase"] == "now LANE-A"
+
+
+@pytest.mark.asyncio
+async def test_narrate_rows_last_not_narrated_without_digest(monkeypatch):
+    """Deterministic-only row (digest_text None) → neither Now nor Last narrated."""
+    now_calls: list[str] = []
+    last_calls: list[str] = []
+
+    async def fake_narrate(client, base_url, lane, digest_text, *, timeout_s):
+        now_calls.append(lane)
+        return "now"
+
+    async def fake_narrate_last(
+        client, base_url, lane, last_task_desc, digest_text, *, timeout_s
+    ):
+        last_calls.append(lane)
+        return "last"
+
+    monkeypatch.setattr(scheduler_mod, "narrate", fake_narrate)
+    monkeypatch.setattr(scheduler_mod, "narrate_last", fake_narrate_last)
+
+    rows = {"A": _row("A", with_last=True, digest_text=None)}
+    runtime = FakeRuntime(ready=True)
+
+    await narrate_rows(rows, runtime)
+
+    assert now_calls == []
+    assert last_calls == []
+    assert rows["A"].last["phrase"] is None
+
+
+@pytest.mark.asyncio
+async def test_narrate_rows_last_not_narrated_when_not_ready(monkeypatch):
+    """runtime not ready → no Now and no Last calls; last phrase stays None."""
+    last_calls: list[str] = []
+
+    async def fake_narrate(client, base_url, lane, digest_text, *, timeout_s):
+        return "now"
+
+    async def fake_narrate_last(
+        client, base_url, lane, last_task_desc, digest_text, *, timeout_s
+    ):
+        last_calls.append(lane)
+        return "last"
+
+    monkeypatch.setattr(scheduler_mod, "narrate", fake_narrate)
+    monkeypatch.setattr(scheduler_mod, "narrate_last", fake_narrate_last)
+
+    rows = {"A": _row("A", with_last=True, digest_text="digest-A")}
+    runtime = FakeRuntime(ready=False)
+
+    await narrate_rows(rows, runtime)
+
+    assert last_calls == []
+    assert rows["A"].last["phrase"] is None
+
+
+@pytest.mark.asyncio
+async def test_narrate_rows_last_failure_leaves_phrase_none_now_unaffected(monkeypatch):
+    """A Last failure (exception) must not affect Now or narrator_ok."""
+
+    async def fake_narrate(client, base_url, lane, digest_text, *, timeout_s):
+        return f"now {lane}"
+
+    async def fake_narrate_last(
+        client, base_url, lane, last_task_desc, digest_text, *, timeout_s
+    ):
+        raise RuntimeError("last boom")
+
+    monkeypatch.setattr(scheduler_mod, "narrate", fake_narrate)
+    monkeypatch.setattr(scheduler_mod, "narrate_last", fake_narrate_last)
+
+    rows = {"A": _row("A", with_last=True, digest_text="digest-A")}
+    runtime = FakeRuntime(ready=True)
+
+    await narrate_rows(rows, runtime)
+
+    # Last failed → phrase stays None (deterministic desc remains the fallback).
+    assert rows["A"].last["phrase"] is None
+    # Now unaffected, narrator_ok still True from the successful Now call.
+    assert rows["A"].now["phrase"] == "now LANE-A"
+    assert rows["A"].narrator_ok is True
+
+
+@pytest.mark.asyncio
+async def test_narrate_rows_last_none_result_leaves_phrase_none(monkeypatch):
+    """A None Last result leaves last['phrase'] None without raising."""
+
+    async def fake_narrate(client, base_url, lane, digest_text, *, timeout_s):
+        return f"now {lane}"
+
+    async def fake_narrate_last(
+        client, base_url, lane, last_task_desc, digest_text, *, timeout_s
+    ):
+        return None
+
+    monkeypatch.setattr(scheduler_mod, "narrate", fake_narrate)
+    monkeypatch.setattr(scheduler_mod, "narrate_last", fake_narrate_last)
+
+    rows = {"A": _row("A", with_last=True, digest_text="digest-A")}
+    runtime = FakeRuntime(ready=True)
+
+    await narrate_rows(rows, runtime)
+
+    assert rows["A"].last["phrase"] is None
+    assert rows["A"].now["phrase"] == "now LANE-A"
+
+
+@pytest.mark.asyncio
+async def test_narrate_rows_now_and_last_run_concurrently(monkeypatch):
+    """Now + Last across lanes are gathered concurrently (no serialization).
+
+    Each fake call sleeps; if the calls were serialized the total would be ~N *
+    delay. We assert the wall time is well under the serial sum, proving a single
+    concurrent gather over Now-per-lane AND Last-per-lane.
+    """
+    import time
+
+    delay = 0.05
+
+    async def fake_narrate(client, base_url, lane, digest_text, *, timeout_s):
+        await asyncio.sleep(delay)
+        return f"now {lane}"
+
+    async def fake_narrate_last(
+        client, base_url, lane, last_task_desc, digest_text, *, timeout_s
+    ):
+        await asyncio.sleep(delay)
+        return f"last {lane}"
+
+    monkeypatch.setattr(scheduler_mod, "narrate", fake_narrate)
+    monkeypatch.setattr(scheduler_mod, "narrate_last", fake_narrate_last)
+
+    rows = {
+        "A": _row("A", with_last=True, digest_text="d"),
+        "B": _row("B", with_last=True, digest_text="d"),
+    }
+    runtime = FakeRuntime(ready=True)
+
+    t0 = time.monotonic()
+    await narrate_rows(rows, runtime)
+    elapsed = time.monotonic() - t0
+
+    # 4 calls (2 Now + 2 Last). Serial would be ~4*delay=0.2s; concurrent ~delay.
+    assert elapsed < delay * 3, f"calls not concurrent (elapsed {elapsed:.3f}s)"
+    assert rows["A"].last["phrase"] == "last LANE-A"
+    assert rows["B"].now["phrase"] == "now LANE-B"
 
 
 # ---------------------------------------------------------------------------

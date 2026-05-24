@@ -247,6 +247,7 @@ class TestAssembleLaneRows:
         assert row.last is not None
         assert row.last["task_id"] == "A-2"  # latest done
         assert row.last["desc"] == "second audit task"
+        assert row.last["phrase"] is None  # board_state deterministic; scheduler fills
         assert row.now is not None
         assert row.now["task_id"] == "A-3"
         assert row.now["desc"] == "current audit task"
@@ -341,6 +342,21 @@ class TestAssembleLaneRows:
         assert "goal" in d
         assert "tokens" in d
         assert "narrator_ok" in d
+
+    def test_last_phrase_none_and_carried_in_to_dict(self) -> None:
+        """OQ1: last includes phrase=None from board_state, carried in to_dict()."""
+        cfgs = [_lane_cfg("AUDIT", "A", "role")]
+        tasks = [_task("A-1", "AUDIT", "shipped auth", "done", "2026-05-01T10:00:00Z")]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {"A-1": 0})
+        row = rows["A"]
+        # Deterministic: phrase is None from board_state (no narrate happened).
+        assert row.last is not None
+        assert row.last["phrase"] is None
+        # to_dict carries the full last dict including the phrase slot.
+        d = row.to_dict()
+        assert d["last"]["phrase"] is None
+        assert d["last"]["desc"] == "shipped auth"
 
     def test_open_and_blocked_tasks_ignored_for_last_and_now(self) -> None:
         """open/blocked tasks do not contribute to last or now."""

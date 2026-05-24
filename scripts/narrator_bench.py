@@ -38,14 +38,17 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Allow running as a plain script (add repo root to sys.path).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from megalodon_ui.narrator.digest import parse_session, render_for_prompt  # noqa: E402
-from megalodon_ui.narrator.prompt import build_messages  # noqa: E402
+from megalodon_ui.narrator.prompt import (  # noqa: E402
+    build_last_messages,
+    build_messages,
+)
 
 _LANE_RE = re.compile(r"launch-([A-Z]+)\.md")
 
@@ -58,6 +61,12 @@ class Fixture:
     n_events: int
     digest_text: str  # the "blurp" each model worked from (render_for_prompt output)
     full_session: str = ""  # readable full transcript (ground truth, for human judging)
+    # OQ1: the "Last"/completed prompt for the SAME fixture, built in the exact
+    # production shape (single-phrase, separate from the Now prompt) so the bench
+    # CAN score the Last prompt with no further plumbing. The just-completed task
+    # stand-in is the fixture's first ASKED prompt (there are no task records in
+    # raw transcripts); a real run would pass the closed task description.
+    last_messages: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -169,6 +178,13 @@ def build_fixtures(glob_pat: str, max_fixtures: int) -> list[Fixture]:
             continue  # too little activity to narrate
         lane = _lane_of(digest)
         digest_text = render_for_prompt(digest)
+        # OQ1: stand-in for the just-completed task description — the first
+        # prompt the agent was given in this session (real runs pass the closed
+        # task's description instead).
+        last_task_desc = next(
+            (ev.text for ev in digest.events if ev.kind == "prompt"),
+            f"task in lane {lane}",
+        )
         fx = Fixture(
             lane=lane,
             session_id=digest.session_id,
@@ -176,6 +192,7 @@ def build_fixtures(glob_pat: str, max_fixtures: int) -> list[Fixture]:
             n_events=len(digest.events),
             digest_text=digest_text,
             full_session=render_full_session(p),
+            last_messages=build_last_messages(lane, last_task_desc, digest_text),
         )
         # Keep the transcript with the most events per lane.
         if lane not in by_lane or fx.n_events > by_lane[lane].n_events:

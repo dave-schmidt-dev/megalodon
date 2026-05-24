@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import httpx
 
-from .prompt import build_messages
+from .prompt import build_last_messages, build_messages
 
 
 async def narrate(
@@ -22,8 +22,15 @@ async def narrate(
     digest_text: str,
     *,
     timeout_s: float,
+    messages: list[dict] | None = None,
 ) -> str | None:
     """Ask the local llama-server to phrase a lane's activity as one sentence.
+
+    By default this builds the "Now" (doing-now) prompt via
+    :func:`build_messages`. A caller may pass pre-built ``messages`` (e.g. the
+    "Last"/completed prompt) to narrate a different single-phrase prompt while
+    reusing the same request body, error absorption, and client. Use
+    :func:`narrate_last` for the Last column rather than building messages here.
 
     Args:
         client: Shared ``httpx.AsyncClient`` owned by the caller.
@@ -32,13 +39,16 @@ async def narrate(
         digest_text: Rendered activity digest from ``render_for_prompt()``.
         timeout_s: Per-request timeout in seconds; the default lives in the
             NarratorRuntime (a later task), not here.
+        messages: Optional pre-built chat messages. When None (default), the
+            "Now" prompt is built from ``lane`` + ``digest_text``.
 
     Returns:
         The stripped one-sentence narrative, or ``None`` on any failure
         (timeout, connection error, non-2xx status, malformed JSON, or
         empty/missing content).
     """
-    messages = build_messages(lane, digest_text)
+    if messages is None:
+        messages = build_messages(lane, digest_text)
     body = {
         "model": "narrator",
         "messages": messages,
@@ -59,6 +69,41 @@ async def narrate(
         return stripped if stripped else None
     except Exception:  # noqa: BLE001
         return None
+
+
+async def narrate_last(
+    client: httpx.AsyncClient,
+    base_url: str,
+    lane: str,
+    last_task_desc: str,
+    digest_text: str,
+    *,
+    timeout_s: float,
+) -> str | None:
+    """Narrate the "Last" column: one sentence about the just-completed task.
+
+    A SEPARATE single-phrase call from :func:`narrate` — it builds the
+    "Last"/completed prompt via :func:`build_last_messages` and delegates to
+    :func:`narrate` with those messages, so the request body, error absorption,
+    and shared client are identical. This keeps each narrate call within the
+    model's validated single-phrase competency (we never make one call emit two
+    phrases).
+
+    Args:
+        client: Shared ``httpx.AsyncClient`` owned by the caller.
+        base_url: Base URL of the llama-server.
+        lane: Human lane label, forwarded to the prompt builder.
+        last_task_desc: Description of the just-completed (closed) task.
+        digest_text: Rendered activity digest from ``render_for_prompt()``.
+        timeout_s: Per-request timeout in seconds.
+
+    Returns:
+        The stripped one-sentence completion summary, or ``None`` on any failure.
+    """
+    messages = build_last_messages(lane, last_task_desc, digest_text)
+    return await narrate(
+        client, base_url, lane, digest_text, timeout_s=timeout_s, messages=messages
+    )
 
 
 async def healthy(
