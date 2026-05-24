@@ -9,7 +9,7 @@
 >
 > **Dev gates (pre-commit hook — ADDED 2026-05-24):** `hooks/pre-commit` (activate per clone with `git config core.hooksPath hooks`) runs **ruff on staged `.py`** (pinned `ruff==0.15.14`) + a **vulture dead-code scan** across `megalodon_ui`/`scripts` (config in `pyproject.toml [tool.vulture]`; `signum/frame/exc_*` ignored as required-by-signature). **Tests intentionally NOT run on commit** (operator decision: CI owns the suite). Bypass: `git commit --no-verify`.
 >   - **RESOLVED 2026-05-24 (commit 5033054) — lint debt cleared:** 17 whole-tree ruff errors fixed (E741 ambiguous `l`→`lane` ×6, E401 split imports ×2, F841 unused locals ×2, E402 ×5 — hoisted `applier.py` imports + `# noqa: E402` on deliberate section-local test imports). The hook can now be moved to whole-tree lint if desired.
->   - **TODO (gate parity, deferred per operator):** `FIXED (0064e60)` — CI `-p forked`→`--forked`. Still open: ruff remains unpinned in CI (`test.yml` uses `--with ruff`); CI has no dead-code (vulture) step. Tracked, not blocking.
+>   - **RESOLVED 2026-05-24 — gate parity complete:** CI `-p forked`→`--forked` (`0064e60`); CI ruff pinned to `ruff==0.15.14` matching the pre-commit hook + a vulture dead-code CI step added (`test.yml`). Local hooks ≡ CI for lint + dead-code + forked-isolation.
 >
 > **Active plan (v9.4 — IMPLEMENTATION COMPLETE 2026-05-20; lifecycle + harness COMPLETE 2026-05-22):** `docs/superpowers/plans/2026-05-22-v94-dogfood-and-run-lifecycle.md`. Dashboard plan: `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (v2 — warp-complete).
 > **Status**: T4.3 IN PROGRESS — lifecycle ready, dogfood is the next operator step.

@@ -72,7 +72,10 @@ jobs:
           -v
 
       - name: Lint
-        run: uv run --with ruff ruff check megalodon_ui/ scripts/
+        run: uv run --with 'ruff==0.15.14' ruff check megalodon_ui/ scripts/
+
+      - name: Dead-code scan (vulture)
+        run: uv run --with vulture vulture
 
       - name: Install Playwright browsers (Linux)
         if: runner.os == 'Linux' && hashFiles('ui/tests/e2e/playwright.config.ts') != ''
