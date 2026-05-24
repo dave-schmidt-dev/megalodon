@@ -66,8 +66,10 @@ async function authenticateAndGotoGrid(page: Page, testInfo: TestInfo) {
   await page.goto(`/#t=${token}`);
   // Wait for hash to be stripped (auth bootstrap calls history.replaceState).
   await expect(page).toHaveURL('/', { timeout: 10_000 });
-  // Wait for the grid page to render.
-  await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+  // Wait for the board page to render.
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  // The board does NOT auto-mount the activity wall — open it via the toggle.
+  await page.locator('[data-testid="board-activity-toggle"]').click();
   // Activity wall root is present once the component mounts.
   await expect(page.locator('[data-testid="activity-wall-root"]')).toBeVisible({ timeout: 5_000 });
 }

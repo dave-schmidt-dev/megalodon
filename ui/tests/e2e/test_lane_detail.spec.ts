@@ -18,8 +18,8 @@ import { test, expect } from '@playwright/test';
 // Navigate to /lane/A and wait for the page to render.
 async function gotoLaneA(page: import('@playwright/test').Page) {
   await page.goto('/');
-  await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
-  await page.locator('[data-pane-lane="A"]').click();
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  await page.locator('[data-testid="board-row-A"]').click();
   await expect(page).toHaveURL(/\/lane\/A$/, { timeout: 5_000 });
   await expect(page.locator('[data-testid="lane-detail-page"]')).toBeVisible({ timeout: 8_000 });
 }
@@ -153,7 +153,7 @@ test.describe('lane_detail: send debounce', () => {
 
 test.describe('lane_detail: back link navigation', () => {
 
-  test('clicking back link navigates to / and renders grid page', async ({ page }) => {
+  test('clicking back link navigates to / and renders board page', async ({ page }) => {
     await gotoLaneA(page);
 
     // Click the back link.
@@ -162,8 +162,8 @@ test.describe('lane_detail: back link navigation', () => {
     // URL should become /.
     await expect(page).toHaveURL(/:\d+\/$/, { timeout: 5_000 });
 
-    // Grid page should render.
-    await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 8_000 });
+    // Board page should render.
+    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 8_000 });
   });
 
 });

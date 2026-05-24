@@ -48,7 +48,7 @@ async function authenticateAndGotoGrid(page: Page, testInfo: TestInfo): Promise<
   const token = readUiToken(testInfo);
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
-  await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 }
 
 /** Navigate to /signals and wait for the page to mount. */

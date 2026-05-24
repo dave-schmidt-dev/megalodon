@@ -37,7 +37,7 @@
 //   in test_spawn_reads_approval_rules.py.
 
 import { test, expect } from '@playwright/test';
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 
 import { fixtureRootForProject, readUiToken } from './_helpers';
@@ -53,7 +53,7 @@ async function authenticateAndGotoGrid(
   const token = readUiToken(testInfo);
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
-  await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 }
 
 async function readCsrfToken(page: import('@playwright/test').Page): Promise<string> {
@@ -94,6 +94,13 @@ async function clearAllRules(page: import('@playwright/test').Page): Promise<voi
  * Write a Claude-REPL permission-prompt block to A.stream.log.
  * The PermissionWatcher (poll=1 s) detects "Do you want to proceed?" and
  * surfaces a prompt whose command_preview is "[Bash command] <cmd>".
+ *
+ * This TRUNCATES the log (writeFileSync, not append) so the watcher's next
+ * poll sees ONLY this block. The phase-2 smoke (Case B) appends its own prompt
+ * block to the SAME lane-A log earlier in the chromium-board serial run; the
+ * watcher re-detects that lingering block every poll, so an append here would
+ * leave the OLDER (echo) prompt at the head of the banner and this test would
+ * approve the wrong pattern. Truncating gives this test a clean lane-A prompt.
  */
 function writePromptBlock(fixtureRoot: string, cmd: string): void {
   const fleetDir = path.join(fixtureRoot, '.fleet');
@@ -106,7 +113,7 @@ function writePromptBlock(fixtureRoot: string, cmd: string): void {
     '❯ 1. Yes\n' +
     '  2. Yes, and always allow access\n' +
     '  3. No\n';
-  appendFileSync(streamLogPath, block, 'utf-8');
+  writeFileSync(streamLogPath, block, 'utf-8');
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +146,23 @@ test.describe('v94 phase3 smoke: Approve&remember end-to-end persistence', () =>
     // The per-lane "Approve & remember" button for lane A must be visible.
     const approveRememberBtn = page.locator('[data-testid="permission-approve-remember-A"]');
     await expect(approveRememberBtn).toBeVisible({ timeout: 5_000 });
+
+    // Ensure the watcher has re-synced to the truncated log (our curl block) so
+    // we don't approve a lingering prompt from an earlier spec. Poll the API
+    // until lane A's pending prompt previews the curl command we just wrote.
+    await expect.poll(async () => {
+      const r = await page.request.get('/api/v1/permission_prompts');
+      if (!r.ok()) return '';
+      const j = await r.json();
+      const promptA = (j.prompts ?? []).find((p: { lane: string }) => p.lane === 'A');
+      return promptA?.command ?? '';
+    }, { timeout: 10_000, message: 'lane A prompt did not re-sync to the curl command' }).toContain('curl');
+
+    // Also wait for the banner's per-lane row to render the curl command before
+    // clicking — the banner polls every 2 s, so its DOM can lag the API by one
+    // cycle and still show an earlier spec's prompt for lane A.
+    await expect(page.locator('[data-testid="permission-prompt-A"]'))
+      .toContainText('curl', { timeout: 8_000 });
 
     // ---- Steps 7a/7b: Set up route interceptors before clicking -------------
     // We intercept the two POSTs in passthrough mode so the real server still

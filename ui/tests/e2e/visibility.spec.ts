@@ -25,7 +25,7 @@
 //      state renders (no silent placeholder fallthrough).
 //
 // Nav routes (from ui/static/index.html + app.js ROUTES):
-//   /           → nav-dashboard → page container grid-page
+//   /           → nav-dashboard → page container board-page
 //   /tasks      → nav-tasks     → (no stable page-container testid; header h1)
 //   /findings   → nav-findings  → findings-page
 //   /signals    → nav-signals   → signals-page
@@ -55,7 +55,7 @@ const NAV_ROUTES: Array<{
   navTestId: string;
   pageTestId: string | null;
 }> = [
-  { path: "/", navTestId: "nav-dashboard", pageTestId: "grid-page" },
+  { path: "/", navTestId: "nav-dashboard", pageTestId: "board-page" },
   { path: "/tasks", navTestId: "nav-tasks", pageTestId: null },
   { path: "/findings", navTestId: "nav-findings", pageTestId: "findings-page" },
   { path: "/signals", navTestId: "nav-signals", pageTestId: "signals-page" },
@@ -115,13 +115,13 @@ test.describe("snap-back: navigation stays on clicked tab", () => {
       await expect(page).toHaveURL(urlRe(route.path), { timeout: 2_000 });
 
       // The destination page container must be present (where it has a testid).
-      // grid-page must NOT be present (would mean a snap-back to dashboard).
+      // board-page must NOT be present (would mean a snap-back to dashboard).
       if (route.pageTestId) {
         await expect(
           page.locator(`[data-testid="${route.pageTestId}"]`),
         ).toBeVisible({ timeout: 5_000 });
       }
-      await expect(page.locator('[data-testid="grid-page"]')).toHaveCount(0);
+      await expect(page.locator('[data-testid="board-page"]')).toHaveCount(0);
     });
   }
 });
@@ -174,7 +174,12 @@ test.describe("activity-wall fidelity: real finding event renders a row", () => 
     await page.goto(`/#t=${token}`);
     await expect(page).toHaveURL("/", { timeout: 10_000 });
 
-    // The dashboard (grid) mounts the activity wall. Wait for the list to exist.
+    // The board does NOT auto-mount the activity wall — wait for the board page,
+    // then open the wall via the toggle before asserting on the list.
+    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+    await page.locator('[data-testid="board-activity-toggle"]').click();
+
+    // Now the activity wall mounts. Wait for the list to exist.
     const awList = page.locator('[data-testid="aw-list"]');
     await expect(awList).toBeVisible({ timeout: 10_000 });
 

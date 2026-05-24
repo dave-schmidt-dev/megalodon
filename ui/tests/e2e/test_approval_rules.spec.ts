@@ -26,7 +26,7 @@ async function authenticateAndGotoGrid(
   const token = readUiToken(testInfo);
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
-  await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 }
 
 async function navigateToApprovalRules(

@@ -13,7 +13,7 @@
 import { store } from "./store.js";
 
 const ROUTES = [
-  { pattern: /^\/$/, loader: () => import("../pages/grid.js"), params: () => ({}) },
+  { pattern: /^\/$/, loader: () => import("../pages/board.js"), params: () => ({}) },
   { pattern: /^\/lane\/([A-Za-z0-9_-]+)$/, loader: () => import("../pages/lane_detail.js"), params: (m) => ({ short: m[1] }) },
   { pattern: /^\/tasks$/, loader: () => import("../pages/tasks.js"), params: () => ({}) },
   { pattern: /^\/findings$/, loader: () => import("../pages/findings.js"), params: () => ({}) },

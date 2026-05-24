@@ -35,7 +35,7 @@ import { readUiToken } from './_helpers';
 async function authenticateAndGotoGrid(page: import('@playwright/test').Page, token: string) {
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
-  await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 }
 
 /**
@@ -71,7 +71,12 @@ async function setStaleOverride(
 
 test.describe('stale badge: badge appears and modal opens', () => {
 
-  test('1: badge shows "1 stale" (red bg) after stale_override for lane A', async ({ page }, testInfo) => {
+  // SKIPPED on the board: the summary board surfaces staleness as a per-row
+  // STALE pill (board-pill-<short>), NOT the grid's stale-badge + stale_modal
+  // affordance (stale_modal.js is mounted only by grid.js). A board-native
+  // STALE-pill spec is Task 3.5b; this grid-only assertion retires with grid.js
+  // (Task 3.4). See Task 3.5a report.
+  test.skip('1: badge shows "1 stale" (red bg) after stale_override for lane A', async ({ page }, testInfo) => {
     const token = readUiToken(testInfo);
     await authenticateAndGotoGrid(page, token);
 
@@ -80,7 +85,7 @@ test.describe('stale badge: badge appears and modal opens', () => {
 
     // Reload to trigger the initial poll (badge updates on mount).
     await page.reload();
-    await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 
     // Badge must be visible and contain "1 stale".
     const badge = page.locator('[data-testid="stale-badge"]');
@@ -88,7 +93,8 @@ test.describe('stale badge: badge appears and modal opens', () => {
     await expect(badge).toContainText('1 stale', { timeout: 5_000 });
   });
 
-  test('2: clicking badge opens modal with lane A row showing ~20m 0s', async ({ page }, testInfo) => {
+  // SKIPPED on the board — see the skip note on test 1 (grid-only stale-badge UI).
+  test.skip('2: clicking badge opens modal with lane A row showing ~20m 0s', async ({ page }, testInfo) => {
     const token = readUiToken(testInfo);
     await authenticateAndGotoGrid(page, token);
 
@@ -97,7 +103,7 @@ test.describe('stale badge: badge appears and modal opens', () => {
 
     // Reload to pick up the override.
     await page.reload();
-    await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 
     // Wait for badge to appear.
     const badge = page.locator('[data-testid="stale-badge"]');
@@ -133,7 +139,8 @@ test.describe('stale badge: badge appears and modal opens', () => {
 
 test.describe('stale badge: Restart /loop button in modal', () => {
 
-  test('3: clicking Restart /loop in modal sends POST with X-CSRF-Token and shows toast', async ({ page }, testInfo) => {
+  // SKIPPED on the board — see the skip note on test 1 (grid-only stale-modal UI).
+  test.skip('3: clicking Restart /loop in modal sends POST with X-CSRF-Token and shows toast', async ({ page }, testInfo) => {
     const token = readUiToken(testInfo);
     await authenticateAndGotoGrid(page, token);
 
@@ -142,7 +149,7 @@ test.describe('stale badge: Restart /loop button in modal', () => {
 
     // Reload + open modal.
     await page.reload();
-    await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 
     const badge = page.locator('[data-testid="stale-badge"]');
     await expect(badge).toBeVisible({ timeout: 8_000 });
@@ -203,8 +210,8 @@ test.describe('stale badge: lane-detail toolbar Restart /loop', () => {
     const token = readUiToken(testInfo);
     await authenticateAndGotoGrid(page, token);
 
-    // Navigate to /lane/A.
-    await page.locator('[data-pane-lane="A"]').click();
+    // Navigate to /lane/A by clicking the board row for lane A.
+    await page.locator('[data-testid="board-row-A"]').click();
     await expect(page).toHaveURL(/\/lane\/A$/, { timeout: 5_000 });
     await expect(page.locator('[data-testid="lane-detail-page"]')).toBeVisible({ timeout: 8_000 });
 
@@ -258,7 +265,8 @@ test.describe('stale badge: lane-detail toolbar Restart /loop', () => {
 
 test.describe('stale badge: badge hidden when no stale lanes', () => {
 
-  test('5: badge hidden when stale endpoint returns empty list', async ({ page }, testInfo) => {
+  // SKIPPED on the board — see the skip note on test 1 (grid-only stale-badge UI).
+  test.skip('5: badge hidden when stale endpoint returns empty list', async ({ page }, testInfo) => {
     const token = readUiToken(testInfo);
 
     // Mock the stale endpoint to return an empty list. The fix-small fixture has

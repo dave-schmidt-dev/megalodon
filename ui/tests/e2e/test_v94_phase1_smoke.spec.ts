@@ -6,10 +6,10 @@
 //
 //   Case A: Happy-path smoke
 //     1. Authenticate and navigate to /.
-//     2. Assert exactly 3 [data-pane-lane] panes are present.
-//     3. Emit bytes to lane A via /__fake__/emit.
-//     4. Assert bytes appear in lane A's xterm within 2 s.
-//     5. Click lane A pane → assert URL /lane/A → lane_detail renders.
+//     2. Assert exactly 3 board rows (board-row-A/B/C) are present.
+//     3. Open lane A's terminal drawer; emit bytes via /__fake__/emit.
+//     4. Assert bytes appear in lane A's drawer xterm within 2 s.
+//     5. Click lane A row → assert URL /lane/A → lane_detail renders.
 //     6. Type "echo hi" in inject textarea, click Send.
 //     7. Assert the request body is {text:"echo hi",enter:true} and
 //        X-CSRF-Token is non-empty (network intercept in passthrough mode —
@@ -54,15 +54,15 @@ async function authenticateAndGotoGrid(page: import('@playwright/test').Page, to
   // Wait for hash to be stripped (auth bootstrap calls history.replaceState).
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   // Wait for the grid page to render.
-  await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 }
 
 /**
- * Navigate to /lane/A from the grid page.
+ * Navigate to /lane/A from the board page by clicking lane A's row.
  */
 async function gotoLaneA(page: import('@playwright/test').Page) {
-  await expect(page.locator('[data-pane-lane="A"]')).toBeVisible({ timeout: 5_000 });
-  await page.locator('[data-pane-lane="A"]').click();
+  await expect(page.locator('[data-testid="board-row-A"]')).toBeVisible({ timeout: 5_000 });
+  await page.locator('[data-testid="board-row-A"]').click();
   await expect(page).toHaveURL(/\/lane\/A$/, { timeout: 5_000 });
   await expect(page.locator('[data-testid="lane-detail-page"]')).toBeVisible({ timeout: 8_000 });
 }
@@ -84,38 +84,41 @@ async function fakeEmit(page: import('@playwright/test').Page, short: string, te
 
 test.describe('v9.4 Phase-1 smoke: Case A happy-path', () => {
 
-  test('A1: grid renders exactly 3 panes for fix-small mission', async ({ page }, testInfo) => {
+  test('A1: board renders exactly 3 rows for fix-small mission', async ({ page }, testInfo) => {
     const token = readUiToken(testInfo);
     await authenticateAndGotoGrid(page, token);
 
-    // Exactly 3 panes from fix-small (.mission-config.yaml: A, B, C).
-    await expect(page.locator('[data-pane-lane]')).toHaveCount(3, { timeout: 5_000 });
-    await expect(page.locator('[data-pane-lane="A"]')).toHaveCount(1);
-    await expect(page.locator('[data-pane-lane="B"]')).toHaveCount(1);
-    await expect(page.locator('[data-pane-lane="C"]')).toHaveCount(1);
+    // Exactly 3 rows from fix-small (.mission-config.yaml: A, B, C).
+    await expect(page.locator('[data-testid^="board-row-"]')).toHaveCount(3, { timeout: 5_000 });
+    await expect(page.locator('[data-testid="board-row-A"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="board-row-B"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="board-row-C"]')).toHaveCount(1);
   });
 
-  test('A2: fake_emit bytes appear in lane A pane within 2 s', async ({ page }, testInfo) => {
+  test('A2: fake_emit bytes appear in lane A terminal drawer within 2 s', async ({ page }, testInfo) => {
     const token = readUiToken(testInfo);
     await authenticateAndGotoGrid(page, token);
 
-    // Give the SSE subscriptions a moment to connect before emitting.
+    // The board shows the terminal via a drawer (Task 3.3 seam), not an inline
+    // grid pane. Open lane A's drawer via its terminal toggle button.
+    await page.locator('[data-testid="board-terminal-A"]').click();
+    const drawer = page.locator('[data-testid="board-drawer"]');
+    await expect(drawer).toBeVisible({ timeout: 5_000 });
+
+    // Give the SSE subscription a moment to connect before emitting.
     await page.waitForTimeout(600);
 
     const probe = `SMOKE_PROBE_${Date.now()}`;
     await fakeEmit(page, 'A', probe);
 
-    // Locate lane A's pane wrapper — the xterm renders inside it.
-    const paneA = page.locator('[data-pane-lane="A"]');
-
-    // xterm.js renders visible text into .xterm-rows div children.
-    // Poll the text content of the pane until the probe string appears.
+    // xterm.js renders visible text into .xterm-rows div children inside the
+    // drawer. Poll the drawer's text content until the probe string appears.
     await expect.poll(
       async () => {
-        const text = await paneA.evaluate((el: Element) => el.textContent ?? '');
+        const text = await drawer.evaluate((el: Element) => el.textContent ?? '');
         return text;
       },
-      { timeout: 2_000, message: `probe "${probe}" did not appear in lane A pane within 2 s` },
+      { timeout: 2_000, message: `probe "${probe}" did not appear in lane A drawer within 2 s` },
     ).toContain(probe);
   });
 

@@ -118,26 +118,34 @@ describe("matchRoute", () => {
     assert.deepEqual(result.params, {});
   });
 
-  test("unknown path /garbage-xyz falls back to grid route (first route)", () => {
+  test("unknown path /garbage-xyz falls back to board route (first route)", () => {
     const result = matchRoute("/garbage-xyz");
     // Must fall back to the same loader as "/"
     const rootResult = matchRoute("/");
     assert.deepEqual(result.params, {});
     // Both must be the same loader reference (ROUTES[0].loader)
-    assert.equal(result.loader, rootResult.loader, "unknown path uses grid (first) loader");
+    assert.equal(result.loader, rootResult.loader, "unknown path uses board (first) loader");
   });
 
-  test("unknown path /lane/ (no short) falls back to grid route", () => {
+  test("unknown path /lane/ (no short) falls back to board route", () => {
     // /lane/ with no short slug should not match the lane pattern
     const result = matchRoute("/lane/");
     const rootResult = matchRoute("/");
-    assert.equal(result.loader, rootResult.loader, "/lane/ falls back to grid");
+    assert.equal(result.loader, rootResult.loader, "/lane/ falls back to board");
   });
 
-  test("unknown path /tasks/extra falls back to grid route", () => {
+  test("unknown path /tasks/extra falls back to board route", () => {
     const result = matchRoute("/tasks/extra");
     const rootResult = matchRoute("/");
     assert.equal(result.loader, rootResult.loader);
+  });
+
+  test("/ loader resolves to the board module (not grid)", () => {
+    // The loader is a dynamic-import thunk that can't execute under node, so we
+    // assert on its source string: it must import board.js, never grid.js.
+    const src = matchRoute("/").loader.toString();
+    assert.match(src, /board\.js/, "root loader must import board.js");
+    assert.doesNotMatch(src, /grid\.js/, "root loader must NOT import grid.js");
   });
 });
 
@@ -174,9 +182,12 @@ describe("ROUTES", () => {
     assert.equal(m, null, "empty slug must not match");
   });
 
-  test("first route is the grid (root) fallback route", () => {
+  test("first route is the board (root) fallback route", () => {
     assert.ok(ROUTES[0].pattern.test("/"), "first route must match /");
-    assert.deepEqual(ROUTES[0].params([]), {}, "grid route returns empty params");
+    assert.deepEqual(ROUTES[0].params([]), {}, "board route returns empty params");
+    // The first route's loader source must import board.js, not grid.js.
+    assert.match(ROUTES[0].loader.toString(), /board\.js/, "first route loader imports board.js");
+    assert.doesNotMatch(ROUTES[0].loader.toString(), /grid\.js/, "first route loader must NOT import grid.js");
   });
 });
 

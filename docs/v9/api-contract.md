@@ -747,7 +747,7 @@ status: 200
 content_type: application/json
 auth: cookie (mui_session)
 fe_consumers:
-  - ui/static/js/pages/grid.js
+  - ui/static/pages/board.js
 description: Return lanes silent for ≥ 900 s and not pending approval (Task 2.6).
 ```
 

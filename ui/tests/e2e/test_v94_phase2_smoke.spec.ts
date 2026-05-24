@@ -67,7 +67,9 @@ async function authenticateAndGotoGrid(
   const token = readUiToken(testInfo);
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
-  await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  // The board does NOT auto-mount the activity wall — open it via the toggle.
+  await page.locator('[data-testid="board-activity-toggle"]').click();
   await expect(page.locator('[data-testid="activity-wall-root"]')).toBeVisible({ timeout: 5_000 });
 }
 
@@ -336,7 +338,11 @@ test.describe('v94 phase2 smoke: Case B — permission prompt approval flow', ()
 
 test.describe('v94 phase2 smoke: Case C — stale badge end-to-end', () => {
 
-  test('C: stale_override for lane A → badge "1 stale" visible → click → modal with lane A row', async ({ page }, testInfo) => {
+  // SKIPPED on the board: asserts the grid-only stale-badge + stale_modal UI
+  // (stale_modal.js is mounted only by grid.js). The board surfaces staleness as
+  // a per-row STALE pill instead; a board-native equivalent is Task 3.5b and the
+  // grid assertion retires with grid.js (Task 3.4). See Task 3.5a report.
+  test.skip('C: stale_override for lane A → badge "1 stale" visible → click → modal with lane A row', async ({ page }, testInfo) => {
     await authenticateAndGotoGrid(page, testInfo);
 
     // ---- POST stale_override for lane A (1200 s = 20 min) -----------------
@@ -346,7 +352,7 @@ test.describe('v94 phase2 smoke: Case C — stale badge end-to-end', () => {
     // The stale-badge component polls /api/v1/lanes/stale on mount.
     // A page.reload() is faster than waiting for the next 30 s poll cycle.
     await page.reload();
-    await expect(page.locator('[data-testid="grid-page"]')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 
     // ---- Assert badge "1 stale" with red background -----------------------
     const badge = page.locator('[data-testid="stale-badge"]');
