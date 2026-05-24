@@ -39,6 +39,7 @@ import { loadConfig } from "../js/config.js";
 import { mountPage } from "../js/app.js";
 import { createPermissionBanner } from "../components/permission_banner.js";
 import { createTerminalPane } from "../components/terminal_pane.js";
+import { createActivityWall } from "../components/activity_wall.js";
 
 // ---------------------------------------------------------------------------
 // Minimal DOM helpers (same pattern as grid.js / activity_wall.js — each page
@@ -414,6 +415,101 @@ export async function render(root, _params) {
     narratorDot.title = ok ? "Narrator online." : "Narrator offline — phrases may be stale.";
   }
 
+  // --- activity-wall panel state (independent of terminal drawer) ---
+  /**
+   * @type {{ element: HTMLElement, aw: { element: HTMLElement, cleanup: () => void } }|null}
+   */
+  let activityPanel = null;
+
+  /** Dispose the activity panel if open (cleanup SSE then remove element). */
+  function _closeActivityPanel() {
+    if (!activityPanel) return;
+    try { activityPanel.aw.cleanup(); } catch (_) { /* ignore */ }
+    if (activityPanel.element.parentNode) {
+      activityPanel.element.parentNode.removeChild(activityPanel.element);
+    }
+    activityPanel = null;
+  }
+
+  // Activity toggle button — placed in the header, built before missionHeader so
+  // the onclick closure can reference _closeActivityPanel / activityPanel.
+  const activityToggleBtn = el("button", {
+    type: "button",
+    class: "button",
+    "data-testid": "board-activity-toggle",
+    title: "Toggle activity wall.",
+    onclick: () => {
+      if (activityPanel) {
+        _closeActivityPanel();
+        return;
+      }
+
+      // Close button (built before panelEl so it can be passed to el()).
+      const closeBtn = el("button", {
+        type: "button",
+        class: "button",
+        "data-testid": "board-activity-close",
+        title: "Close activity wall.",
+        style: "flex: 0 0 auto;",
+      }, "× close");
+      closeBtn.addEventListener("click", _closeActivityPanel);
+
+      // Panel header.
+      const panelHeader = el(
+        "div",
+        {
+          class: "row",
+          style: [
+            "gap: var(--sp-2);",
+            "align-items: center;",
+            "padding: var(--sp-2) var(--sp-3);",
+            "border-bottom: 1px solid var(--border);",
+            "background: var(--surface-2);",
+            "flex: 0 0 auto;",
+          ].join(" "),
+        },
+        el("span", {
+          class: "mono",
+          style: "flex: 1 1 auto; font-size: var(--fs-sm); color: var(--text);",
+        }, "Activity wall"),
+        closeBtn,
+      );
+
+      // Panel container — gives the wall a scrollable sized box mirroring grid.js.
+      const panelEl = el(
+        "div",
+        {
+          "data-testid": "board-activity-panel",
+          style: [
+            "display: flex;",
+            "flex-direction: column;",
+            "width: 320px;",
+            "min-width: 280px;",
+            "max-width: 340px;",
+            "height: calc(100vh - 180px);",
+            "max-height: 900px;",
+            "border: 1px solid var(--border);",
+            "border-radius: var(--r-1);",
+            "background: var(--surface);",
+            "position: fixed;",
+            "top: 90px;",
+            "right: var(--sp-3, 12px);",
+            "z-index: 100;",
+            "overflow: hidden;",
+          ].join(" "),
+        },
+        panelHeader,
+      );
+
+      // Mount the wall component into the panel.
+      const aw = createActivityWall({ container: panelEl });
+      panelEl.appendChild(aw.element);
+
+      document.body.appendChild(panelEl);
+      activityPanel = { element: panelEl, aw };
+    },
+  }, "activity ▸");
+
   const missionHeader = el(
     "div",
     {
@@ -426,6 +522,7 @@ export async function render(root, _params) {
       style: "font-size: var(--fs-sm); color: var(--text-muted);",
     }, "Summary board"),
     narratorDot,
+    activityToggleBtn,
   );
 
   // --- permission banner (Task 3.1) — single prompts poll, drives BLOCKED ---
@@ -675,6 +772,10 @@ export async function render(root, _params) {
     if (disposeTerminalDrawer) {
       try { disposeTerminalDrawer(); } catch (_) { /* ignore */ }
       disposeTerminalDrawer = null;
+    }
+    // 4b. Dispose the activity panel if open (closes its SSE, removes from body).
+    if (activityPanel) {
+      try { _closeActivityPanel(); } catch (_) { /* ignore */ }
     }
     // 5. Defensive element-only sweep for any body-appended modal. The primary
     //    teardown is step 4's disposer, which closes the terminal pane's SSE +
