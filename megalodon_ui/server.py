@@ -1239,6 +1239,47 @@ def make_app(
         app.state.narrative_hub = NarrativeHub()
         app.state.narrative_cache = {}
 
+        # 5c. Narrator runtime + scheduler (Task 4.1).
+        from .narrator.runtime import NarratorRuntime
+        from .narrator.scheduler import clamp_interval_s, run_narrator_scheduler
+        from .narrator.board_state import build_lane_rows
+
+        narrator_runtime = NarratorRuntime.from_env()
+        await narrator_runtime.start()
+
+        async def _narrator_build_rows():
+            tasks_fe = parse_tasks_fe_shape(mission_dir, ctx)
+            return await build_lane_rows(
+                mission_dir,
+                tasks_fe,
+                spawner.sessions,
+                spawner.adapter_resolver,
+                ctx.mission_config.lanes,
+            )
+
+        _raw_interval = os.environ.get("MEGALODON_NARRATOR_INTERVAL_S")
+        try:
+            _parsed_interval: float | None = (
+                float(_raw_interval) if _raw_interval else None
+            )
+        except (ValueError, TypeError):
+            _parsed_interval = None
+        narrator_interval_s = clamp_interval_s(_parsed_interval)
+
+        narrator_stop_event = asyncio.Event()
+        narrator_scheduler_task = asyncio.create_task(
+            run_narrator_scheduler(
+                hub=app.state.narrative_hub,
+                runtime=narrator_runtime,
+                cache=app.state.narrative_cache,
+                build_rows=_narrator_build_rows,
+                interval_s=narrator_interval_s,
+                stop_event=narrator_stop_event,
+            )
+        )
+        app.state.narrator_runtime = narrator_runtime
+        app.state.narrator_scheduler_task = narrator_scheduler_task
+
         # 5. Start in-process queue applier (v9.3): drains pending intents from
         #    agents' POST /api/v1/{task/claim,task/done,status/update,...} so the
         #    requests resolve to applied/rejected quickly. Without this the agents
@@ -1269,6 +1310,13 @@ def make_app(
         try:
             yield
         finally:
+            narrator_stop_event.set()
+            narrator_scheduler_task.cancel()
+            try:
+                await narrator_scheduler_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            await narrator_runtime.stop()
             if applier_task is not None:
                 applier_task.cancel()
                 try:
