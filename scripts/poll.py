@@ -54,7 +54,9 @@ def _resolve_mission(arg):
 
 def main(argv=None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
-    log = get_logger("poll", debug=args.debug)
+    # Configure logging for side effects (file handler); poll writes results to
+    # stdout, so the returned logger isn't bound.
+    get_logger("poll", debug=args.debug)
     try:
         mission = _resolve_mission(args.mission_dir)
     except FileNotFoundError as e:

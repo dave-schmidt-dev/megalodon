@@ -25,7 +25,9 @@ _DEFAULT_CONFIG = _synthesize_default_config(Path.cwd())
 # LANE_LONG_TO_SHORT maps long lane names to their single/double-letter short
 # codes as defined by the v9.0 back-compat config (e.g. AUDIT→A, ARCHITECT→B).
 # Using the dict resolves the v8 first-letter ambiguity (AUDIT[0]==ARCHITECT[0]=='A').
-LANE_LONG_TO_SHORT: dict[str, str] = {l.name: l.short for l in _DEFAULT_CONFIG.lanes}
+LANE_LONG_TO_SHORT: dict[str, str] = {
+    lane.name: lane.short for lane in _DEFAULT_CONFIG.lanes
+}
 
 # ---------------------------------------------------------------------------
 # Canonical task-id regex (v8 Edit 3 — ASCII only; see P2.5-C plan-v2 Δ2.2).
@@ -302,7 +304,7 @@ def mark_complete(
     # path) or fall back to the module-level v9.0 default (legacy / test paths).
     # This resolves the v8 ambiguity where first-letter derivation collided
     # (AUDIT[0]==ARCHITECT[0]=='A').
-    _lane_map = {l.name: l.short for l in _cfg.lanes}
+    _lane_map = {lane.name: lane.short for lane in _cfg.lanes}
     lane_canonical = lane if lane.startswith("LANE-") else f"LANE-{_lane_map[lane]}"
     history_line = (
         f"{utc} | {agent} | {lane_canonical} | {canonical} | {finding} | {severity}\n"

@@ -136,7 +136,7 @@ async def test_api_v1_state_returns_6_lanes_init_first(queue_mission: Path):
     lanes = data["status"]["lanes"]
     assert len(lanes) == 6, f"expected 6 lanes, got {len(lanes)}"
 
-    lane_names = [l["lane"] for l in lanes]
+    lane_names = [lane["lane"] for lane in lanes]
     for expected in ("AUDIT", "ARCHITECT", "BACKEND", "FRONTEND", "TEST", "META"):
         assert expected in lane_names, f"{expected} missing from lanes: {lane_names}"
 

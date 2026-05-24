@@ -41,6 +41,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .journal import Journal
+from .schemas import validate_payload
+from megalodon_ui.mission_config import load_mission_config
+from megalodon_ui.mission_config.regex_builder import build_lane_short_charclass
+
 
 # Per-mission rolling log for the queue applier. Operator-visible audit trail
 # of every intent the applier sees: who submitted, target file, intent type,
@@ -85,11 +90,6 @@ def _setup_applier_logger(mission_dir: Path) -> None:
     # Don't propagate to root; we want a dedicated stream.
     _log.propagate = False
 
-
-from .journal import Journal
-from .schemas import validate_payload
-from megalodon_ui.mission_config import load_mission_config
-from megalodon_ui.mission_config.regex_builder import build_lane_short_charclass
 
 SCHEMA_VERSION = 1
 DEFAULT_POLL_SECONDS = 2.0

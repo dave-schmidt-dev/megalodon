@@ -34,7 +34,7 @@ def test_read_phase_returns_init_phase(mission_dir):
     assert owner is None
 
 
-from scripts._state_read import (
+from scripts._state_read import (  # noqa: E402
     read_claims,
     read_events_tail,
     read_findings_recent,

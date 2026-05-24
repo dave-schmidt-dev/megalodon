@@ -93,7 +93,7 @@ class MissionConfig(BaseModel):
     @field_validator("lanes")
     @classmethod
     def lane_names_unique(cls, v):
-        names = [l.name for l in v]
+        names = [lane.name for lane in v]
         if len(names) != len(set(names)):
             raise ValueError("duplicate lane names")
         return v

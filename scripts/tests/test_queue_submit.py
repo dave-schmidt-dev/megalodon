@@ -11,7 +11,8 @@ WRAPPER = REPO / "scripts" / "queue_submit.py"
 
 
 def test_wrapper_is_executable():
-    import os, stat
+    import os
+    import stat
 
     assert os.stat(WRAPPER).st_mode & stat.S_IXUSR, (
         "queue_submit.py missing executable bit"

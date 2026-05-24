@@ -29,7 +29,9 @@ NOTES_CHARSET_RE = re.compile(r"^[\w\s.,:/()\-_\[\]'\"=@#+*?!&]*$")
 # The forbidden-list in _check_notes_like enforces these explicitly with better
 # error messages; regex provides defense-in-depth catchall for anything else.
 
-LANE_LONG_TO_SHORT: dict[str, str] = {l.name: l.short for l in _default_config.lanes}
+LANE_LONG_TO_SHORT: dict[str, str] = {
+    lane.name: lane.short for lane in _default_config.lanes
+}
 
 _NOTES_MAX = 2000
 _SUMMARY_MAX = 200
@@ -86,5 +88,5 @@ def validators_from_config(config: MissionConfig) -> dict:
     return {
         "task_id_re": build_task_id_re(config),
         "lane_re": build_lane_re(config),
-        "lane_long_to_short": {l.name: l.short for l in config.lanes},
+        "lane_long_to_short": {lane.name: lane.short for lane in config.lanes},
     }

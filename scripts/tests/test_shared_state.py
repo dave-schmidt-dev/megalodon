@@ -152,9 +152,9 @@ def test_status_update_idempotent(mission_dir: Path, agent: str):
 
 # ---- Task 8: execute_close ----
 
-import json as _json
+import json as _json  # noqa: E402  (section-local import, kept beside its use)
 
-from scripts._shared_state import execute_close, resume_close
+from scripts._shared_state import execute_close, resume_close  # noqa: E402
 
 
 def test_execute_close_happy_path(mission_dir: Path, agent: str):

@@ -22,7 +22,8 @@ def _run(task_id, agent, cwd):
 
 
 def test_claim_sh_is_executable():
-    import os, stat
+    import os
+    import stat
 
     assert os.stat(CLAIM).st_mode & stat.S_IXUSR, "claim.sh missing executable bit"
 

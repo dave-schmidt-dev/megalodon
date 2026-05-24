@@ -86,7 +86,6 @@ def test_applier_log_not_localtime_in_non_utc_zone(tmp_path, monkeypatch):
         before_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         logger.info("tz-aware-utc-check")
         time.sleep(0.05)
-        after_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
         match = _TS_RE.search(log_path.read_text())
         assert match is not None
