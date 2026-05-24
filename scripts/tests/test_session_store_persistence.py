@@ -200,7 +200,27 @@ def test_corrupt_file_is_empty_store_with_warning(
 
     assert store.validate("anything") is False
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) >= 1, "expected at least one WARNING for corrupt file"
+    assert len(warnings) == 1, "expected exactly one WARNING for corrupt file"
+
+
+@pytest.mark.parametrize("payload", ["[]", "42", '"foo"'])
+def test_non_dict_json_is_empty_store_with_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    payload: str,
+) -> None:
+    """Valid JSON that isn't an object → empty store, no raise, exactly one WARNING."""
+    p = tmp_path / "sessions.json"
+    p.write_text(payload)
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="megalodon_ui.auth"):
+        store = SessionStore(path=p, now=lambda: 1_000_000.0)
+
+    assert store.validate("anything") is False
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, "expected exactly one WARNING for non-dict JSON"
 
 
 # ---------------------------------------------------------------------------

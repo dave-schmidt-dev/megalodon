@@ -157,16 +157,27 @@ class SessionStore:
         """Load digest→created_epoch from disk, drop expired entries, re-persist."""
         assert self._path is not None  # only called when path is set
         raw: dict[str, float] = {}
+        parsed: object = {}
         try:
             text = self._path.read_text()
-            raw = json.loads(text)
+            parsed = json.loads(text)
         except FileNotFoundError:
-            pass  # empty store; fine
+            parsed = {}  # empty store; fine
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "SessionStore: could not load %s (%s) — starting empty",
                 self._path,
                 exc,
+            )
+            parsed = {}
+
+        if isinstance(parsed, dict):
+            raw = parsed
+        else:
+            # Valid JSON but not an object (e.g. [], "foo", 42): treat as corrupt.
+            _log.warning(
+                "SessionStore: %s is not a JSON object — starting empty",
+                self._path,
             )
             raw = {}
 
