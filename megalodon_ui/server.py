@@ -1253,6 +1253,16 @@ def make_app(
         app.state.narrative_hub = NarrativeHub()
         app.state.narrative_cache = {}
 
+        # 5b-ii. Persistent session store (Task D2 / WR-3): reassign to the
+        # disk-backed store now that mission_dir/.fleet is confirmed available.
+        # The hot validate() path reads only the in-memory dict (no disk IO), so
+        # synchronous persist calls on create/revoke are negligible for this
+        # single-operator localhost tool.  Test/fake branches never reach here,
+        # so ctx.session_store keeps path=None (writes nothing) in those modes.
+        ctx.session_store = auth.SessionStore(
+            path=mission_dir / ".fleet" / "sessions.json"
+        )
+
         # 5c. Narrator runtime + scheduler (Task 4.1).
         from .narrator.runtime import NarratorRuntime
         from .narrator.scheduler import clamp_interval_s, run_narrator_scheduler

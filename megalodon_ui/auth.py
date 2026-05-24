@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -192,28 +193,49 @@ class SessionStore:
         self._persist()
 
     def _persist(self) -> None:
-        """Atomically write digest map to disk at 0600; a write failure logs and returns."""
+        """Atomically write digest map to disk at 0600; a write failure logs and returns.
+
+        Uses a unique temp file in the same directory (mkstemp) so concurrent
+        restarts cannot clobber each other's in-flight write.  The hot
+        validate() path does NO disk IO — it only reads the in-memory dict.
+        Persistence happens only on create/revoke/expired-eviction, all rare
+        operations for this single-operator localhost tool, so synchronous file
+        IO here does not meaningfully block the event loop.
+        """
         if self._path is None:
             return
-        tmp = self._path.with_suffix(".tmp")
+        tmp_path_str: str | None = None
+        tmp_fd: int | None = None
         old_umask = os.umask(0o077)
         try:
-            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            tmp_fd, tmp_path_str = tempfile.mkstemp(
+                dir=str(self._path.parent),
+                prefix=self._path.name + ".",
+                suffix=".tmp",
+            )
             try:
-                os.fchmod(fd, 0o600)
-                os.write(fd, json.dumps(self._created_at).encode())
+                os.fchmod(tmp_fd, 0o600)
+                os.write(tmp_fd, json.dumps(self._created_at).encode())
             finally:
-                os.close(fd)
-            os.replace(str(tmp), str(self._path))
+                os.close(tmp_fd)
+                tmp_fd = None
+            os.replace(tmp_path_str, str(self._path))
+            tmp_path_str = None  # replaced successfully; nothing to unlink
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "SessionStore: failed to persist session file %s (%s)",
                 self._path,
                 exc,
             )
-            try:
-                tmp.unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
+            if tmp_path_str is not None:
+                try:
+                    os.unlink(tmp_path_str)
+                except Exception:  # noqa: BLE001
+                    pass
         finally:
+            if tmp_fd is not None:
+                try:
+                    os.close(tmp_fd)
+                except Exception:  # noqa: BLE001
+                    pass
             os.umask(old_umask)
