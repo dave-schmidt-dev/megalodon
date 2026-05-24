@@ -18,10 +18,17 @@ def pytest_configure(config):
 def _lifespan_test_mode(monkeypatch):
     """Default the v9.2 lifespan into test mode (no fleet spawn, no socket-len guard).
 
+    Also skips ``new_run.sh``'s socket-path budget guard: tests scaffold runs
+    under deep pytest tmp paths whose ``<run>/.fleet/tmux.sock`` exceeds the
+    100-byte limit but never spawn, so the budget check would spuriously refuse
+    them with exit 2. The dedicated budget-rejection test opts back in via
+    ``monkeypatch.delenv("MEGALODON_SKIP_SOCKET_BUDGET", raising=False)``.
+
     Tests that need to exercise the real fleet-spawn path explicitly unset
-    this env var via ``monkeypatch.delenv("MEGALODON_LIFESPAN_TEST_MODE", raising=False)``.
+    ``MEGALODON_LIFESPAN_TEST_MODE`` via ``monkeypatch.delenv(..., raising=False)``.
     """
     monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
+    monkeypatch.setenv("MEGALODON_SKIP_SOCKET_BUDGET", "1")
 
 
 FIXTURE_SRC = Path(__file__).parent / "fixtures" / "minimal_mission"

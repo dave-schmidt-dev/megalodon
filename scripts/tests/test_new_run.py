@@ -5,8 +5,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -19,13 +17,9 @@ def _run(args, cwd):
     )
 
 
-@pytest.fixture(autouse=True)
-def _skip_socket_budget(monkeypatch):
-    """Scaffold tests run under deep pytest tmp paths whose prospective socket
-    path exceeds the 100-byte guard; they never spawn, so bypass the budget gate
-    by default. The rejection test opts back in by deleting this env var.
-    """
-    monkeypatch.setenv("MEGALODON_SKIP_SOCKET_BUDGET", "1")
+# The socket-budget skip is now provided globally by the autouse
+# `_lifespan_test_mode` fixture in conftest.py; the rejection test below opts
+# back in via monkeypatch.delenv.
 
 
 def test_scaffold_creates_run_dir(tmp_path, monkeypatch):
