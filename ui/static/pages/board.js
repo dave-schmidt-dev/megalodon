@@ -40,6 +40,7 @@ import { mountPage } from "../js/app.js";
 import { createPermissionBanner } from "../components/permission_banner.js";
 import { createTerminalPane } from "../components/terminal_pane.js";
 import { createActivityWall } from "../components/activity_wall.js";
+import { StaleModal } from "../components/stale_modal.js";
 
 // ---------------------------------------------------------------------------
 // Minimal DOM helpers (same pattern as grid.js / activity_wall.js — each page
@@ -141,7 +142,11 @@ async function fetchStaleLanes() {
  * @returns {{ label: string, kind: "blocked"|"stale"|"running"|"idle" }}
  */
 function resolvePill({ blocked, stale, state }) {
-  if (blocked) return { label: "BLOCKED", kind: "blocked" };
+  // CR-4: a blocked task (state === "blocked") OR a pending permission prompt
+  // both surface as BLOCKED. Precedence: BLOCKED > STALE > RUNNING/IDLE.
+  if (blocked || String(state || "").toLowerCase() === "blocked") {
+    return { label: "BLOCKED", kind: "blocked" };
+  }
   if (stale) return { label: "STALE", kind: "stale" };
   const s = String(state || "").toLowerCase();
   // Treat any active/working state as RUNNING; otherwise IDLE.
@@ -180,6 +185,15 @@ function paintPill(pill, resolved) {
   pill.style.background = bg;
   pill.style.color = fg;
   pill.style.borderColor = border;
+  // STALE pill is clickable (opens the staleness modal). Give it a pointer
+  // cursor and a helpful title so the affordance is discoverable.
+  if (resolved.kind === "stale") {
+    pill.style.cursor = "pointer";
+    pill.title = "Click to view staleness details";
+  } else {
+    pill.style.cursor = "";
+    pill.title = "";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -201,9 +215,10 @@ function paintPill(pill, resolved) {
  * Build a lane row and return refs for in-place updates.
  * @param {{ name: string, short: string }} lane
  * @param {(short: string) => void} onToggleTerminal  called when the terminal button is clicked
+ * @param {(short: string) => void} onStalePillClick  called when a STALE pill is clicked
  * @returns {LaneRowRefs}
  */
-function buildRow(lane, onToggleTerminal) {
+function buildRow(lane, onToggleTerminal, onStalePillClick) {
   const laneName = lane.name;
   const short = lane.short;
 
@@ -217,6 +232,14 @@ function buildRow(lane, onToggleTerminal) {
       "border-width: 1px;",
       "border-style: solid;",
     ].join(" "),
+  });
+  // Pill click: when kind === "stale", open the staleness modal for this lane.
+  // stopPropagation prevents the row's /lane/:short navigation from firing.
+  pill.addEventListener("click", (ev) => {
+    if (pill.dataset.pill === "stale") {
+      ev.stopPropagation();
+      onStalePillClick(short);
+    }
   });
   paintPill(pill, { label: "IDLE", kind: "idle" });
 
@@ -392,6 +415,68 @@ export async function render(root, _params) {
   let blockedLanes = new Set();
   /** @type {Set<string>} lanes flagged stale by /api/v1/lanes/stale */
   let staleLanes = new Set();
+  /**
+   * Full stale-lane records from the last /api/v1/lanes/stale response.
+   * Keyed by lane short code for O(1) lookup when opening the modal.
+   * @type {Record<string, {lane: string, silent_seconds: number|null, pending_approval: boolean, last_activity_source: string}>}
+   */
+  let staleData = {};
+
+  // --- CSRF helper (reads the page meta tag) ---
+  function _getCsrfToken() {
+    const meta = /** @type {HTMLMetaElement|null} */ (
+      document.querySelector('meta[name="csrf-token"]')
+    );
+    return meta ? (meta.getAttribute("content") ?? "") : "";
+  }
+
+  // --- toast helper (minimal — same pattern as grid.js) ---
+  /** @param {string} message @param {"info"|"error"} [kind] */
+  function _showToast(message, kind = "info") {
+    const toast = el("div", {
+      "data-board-modal": "true",
+      style: [
+        "position: fixed;",
+        "bottom: var(--sp-3, 12px);",
+        "right: var(--sp-3, 12px);",
+        "z-index: 2000;",
+        "padding: 8px 14px;",
+        `background: ${kind === "error" ? "var(--sev-blocking)" : "var(--accent)"};`,
+        "color: var(--bg);",
+        "border-radius: 4px;",
+        "font-size: var(--fs-sm);",
+        "pointer-events: none;",
+      ].join(" "),
+    }, message);
+    document.body.appendChild(toast);
+    setTimeout(() => {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 3500);
+  }
+
+  // --- stale modal (single instance, body-appended, data-board-modal for cleanup) ---
+  const staleModal = new StaleModal({
+    navigate,
+    getCsrfToken: _getCsrfToken,
+    showToast: _showToast,
+    onRefresh: async () => {
+      await pollStale();
+    },
+  });
+  staleModal.element.setAttribute("data-board-modal", "true");
+  staleModal.element.setAttribute("data-testid", "board-stale-modal");
+  document.body.appendChild(staleModal.element);
+
+  /**
+   * Open the stale modal for a specific lane (or all stale lanes if short is null).
+   * Exported via the pill's click handler.
+   * @param {string} short
+   */
+  function openStaleModal(short) {
+    const entry = staleData[short];
+    const lanes = entry ? [entry] : Object.values(staleData);
+    staleModal.open(lanes);
+  }
 
   // --- narrator-offline status dot ---
   const narratorDot = el("span", {
@@ -654,7 +739,7 @@ export async function render(root, _params) {
   });
 
   for (const lane of lanes) {
-    const refs = buildRow(lane, toggleTerminal);
+    const refs = buildRow(lane, toggleTerminal, openStaleModal);
     rowRefs[lane.short] = refs;
     rowsContainer.appendChild(refs.root);
   }
@@ -753,7 +838,11 @@ export async function render(root, _params) {
     const list = await fetchStaleLanes();
     if (!alive) return; // await may resolve after cleanup
     staleLanes = new Set(list.map((s) => String(s.lane)));
+    // Rebuild the staleData map for the modal.
+    staleData = Object.fromEntries(list.map((s) => [String(s.lane), s]));
     for (const short of Object.keys(rowRefs)) reevaluatePill(short);
+    // Keep the modal fresh if it is already open (content may change).
+    staleModal.update(list);
   }
   pollStale();
   const staleTimer = setInterval(pollStale, 30_000);
@@ -777,15 +866,18 @@ export async function render(root, _params) {
     if (activityPanel) {
       try { _closeActivityPanel(); } catch (_) { /* ignore */ }
     }
-    // 5. Defensive element-only sweep for any body-appended modal. The primary
-    //    teardown is step 4's disposer, which closes the terminal pane's SSE +
-    //    xterm. This sweep only REMOVES the element — it does NOT call any
-    //    cleanup() — so it is a safety net for true body-level modals, not a
-    //    substitute for the explicit disposer. The board's drawer is appended to
-    //    `root` (not body), so step 6's clearNode handles it; this sweep is for
-    //    the contract's sake.
-    const orphan = document.body.querySelector('[data-board-modal="true"]');
-    if (orphan && orphan.parentNode) orphan.parentNode.removeChild(orphan);
+    // 4c. Close and remove the stale modal (body-appended).
+    try { staleModal.close(); } catch (_) { /* ignore */ }
+    if (staleModal.element.parentNode) {
+      staleModal.element.parentNode.removeChild(staleModal.element);
+    }
+    // 5. Defensive element-only sweep for any remaining body-appended modals
+    //    (e.g. toast notifications). Removes ALL matching elements, not just one.
+    //    The stale modal itself is handled explicitly in step 4c; this sweep is
+    //    a safety net for toast elements and any other data-board-modal nodes.
+    document.body.querySelectorAll('[data-board-modal="true"]').forEach((orphan) => {
+      if (orphan.parentNode) orphan.parentNode.removeChild(orphan);
+    });
     // NOTE: do NOT clearNode(root) here. app.js clears the mount root before
     // every page render (mountPage); a page cleanup that clears root can wipe a
     // *newer* page when app.js discards a stale render's cleanup — the WebKit

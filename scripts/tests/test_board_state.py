@@ -379,6 +379,126 @@ class TestAssembleLaneRows:
 
 
 # ---------------------------------------------------------------------------
+# CR-4: blocked task state
+# ---------------------------------------------------------------------------
+
+
+class TestBlockedTaskState:
+    """CR-4: assemble_lane_rows surfaces state='blocked' for blocked tasks.
+
+    Precedence: blocked > claimed > done > open.
+    last/now are unaffected by blocked tasks (only claimed/done contribute).
+    """
+
+    def _cfgs(self) -> list[MagicMock]:
+        return [_lane_cfg("AUDIT", "A", "Audit all findings")]
+
+    def test_blocked_task_yields_state_blocked(self) -> None:
+        """A lane with a blocked task → state == 'blocked'."""
+        cfgs = self._cfgs()
+        tasks = [_task("A-1", "AUDIT", "blocked task", "blocked")]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {"A-1": 0})
+        assert rows["A"].state == "blocked"
+
+    def test_blocked_beats_claimed(self) -> None:
+        """blocked takes precedence over claimed."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("A-1", "AUDIT", "claimed task", "claimed", "2026-05-01T10:00:00Z"),
+            _task("A-2", "AUDIT", "blocked task", "blocked"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {"A-1": 0, "A-2": 1})
+        assert rows["A"].state == "blocked"
+
+    def test_blocked_beats_done(self) -> None:
+        """blocked takes precedence over done."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("A-1", "AUDIT", "done task", "done", "2026-05-01T10:00:00Z"),
+            _task("A-2", "AUDIT", "blocked task", "blocked"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {"A-1": 0, "A-2": 1})
+        assert rows["A"].state == "blocked"
+
+    def test_blocked_beats_open(self) -> None:
+        """blocked takes precedence over open."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("A-1", "AUDIT", "open task", "open"),
+            _task("A-2", "AUDIT", "blocked task", "blocked"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {"A-1": 0, "A-2": 1})
+        assert rows["A"].state == "blocked"
+
+    def test_no_blocked_task_state_unaffected(self) -> None:
+        """A lane with no blocked task continues to derive state from claimed/done/open."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("A-1", "AUDIT", "claimed task", "claimed", "2026-05-01T10:00:00Z"),
+            _task("A-2", "AUDIT", "done task", "done", "2026-04-01T10:00:00Z"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {"A-1": 0, "A-2": 1})
+        assert rows["A"].state == "claimed"
+
+    def test_blocked_task_does_not_populate_last_or_now(self) -> None:
+        """Blocked tasks do not contribute to last/now — only claimed/done tasks do."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("A-1", "AUDIT", "blocked task", "blocked"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {"A-1": 0})
+        row = rows["A"]
+        assert row.state == "blocked"
+        assert row.last is None
+        assert row.now is None
+        assert row.goal == "Audit all findings"  # role fallback
+
+    def test_blocked_with_done_preserves_last(self) -> None:
+        """When blocked + done tasks coexist, last is still populated from done."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("A-1", "AUDIT", "done task", "done", "2026-05-01T10:00:00Z"),
+            _task("A-2", "AUDIT", "blocked task", "blocked"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {"A-1": 0, "A-2": 1})
+        row = rows["A"]
+        assert row.state == "blocked"
+        assert row.last is not None
+        assert row.last["task_id"] == "A-1"
+        assert row.now is None
+
+    def test_state_blocked_in_to_dict(self) -> None:
+        """state='blocked' is included in the public to_dict() payload."""
+        cfgs = self._cfgs()
+        tasks = [_task("A-1", "AUDIT", "blocked task", "blocked")]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {"A-1": 0})
+        d = rows["A"].to_dict()
+        assert d["state"] == "blocked"
+
+    def test_other_lane_unaffected_by_blocked(self) -> None:
+        """Blocked tasks in one lane do not affect other lanes."""
+        cfgs = [_lane_cfg("AUDIT", "A", "role A"), _lane_cfg("BUILD", "B", "role B")]
+        tasks = [
+            _task("A-1", "AUDIT", "blocked", "blocked"),
+            _task("B-1", "BUILD", "claimed", "claimed", "2026-05-01T10:00:00Z"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, {"A": None, "B": None}, {"A-1": 0, "B-1": 1}
+        )
+        assert rows["A"].state == "blocked"
+        assert rows["B"].state == "claimed"
+
+
+# ---------------------------------------------------------------------------
 # build_lane_rows — async wrapper
 # ---------------------------------------------------------------------------
 

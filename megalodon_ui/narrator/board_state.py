@@ -213,6 +213,7 @@ def assemble_lane_rows(
         lane_tasks = [t for t in all_tasks if t.get("lane") == cfg.name]
         done_tasks = [t for t in lane_tasks if t.get("claim_state") == "done"]
         claimed_tasks = [t for t in lane_tasks if t.get("claim_state") == "claimed"]
+        blocked_tasks = [t for t in lane_tasks if t.get("claim_state") == "blocked"]
 
         latest_done = _pick_latest(done_tasks, doc_order)
         latest_claimed = _pick_latest(claimed_tasks, doc_order)
@@ -241,7 +242,10 @@ def assemble_lane_rows(
             goal = cfg.role or ""
 
         # Derive state label from the highest-priority active task.
-        if claimed_tasks:
+        # Precedence: blocked > claimed > done > open.
+        if blocked_tasks:
+            state = "blocked"
+        elif claimed_tasks:
             state = "claimed"
         elif done_tasks:
             state = "done"
