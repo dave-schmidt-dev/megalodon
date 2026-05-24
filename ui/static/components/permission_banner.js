@@ -8,7 +8,13 @@
 //   - POST /api/v1/approval-rules
 //
 // Public export:
-//   createPermissionBanner({ container }) → { element, start, stop, cleanup }
+//   createPermissionBanner({ container, onPromptsChange }) → { element, start, stop, cleanup }
+//
+//   onPromptsChange (optional): invoked after each poll render with the current
+//   prompts array. Used by board.js to drive BLOCKED-pill precedence from a
+//   single prompts poll (no second permission_prompts fetch). Only fired while
+//   the component is active (post-stop renders do not call it). Omitting it is
+//   a no-op — default behavior is unchanged.
 //
 // Constraints:
 //   - No innerHTML with dynamic data; all DOM via el() / textContent.
@@ -174,11 +180,14 @@ async function respondToPrompt(laneShort, action) {
  * The caller is responsible for inserting `element` into the DOM.
  * Call `start()` once the element is mounted to begin polling.
  *
- * @param {{ container: HTMLElement }} _container  Accepted for API-shape
- *   consistency with createActivityWall; not used (component owns its root).
+ * @param {{ container?: HTMLElement, onPromptsChange?: (prompts: Array<{lane: string, lane_name?: string, command?: string, detected_at?: string}>) => void }} [opts]
+ *   `container` is accepted for API-shape consistency with createActivityWall;
+ *   it is not used (component owns its root). `onPromptsChange` is an optional
+ *   callback invoked with the current prompts array after each poll render
+ *   (only while active); omitting it leaves default behavior unchanged.
  * @returns {{ element: HTMLElement, start: () => void, stop: () => void, cleanup: () => void }}
  */
-export function createPermissionBanner({ container: _container }) {
+export function createPermissionBanner({ container: _container, onPromptsChange } = {}) {
   // ---- root element -------------------------------------------------------
   const element = el("section", {
     class: "card stack-1",
@@ -203,6 +212,10 @@ export function createPermissionBanner({ container: _container }) {
   async function render() {
     const prompts = await fetchPermissionPrompts();
     if (!active) return;
+    // Single source of truth for the pending-prompt lane set: notify the
+    // optional subscriber (board.js) before redrawing. Guarded by `active`
+    // above so a post-stop render does not fire it.
+    onPromptsChange?.(prompts);
     clearNode(element);
     if (prompts.length === 0) {
       element.hidden = true;
