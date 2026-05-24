@@ -66,8 +66,8 @@ jobs:
 
       - name: Forked isolation pass
         run: >
-          uv run --extra test --with pytest-forked
-          pytest -p forked -m isolated
+          uv run --extra test
+          pytest --forked -m isolated
           scripts/tests ui/tests/integration ui/tests/unit
           -v
 
