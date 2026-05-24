@@ -24,7 +24,6 @@ import ipaddress
 import os
 import socket
 import sys
-import webbrowser
 from pathlib import Path
 
 import uvicorn
@@ -171,33 +170,6 @@ def _is_loopback_host(host: str) -> bool:
     return addr.is_loopback
 
 
-def _open_dashboard(url: str, *, enabled: bool, log) -> None:
-    """Auto-open the dashboard in the operator's browser.
-
-    Fleet observability is the product's whole point: a spawned fleet the
-    operator cannot see is a failed launch. So the spawn path opens the
-    dashboard automatically. The listener socket is already bound and
-    ``listen()``-ing before this runs, so the browser's connection is queued by
-    the kernel and served the instant uvicorn accepts — no connection-refused
-    race.
-
-    A browser-launch failure (headless host, no default browser) must NEVER
-    crash the server: we log and fall back to the URL already printed to stdout.
-    """
-    if not enabled:
-        log.info("Dashboard auto-open disabled (--no-browser); open manually: %s", url)
-        return
-    try:
-        opened = webbrowser.open(url, new=2)
-    except Exception as exc:  # noqa: BLE001 — browser launch must not be fatal
-        log.warning("Could not auto-open dashboard (%s); open manually: %s", exc, url)
-        return
-    if opened:
-        log.info("Opened dashboard in browser: %s", url)
-    else:
-        log.warning("No browser available to auto-open; open manually: %s", url)
-
-
 def main() -> None:
     """Parse args, bind socket, write token + URL, hand fd to uvicorn."""
     parser = argparse.ArgumentParser(
@@ -327,10 +299,17 @@ def main() -> None:
         log.info("Dashboard: %s", _redact_token_url(dashboard_url))
         _write_dashboard_url_atomic(url_path, dashboard_url)
 
-        # Step 10b: auto-open the dashboard. The listener is already bound +
-        # listening (Step 6), so the browser's request queues until uvicorn
-        # accepts it below — no connection-refused race. Non-fatal on failure.
-        _open_dashboard(dashboard_url, enabled=not args.no_browser, log=log)
+        # Step 10b (D4): hand the observed-auto-open decision to the live-branch
+        # lifespan via app.state. Instead of opening a tab unconditionally here
+        # (the old tab-spam source), the lifespan watch opens one only if no
+        # live tab reconnects within a grace window after fleet startup — so a
+        # restart with an open tab does not pile up duplicates, while a fresh
+        # launch still opens one. --no-browser forces OFF; --rotate-token forces
+        # an immediate open (operator rotated → wants a fresh authenticated tab).
+        # Set AFTER composing dashboard_url, BEFORE handing the fd to uvicorn.
+        app.state.dashboard_open_url = dashboard_url
+        app.state.dashboard_open_enabled = not args.no_browser
+        app.state.dashboard_force_open = bool(args.rotate_token)
 
         # Step 11: hand fd to uvicorn — it adopts the socket, no re-bind.
         config = uvicorn.Config(

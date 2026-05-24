@@ -18,15 +18,16 @@ _LARGE_PATH_LIMIT = 512
 
 @contextmanager
 def _patched_main_env() -> Generator[None, None, None]:
-    """Patch shared concerns: probe_or_exit_6, socket limit, and browser open.
+    """Patch shared concerns: probe_or_exit_6 and the socket-path limit.
 
-    ``webbrowser.open`` is patched so the suite never spawns a real browser when
-    main() reaches its dashboard auto-open step.
+    D4: main() no longer opens a browser directly — the observed auto-open is a
+    live-branch lifespan task, which _CapturingServer never runs. So there is no
+    ``webbrowser.open`` call to patch here; main() only stages the open decision
+    on app.state (asserted by the handoff tests below).
     """
     with (
         patch("megalodon_ui.__main__.probe_or_exit_6"),
         patch("megalodon_ui.__main__.SOCKET_PATH_LIMIT_BYTES", _LARGE_PATH_LIMIT),
-        patch("megalodon_ui.__main__.webbrowser.open", return_value=True),
     ):
         yield
 
@@ -215,70 +216,64 @@ def test_reused_token_survives_server_run_exception(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test: dashboard auto-opens in a browser by default (fleet observability P0)
+# Test: D4 auto-open handoff — main() stages the decision on app.state
+# instead of opening a browser directly. The actual observe-and-open is a
+# live-branch lifespan task (covered e2e by D6's restart-reconnect spec);
+# _CapturingServer never runs the lifespan, so no browser opens here.
 # ---------------------------------------------------------------------------
 
 
-def test_dashboard_auto_opens_browser(tmp_path: Path) -> None:
+def test_dashboard_open_handoff_default(tmp_path: Path) -> None:
+    """Default launch: open enabled, not forced, URL carries the token."""
     _CapturingServer.captured = None
     _CapturingServer.side_effect = None
 
     with (
         _patched_main_env(),
         patch("megalodon_ui.__main__.uvicorn.Server", _CapturingServer),
-        patch("megalodon_ui.__main__.webbrowser.open", return_value=True) as mock_open,
     ):
         _run_main(tmp_path)
 
-    mock_open.assert_called_once()
-    opened_url = mock_open.call_args.args[0]
-    assert opened_url.startswith("http://"), opened_url
-    assert "#t=" in opened_url, f"dashboard URL must carry the auth token: {opened_url}"
+    cfg = _CapturingServer.captured
+    assert cfg is not None
+    state = cfg.app.state
+    assert state.dashboard_open_enabled is True
+    assert state.dashboard_force_open is False
+    url = state.dashboard_open_url
+    assert url.startswith("http://"), url
+    assert "#t=" in url, f"dashboard URL must carry the auth token: {url}"
 
 
-# ---------------------------------------------------------------------------
-# Test: --no-browser suppresses auto-open (headless/CI)
-# ---------------------------------------------------------------------------
-
-
-def test_no_browser_flag_suppresses_open(tmp_path: Path) -> None:
+def test_no_browser_flag_disables_open_handoff(tmp_path: Path) -> None:
+    """--no-browser → open disabled on the handoff (the watch never opens)."""
     _CapturingServer.captured = None
     _CapturingServer.side_effect = None
 
     with (
         _patched_main_env(),
         patch("megalodon_ui.__main__.uvicorn.Server", _CapturingServer),
-        patch("megalodon_ui.__main__.webbrowser.open", return_value=True) as mock_open,
     ):
         _run_main(tmp_path, extra_argv=["--no-browser"])
 
-    mock_open.assert_not_called()
+    state = _CapturingServer.captured.app.state
+    assert state.dashboard_open_enabled is False
+    assert state.dashboard_force_open is False
 
 
-# ---------------------------------------------------------------------------
-# Test: a browser-launch failure must NOT crash the server
-# ---------------------------------------------------------------------------
-
-
-def test_browser_open_failure_is_non_fatal(tmp_path: Path) -> None:
+def test_rotate_token_forces_open_handoff(tmp_path: Path) -> None:
+    """--rotate-token → force-open True (immediate open, skip the observe window)."""
     _CapturingServer.captured = None
     _CapturingServer.side_effect = None
 
     with (
         _patched_main_env(),
         patch("megalodon_ui.__main__.uvicorn.Server", _CapturingServer),
-        patch(
-            "megalodon_ui.__main__.webbrowser.open",
-            side_effect=RuntimeError("no display"),
-        ),
     ):
-        # Must not raise: browser failure is logged and swallowed.
-        _run_main(tmp_path)
+        _run_main(tmp_path, extra_argv=["--rotate-token"])
 
-    # Server still handed off — the fleet serves even with no browser.
-    assert _CapturingServer.captured is not None, (
-        "server must still start when browser auto-open fails"
-    )
+    state = _CapturingServer.captured.app.state
+    assert state.dashboard_open_enabled is True
+    assert state.dashboard_force_open is True
 
 
 def test_eaddrinuse_exits_9(tmp_path: Path) -> None:

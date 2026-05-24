@@ -1297,6 +1297,42 @@ def make_app(
         app.state.narrator_runtime = narrator_runtime
         app.state.narrator_scheduler_task = narrator_scheduler_task
 
+        # 5b-iii. Observed dashboard auto-open (Task D4). Replaces the old
+        # unconditional pre-uvicorn browser-open: open a tab only if no live
+        # tab reconnects within the grace window, so restarts don't pile up
+        # duplicate tabs while a genuinely fresh launch still opens one.
+        # The handoff values are set on app.state by __main__.main() on a real
+        # launch; read defensively (getattr) since this branch is live-only and
+        # those attrs are absent under any other entrypoint.
+        from .dashboard_open import (
+            auto_open_watch,
+            open_dashboard_nonfatal,
+            parse_open_grace_env,
+        )
+
+        _open_url = getattr(app.state, "dashboard_open_url", None)
+        _open_enabled = getattr(app.state, "dashboard_open_enabled", False)
+        _open_force = getattr(app.state, "dashboard_force_open", False)
+        auto_open_task: asyncio.Task | None = None
+        if _open_url:
+            auto_open_task = asyncio.create_task(
+                auto_open_watch(
+                    enabled=bool(_open_enabled),
+                    force_open=bool(_open_force),
+                    url=_open_url,
+                    get_subscriber_count=(
+                        lambda: (
+                            app.state.narrative_hub.subscriber_count
+                            + app.state.activity_wall.subscriber_count
+                        )
+                    ),
+                    open_fn=open_dashboard_nonfatal,
+                    grace_s=parse_open_grace_env(),
+                    poll_s=0.5,
+                ),
+                name="dashboard-auto-open",
+            )
+
         # 5. Start in-process queue applier (v9.3): drains pending intents from
         #    agents' POST /api/v1/{task/claim,task/done,status/update,...} so the
         #    requests resolve to applied/rejected quickly. Without this the agents
@@ -1327,6 +1363,12 @@ def make_app(
         try:
             yield
         finally:
+            if auto_open_task is not None:
+                auto_open_task.cancel()
+                try:
+                    await auto_open_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             narrator_stop_event.set()
             narrator_scheduler_task.cancel()
             try:
