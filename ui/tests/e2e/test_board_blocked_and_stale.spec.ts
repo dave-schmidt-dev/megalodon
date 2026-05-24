@@ -83,6 +83,27 @@ async function stubNoStaleLanes(page: Page): Promise<void> {
 
 test.describe('CR-4: task-blocked pill (state=blocked → BLOCKED pill)', () => {
 
+  // Both tests here seed lane A with state:"blocked" via the real
+  // POST /api/v1/__fake__/narrative injector, which persists in the server's
+  // shared narrative_cache across tests in the worker (never auto-reset).
+  // Reset lane A back to the fix-small neutral baseline (T1 done → state "done"
+  // → IDLE pill) so this spec leaves the shared cache as it found it. Only
+  // lane A is reset — it is the only lane this spec seeds via the injector.
+  test.afterEach(async ({ page }) => {
+    await seedNarrative(page, {
+      A: {
+        lane: 'A',
+        lane_name: 'agent-a',
+        state: 'done',
+        last: null,
+        now: null,
+        goal: null,
+        tokens: null,
+        narrator_ok: true,
+      },
+    });
+  });
+
   test('seeded state=blocked → board-pill shows BLOCKED', async ({ page }, testInfo) => {
     const token = readUiToken(testInfo);
     await stubNoStaleLanes(page);
