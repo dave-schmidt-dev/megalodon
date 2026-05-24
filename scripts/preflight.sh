@@ -39,7 +39,12 @@ if uv run pytest scripts/tests/test_settings_friction_allowlist.py -q >/dev/null
   ok friction-allowlist; else bad friction-allowlist "helper-script wildcards missing"; fi
 
 # 4. lifecycle scripts smoke (new_run -> archive_run on throwaway, in a temp git repo).
-TMP="$(mktemp -d)"
+# Use a SHORT /tmp root, not mktemp's default: on macOS the default $TMPDIR is
+# /var/folders/<uid>/T/... (~50 bytes), which alone pushes the smoke run's
+# <TMP>/runs/<UTC>--smoke/.fleet/tmux.sock past new_run.sh's 100-byte socket-path
+# guard, failing preflight on every Mac regardless of the repo. (Same Unix-socket
+# limit the Playwright config dodges via /tmp/m.)
+TMP="$(mktemp -d /tmp/mega-pf.XXXXXX)"
 (
   cd "$TMP"
   git init -q && git config user.email t@t && git config user.name t
