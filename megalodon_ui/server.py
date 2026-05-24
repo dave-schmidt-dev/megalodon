@@ -77,7 +77,7 @@ from .harnesses import get_adapter
 
 #: Path prefixes that ALWAYS require a valid mui_session cookie. Any method.
 _V92_GATED_PATH_RE = re.compile(
-    r"^/api/v1/(lane/[^/]+|__fake__|permission_prompts|activity-wall|approval-rules|lanes/stale|_test)(/|$)"
+    r"^/api/v1/(lane/[^/]+|__fake__|permission_prompts|activity-wall|narrative-stream|narrative|approval-rules|lanes/stale|_test)(/|$)"
 )
 
 #: Exact (method, path) pairs that require a cookie.
@@ -170,7 +170,6 @@ def _compute_stale_response(
     ``max()`` over ``(ts, source_priority)`` tuples).
     """
     now = datetime.now(timezone.utc)
-    now_mono = time.monotonic()
 
     # parse_status returns "LANE-A" form; mission_config.lanes.short is "A".
     def _row_short(row: dict) -> str:
@@ -180,8 +179,6 @@ def _compute_stale_response(
     short_to_agent: dict[str, str] = {
         _row_short(r): r.get("agent", "") for r in lane_rows
     }
-
-    short_set: set[str] = {lc.short for lc in mission_config.lanes if lc.short}
 
     pending_lanes: set[str] = set()
     if permission_watcher is not None:
@@ -1130,6 +1127,10 @@ def make_app(
             _aw_fake = ActivityWall(mission_dir, _perm_watcher_fake)
             await _aw_fake.start()
             app.state.activity_wall = _aw_fake
+            from .narrator.hub import NarrativeHub
+
+            app.state.narrative_hub = NarrativeHub()
+            app.state.narrative_cache = {}
             try:
                 yield
             finally:
@@ -1165,6 +1166,10 @@ def make_app(
             _aw_test = ActivityWall(mission_dir, None)
             await _aw_test.start()
             app.state.activity_wall = _aw_test
+            from .narrator.hub import NarrativeHub
+
+            app.state.narrative_hub = NarrativeHub()
+            app.state.narrative_cache = {}
             try:
                 yield
             finally:
@@ -1227,6 +1232,12 @@ def make_app(
         activity_wall = ActivityWall(mission_dir, perm_watcher)
         await activity_wall.start()
         app.state.activity_wall = activity_wall
+
+        # 5b. Narrative hub + cache (passive plumbing for summary board, Task 2.2).
+        from .narrator.hub import NarrativeHub
+
+        app.state.narrative_hub = NarrativeHub()
+        app.state.narrative_cache = {}
 
         # 5. Start in-process queue applier (v9.3): drains pending intents from
         #    agents' POST /api/v1/{task/claim,task/done,status/update,...} so the
@@ -1823,6 +1834,36 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             else:
                 spawner.set_pane_alive(lane)
             return JSONResponse(status_code=200, content={"lane": lane})
+
+        @app.post("/api/v1/__fake__/narrative")
+        async def fake_narrative_inject_route(request: Request):  # noqa: ANN201
+            """Test-only — seed narrative_cache and publish to narrative_hub.
+
+            Registered only when ``MEGALODON_FAKE_SPAWNER=1``. Cookie-gated via
+            ``_V92_GATED_PATH_RE``. Body: ``{"lanes": {<short>: <row_payload>, ...}}``.
+
+            Merges the supplied lanes into ``app.state.narrative_cache`` (i.e.
+            ``cache[short] = row_payload`` for each), then publishes the full
+            updated cache as ``{"lanes": dict(app.state.narrative_cache)}`` to
+            ``app.state.narrative_hub`` — the same frame shape the real scheduler
+            emits, so the board's stream→render path is exercised unchanged.
+
+            Returns ``{"ok": true, "lanes": [<short>, ...]}``.
+            """
+            body = await request.json()
+            incoming = body.get("lanes", {})
+            if not isinstance(incoming, dict):
+                return JSONResponse(
+                    status_code=422, content={"detail": "lanes must be an object"}
+                )
+            cache = app.state.narrative_cache
+            for short, row_payload in incoming.items():
+                cache[short] = row_payload
+            app.state.narrative_hub.publish({"lanes": dict(cache)})
+            return JSONResponse(
+                status_code=200,
+                content={"ok": True, "lanes": list(incoming.keys())},
+            )
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
@@ -2905,6 +2946,73 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                         yield {"comment": "ka"}
             finally:
                 wall.unsubscribe(q)
+
+        return EventSourceResponse(_event_generator())
+
+    # ----- summary board narrative endpoints (Task 2.4) -----------------------
+
+    @app.get("/api/v1/narrative")
+    async def narrative_snapshot(request: Request):  # noqa: ANN201
+        """Return the current per-lane narrative cache.
+
+        Cookie-gated via ``_V92_GATED_PATH_RE``. Returns the full cache map
+        keyed by lane short-name.  ``now.phrase`` may be null when no narrator
+        response has arrived yet; all other deterministic fields (last, now,
+        goal, state) are always present for each cached lane.
+
+        Response shape::
+
+            {"lanes": {"A": {"last": ..., "now": {...}, "goal": ..., "state": ...}, ...}}
+        """
+        return JSONResponse(content={"lanes": dict(app.state.narrative_cache)})
+
+    @app.get("/api/v1/narrative-stream")
+    async def narrative_stream(request: Request):  # noqa: ANN201
+        """SSE stream of narrative payload updates as they are published.
+
+        Cookie-gated via ``_V92_GATED_PATH_RE``.
+
+        On connect:
+        1. Subscribe to the NarrativeHub fan-out queue.
+        2. Immediately emit the current cache snapshot as the first SSE frame
+           so the client has a baseline without a separate REST round-trip.
+        3. Drain the queue, emitting each published payload as an SSE event.
+        4. On disconnect (or generator exit): unsubscribe the queue.
+
+        Each SSE data payload is a JSON-encoded dict.  The initial frame has
+        the shape ``{"lanes": <cache snapshot>}``; subsequent frames are
+        whatever the scheduler publishes (per-lane payload dicts).
+
+        On client disconnect the per-connection asyncio.Queue is removed from
+        the hub's subscriber list and eligible for GC.
+        """
+        from sse_starlette.sse import EventSourceResponse
+
+        hub = getattr(app.state, "narrative_hub", None)
+        if hub is None:
+            return JSONResponse(
+                status_code=503, content={"detail": "narrative hub not initialized"}
+            )
+
+        q = hub.subscribe()
+        # Snapshot the cache at subscribe time (before any concurrent publish).
+        initial = dict(app.state.narrative_cache)
+
+        async def _event_generator():
+            try:
+                # Initial frame: current cache so client can hydrate immediately.
+                yield {"data": json.dumps({"lanes": initial})}
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        payload = await asyncio.wait_for(q.get(), timeout=15.0)
+                        yield {"data": json.dumps(payload)}
+                    except asyncio.TimeoutError:
+                        # Keep-alive: send a comment so the connection stays open.
+                        yield {"comment": "ka"}
+            finally:
+                hub.unsubscribe(q)
 
         return EventSourceResponse(_event_generator())
 
