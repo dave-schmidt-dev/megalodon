@@ -3,6 +3,12 @@
 Binds the listener socket FIRST, holds it open through token write and
 dashboard URL write, then hands the fd to uvicorn.Server so there is
 no probe-close-rebind window (eliminates OW-2).
+
+Phase 5 / Task D3: bearer token is now stable across restarts.
+  - ``_resolve_token`` reuses an existing token (or generates a fresh one).
+  - ``_rotate_clear`` wipes token + sessions before a new token is minted.
+  - Normal exit no longer unlinks the token file so the URL stays valid.
+  - ``--rotate-token`` forces a fresh token and revokes all active sessions.
 """
 
 from __future__ import annotations
@@ -24,6 +30,42 @@ from ._v92_constants import SOCKET_PATH_LIMIT_BYTES
 from .constants import DEFAULT_PORT
 
 
+# ---------------------------------------------------------------------------
+# Token lifecycle helpers (extracted for unit-testability — D3)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_token(token_path: Path) -> tuple[str, bool]:
+    """Return (token, was_generated).
+
+    If a non-empty token already exists at *token_path* it is reused and
+    ``was_generated`` is False.  Otherwise a fresh token is minted, written
+    atomically at 0600, and ``was_generated`` is True.
+
+    Raises:
+        FileExistsError: if ``write_token_atomic`` collides twice in a row
+            (caller should translate this to exit 8).
+    """
+    existing = auth.read_token(token_path)
+    if existing:  # non-None and non-empty after strip (read_token already strips)
+        return existing, False
+    token = auth.generate_token()
+    auth.write_token_atomic(token_path, token)
+    return token, True
+
+
+def _rotate_clear(token_path: Path, sessions_path: Path) -> None:
+    """Delete token and sessions files so the next resolve generates fresh credentials.
+
+    Both unlinks are missing_ok — safe to call even if neither file exists.
+    This is the core of ``--rotate-token``: removing sessions.json means the
+    new SessionStore (constructed in make_app → lifespan) loads nothing,
+    invalidating every existing cookie.
+    """
+    token_path.unlink(missing_ok=True)
+    sessions_path.unlink(missing_ok=True)
+
+
 def _bind_listener(host: str, port: int) -> socket.socket:
     """Create, bind and listen on (host, port); exit 9 on EADDRINUSE."""
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -35,6 +77,7 @@ def _bind_listener(host: str, port: int) -> socket.socket:
     try:
         listener.bind((host, port))
     except OSError as exc:
+        listener.close()
         if exc.errno == errno.EADDRINUSE:
             sys.stderr.write(
                 f"port {port} already in use; another megalodon-ui server may be "
@@ -115,6 +158,15 @@ def main() -> None:
         default=os.environ.get("MEGALODON_NO_BROWSER") == "1",
         help="Do not auto-open the dashboard in a browser (for headless/CI runs).",
     )
+    parser.add_argument(
+        "--rotate-token",
+        action="store_true",
+        default=os.environ.get("MEGALODON_ROTATE_TOKEN") == "1",
+        help=(
+            "Delete the existing token + all sessions and mint a fresh token "
+            "(revokes open dashboards)."
+        ),
+    )
     args = parser.parse_args()
 
     log = get_logger("megalodon_ui.main", debug=args.debug)
@@ -146,41 +198,54 @@ def main() -> None:
         )
         sys.exit(10)
 
-    # Step 5: bind listener and hold it open.
+    token_path = fleet_dir / "ui.token"
+    url_path = fleet_dir / "dashboard.url"
+    sessions_path = fleet_dir / "sessions.json"
+
+    # Step 5 (D3 OW-5): --rotate-token clears token + sessions BEFORE make_app so
+    # the new SessionStore (constructed in lifespan) loads nothing, invalidating all
+    # prior cookies.  The force-open behavior triggered by rotation is wired in D4.
+    if args.rotate_token:
+        _rotate_clear(token_path, sessions_path)
+        log.info("--rotate-token: existing token and sessions cleared")
+
+    # Step 6: bind listener and hold it open.
     listener = _bind_listener(args.host, args.port)
 
-    # Step 6: lazy import app factory now that we know mission_dir is valid.
+    # Step 7: lazy import app factory now that we know mission_dir is valid.
     from .server import make_app  # noqa: PLC0415
 
     app = make_app(mission_dir=mission_dir, port=args.port)
 
-    token_path = fleet_dir / "ui.token"
-    url_path = fleet_dir / "dashboard.url"
-
-    # Step 6 (cleanup-guarded block): covers token write, URL write, uvicorn.
+    # Step 8 (cleanup-guarded block): covers token write, URL write, uvicorn.
+    # Initialise before the try so the except branch can always read it safely.
+    token_was_generated: bool = False
     try:
-        # Step 7: generate + atomically write bearer token.
-        token = auth.generate_token()
+        # Step 9: reuse existing token or generate a fresh one (D3 stable-token).
         try:
-            auth.write_token_atomic(token_path, token)
+            token, token_was_generated = _resolve_token(token_path)
         except FileExistsError:
             sys.stderr.write(
                 f"failed to write bearer token to {token_path} after retry; exit 8\n"
             )
             sys.exit(8)
+        if token_was_generated:
+            log.debug("Minted fresh bearer token → %s", token_path)
+        else:
+            log.debug("Reusing existing bearer token from %s", token_path)
 
-        # Step 8: compose + emit dashboard URL (stdout, log, file).
+        # Step 10: compose + emit dashboard URL (stdout, log, file).
         dashboard_url = f"http://{args.host}:{args.port}/#t={token}"
         print(dashboard_url, flush=True)
         log.info("Dashboard: %s", dashboard_url)
         _write_dashboard_url_atomic(url_path, dashboard_url)
 
-        # Step 8b: auto-open the dashboard. The listener is already bound +
-        # listening (Step 5), so the browser's request queues until uvicorn
+        # Step 10b: auto-open the dashboard. The listener is already bound +
+        # listening (Step 6), so the browser's request queues until uvicorn
         # accepts it below — no connection-refused race. Non-fatal on failure.
         _open_dashboard(dashboard_url, enabled=not args.no_browser, log=log)
 
-        # Step 9: hand fd to uvicorn — it adopts the socket, no re-bind.
+        # Step 11: hand fd to uvicorn — it adopts the socket, no re-bind.
         config = uvicorn.Config(
             app=app,
             fd=listener.fileno(),
@@ -188,20 +253,28 @@ def main() -> None:
             lifespan="on",
         )
         uvicorn.Server(config).run()
+        # Normal exit: uvicorn closed the underlying fd; call listener.detach()
+        # so the Python socket object releases ownership and does not emit
+        # ResourceWarning when GC'd.
+        listener.detach()
 
     except BaseException:
-        # Best-effort cleanup on any error (CV-7).
-        token_path.unlink(missing_ok=True)
-        url_path.unlink(missing_ok=True)
+        # Best-effort cleanup on any error (CV-7 / D3): only remove the token
+        # and URL files if THIS run created them.  Never delete a reused token —
+        # the next restart would lose its stable URL.
+        if token_was_generated:
+            token_path.unlink(missing_ok=True)
+            url_path.unlink(missing_ok=True)
         try:
             listener.close()
         except OSError:
             pass
         raise
     else:
-        # Normal shutdown: clean up credential files; uvicorn closed the listener.
-        token_path.unlink(missing_ok=True)
-        url_path.unlink(missing_ok=True)
+        # Normal shutdown (D3): token + URL persist so the next restart reuses
+        # the same token and the dashboard URL stays valid for an open browser tab.
+        # uvicorn closed the listener socket above.
+        pass
 
 
 if __name__ == "__main__":

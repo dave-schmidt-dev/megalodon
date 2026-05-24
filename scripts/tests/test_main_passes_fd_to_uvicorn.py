@@ -48,7 +48,13 @@ def _run_main(tmp_path: Path, extra_argv: list[str] | None = None) -> None:
 
 
 class _CapturingServer:
-    """Replacement for uvicorn.Server that records the Config it received."""
+    """Replacement for uvicorn.Server that records the Config it received.
+
+    On normal exit (no side_effect) the stub adopts and closes the fd it
+    inherited, mirroring what real uvicorn does.  This pairs with the D3
+    ``listener.detach()`` call that main() makes after run() returns, which
+    clears the Python socket object's reference so no ResourceWarning is emitted.
+    """
 
     captured: Any = None
     side_effect: BaseException | None = None
@@ -59,6 +65,15 @@ class _CapturingServer:
     def run(self) -> None:
         if _CapturingServer.side_effect is not None:
             raise _CapturingServer.side_effect
+        # Mimic uvicorn: adopt the fd via socket.fromfd so Python owns the
+        # cleanup, then close it properly so the port is released.
+        cfg = _CapturingServer.captured
+        if cfg is not None and getattr(cfg, "fd", None) is not None:
+            try:
+                s = socket.socket(fileno=cfg.fd)
+                s.close()
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
