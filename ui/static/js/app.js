@@ -31,13 +31,18 @@ function matchRoute(path) {
 }
 
 let currentPageCleanup = null;
-// Monotonic mount counter. Each mountPage() call bumps it. Stale in-flight
-// renders compare their captured id against this counter and abort their
-// final clearNode/appendChild writes if a newer navigation has started.
-// Without this guard, dashboard.render's `await loadConfig()` would resolve
-// LATE and paint dashboard over whatever tab the operator just clicked —
-// the visible "snap back to Dashboard" bug.
+// Monotonic mount counter. Each mountPage() call bumps it; a render whose
+// captured id is no longer the latest is stale and must not commit.
 let _mountSeq = 0;
+// Render chain: mounts are SERIALIZED through this promise so two overlapping
+// navigations (e.g. a slow page render still in flight when the operator hits
+// Back → popstate) never interleave their clearNode/appendChild on the shared
+// #app-root. Without serialization a stale render's DOM writes can land AFTER
+// the winning page painted, leaving the wrong page (or a blank root) at the
+// current URL — the WebKit back-navigation blank/wrong-board bug. The _mountSeq
+// guard alone is insufficient: it only fires AFTER `await mod.render`, by which
+// point the stale render has already mutated the DOM.
+let _renderChain = Promise.resolve();
 
 function getRoot() {
   return document.getElementById("app-root");
@@ -54,16 +59,23 @@ function emptyState(text) {
   return p;
 }
 
-async function mountPage(path) {
+function mountPage(path) {
+  // Claim the mount synchronously so a later call immediately makes us stale.
+  const myId = ++_mountSeq;
+  // Queue behind any in-flight render; never run two page renders concurrently.
+  _renderChain = _renderChain
+    .then(() => _runMount(path, myId))
+    .catch((err) => console.error("[app] mount error:", err));
+  return _renderChain;
+}
+
+async function _runMount(path, myId) {
+  // Superseded before our turn came up? A newer mount will paint; skip.
+  if (myId !== _mountSeq) return;
+
   const { loader, params } = matchRoute(path);
   const root = getRoot();
   if (!root) return;
-
-  // Claim this mount. Any in-flight render older than `myId` must abort its
-  // final paints; this is the only thing preventing dashboard's slow
-  // `await loadConfig()` from overwriting a fresh tab the operator clicked
-  // mid-render.
-  const myId = ++_mountSeq;
 
   // Unmount the previous page first.
   if (currentPageCleanup) {
@@ -76,28 +88,25 @@ async function mountPage(path) {
   root.appendChild(emptyState("Loading…"));
 
   // FIX(bug-2): update the active nav indicator BEFORE awaiting the lazy
-  // page-module import. Otherwise the highlight only appears after the
-  // dynamic import resolves (≈50-200ms), which the operator perceives as
-  // "the indicator doesn't update". Also fired again after mount so a
-  // late-stage failure doesn't leave the indicator stale.
+  // page-module import so the highlight updates immediately, not only after the
+  // dynamic import resolves. Fired again after mount to recover from a
+  // late-stage failure.
   updateNavActive(path);
 
   try {
     const mod = await loader();
     if (myId !== _mountSeq) return;  // a newer navigation won the race
     clearNode(root);
-    // FIX(bug-snap-back): `render` is async in every page module — so the
-    // raw return value is a Promise, not the cleanup function. The previous
-    // `typeof cleanup === "function"` guard always failed silently, leaking
-    // every page's setIntervals + store subscriptions across navigations.
-    // Now we await the render promise and adopt its resolved cleanup, and
-    // gate the adoption on still being the current mount so a late-resolving
-    // stale render can't (a) overwrite the visible page or (b) install its
-    // cleanup as the page-cleanup-of-record.
+    // `render` is async in every page module, so await the promise and adopt
+    // its resolved cleanup — gated on still being the current mount so a
+    // late-resolving stale render can't install its cleanup as the
+    // page-cleanup-of-record. Serialization guarantees no other render mutates
+    // the DOM concurrently with this one.
     const cleanup = await mod.render(root, params);
     if (myId !== _mountSeq) {
-      // A newer mountPage started while we were rendering. Discard our
-      // cleanup by invoking it directly so its timers/subs don't leak.
+      // A newer mountPage started while we were rendering. Discard our cleanup
+      // by invoking it directly so its timers/subs don't leak. (Page cleanups
+      // must NOT clearNode(root); the next queued mount owns repainting.)
       if (typeof cleanup === "function") {
         try { cleanup(); } catch (err) { console.error("[app] stale-cleanup error:", err); }
       }

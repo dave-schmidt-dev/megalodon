@@ -72,10 +72,7 @@ test.describe('board page: clicking a row navigates to /lane/<short>', () => {
     await expect(page).toHaveURL(/\/lane\/B$/, { timeout: 5_000 });
   });
 
-  test('going back from a lane restores the board at /', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === 'webkit-board',
-      'WebKit: board does not re-render after back-navigation (board-page absent at 8s). ' +
-      'Suspected real Safari SPA-remount bug — tracked follow-up (TASKS.md / handoff).');
+  test('going back from a lane restores the board at /', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 

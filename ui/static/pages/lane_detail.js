@@ -642,7 +642,9 @@ export async function render(root, { short }) {
   function cleanup() {
     termComponent.cleanup();
     injectForm.cleanup();
-    clearNode(root);
+    // Do NOT clearNode(root): app.js clears the mount root before every page
+    // render. A stale page's cleanup that clears root can wipe a newer page
+    // when app.js discards a superseded render's cleanup (WebKit back-nav bug).
   }
 
   // Expose cleanup on root for external lifecycle hooks.

@@ -155,9 +155,7 @@ test.describe('lane_detail: send debounce', () => {
 
 test.describe('lane_detail: back link navigation', () => {
 
-  test('clicking back link navigates to / and renders board page', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === 'webkit-board',
-      'WebKit: board does not re-render after back-navigation — tracked follow-up (TASKS.md / handoff).');
+  test('clicking back link navigates to / and renders board page', async ({ page }) => {
     await gotoLaneA(page);
 
     // Click the back link.

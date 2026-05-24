@@ -441,7 +441,8 @@ export async function render(root, _params) {
     if (document.body.contains(drawer.drawerEl)) {
       document.body.removeChild(drawer.drawerEl);
     }
-    clearNode(root);
+    // Do NOT clearNode(root): app.js clears the mount root before every render;
+    // a stale cleanup clearing root can wipe a newer page (WebKit back-nav bug).
   };
 }
 

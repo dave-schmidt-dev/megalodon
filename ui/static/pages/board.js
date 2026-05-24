@@ -372,7 +372,7 @@ export async function render(root, _params) {
     errMsg.className = "empty-state";
     errMsg.textContent = "Failed to load mission config — cannot render summary board.";
     root.appendChild(errMsg);
-    return () => { clearNode(root); };
+    return () => {};  // app.js clears root on the next mount; see cleanup note below.
   }
 
   // --- clear skeleton; build page ---
@@ -786,8 +786,10 @@ export async function render(root, _params) {
     //    the contract's sake.
     const orphan = document.body.querySelector('[data-board-modal="true"]');
     if (orphan && orphan.parentNode) orphan.parentNode.removeChild(orphan);
-    // 6. Clear the page root (grid.js does this; harmless and correct for
-    //    independent cleanup calls).
-    clearNode(root);
+    // NOTE: do NOT clearNode(root) here. app.js clears the mount root before
+    // every page render (mountPage); a page cleanup that clears root can wipe a
+    // *newer* page when app.js discards a stale render's cleanup — the WebKit
+    // back-navigation blank-board bug. Cleanup releases only this page's own
+    // resources (timers, EventSources, banner, drawers, body-level modals).
   };
 }

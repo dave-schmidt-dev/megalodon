@@ -400,7 +400,9 @@ export async function render(root, _params) {
   });
 
   return function cleanup() {
-    clearNode(root);
+    // No own resources to release. Do NOT clearNode(root): app.js clears the
+    // mount root before every render, and a stale cleanup clearing root can wipe
+    // a newer page (WebKit back-nav bug).
   };
 }
 
