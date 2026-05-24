@@ -90,6 +90,7 @@ async def fake_spawner_client(
 ) -> AsyncGenerator[tuple, None]:
     """Authenticated client under MEGALODON_FAKE_SPAWNER=1."""
     monkeypatch.delenv("MEGALODON_LIFESPAN_TEST_MODE", raising=False)
+    monkeypatch.delenv("MEGALODON_FAKE_SESSIONS_PATH", raising=False)
     monkeypatch.setenv("MEGALODON_FAKE_SPAWNER", "1")
     _setup_mission(tmp_path)
 
@@ -143,6 +144,42 @@ async def test_fake_spawner_session_store_path_is_none(
 # ---------------------------------------------------------------------------
 # 3. Repo-hygiene: no sessions.json in tracked fixtures
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 2b. Fake-spawner persistence opt-in seam (Task D6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fake_spawner_sessions_path_opt_in(tmp_path: Path, monkeypatch) -> None:
+    """MEGALODON_FAKE_SESSIONS_PATH set → fake branch wires a persistent store.
+
+    This is the test-only seam the restart-reconnect e2e (PW-3) relies on. It
+    must NOT change any other branch; the default (env unset) remains path=None,
+    asserted by test_fake_spawner_session_store_path_is_none above.
+    """
+    monkeypatch.delenv("MEGALODON_LIFESPAN_TEST_MODE", raising=False)
+    monkeypatch.setenv("MEGALODON_FAKE_SPAWNER", "1")
+    _setup_mission(tmp_path)
+    sessions_path = tmp_path / ".fleet" / "sessions.json"
+    monkeypatch.setenv("MEGALODON_FAKE_SESSIONS_PATH", str(sessions_path))
+
+    app = make_app(mission_dir=tmp_path)
+    async with app.router.lifespan_context(app):
+        ctx = app.state.megalodon
+        assert ctx.session_store._path == sessions_path, (
+            "fake branch should use the opted-in sessions path, got: "
+            f"{ctx.session_store._path}"
+        )
+        # The store persists on create — exercise the exchange so the file
+        # actually lands at the configured path.
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            r = await client.post("/api/v1/auth/exchange", json={"token": TOKEN})
+            assert r.status_code == 200, f"auth exchange failed: {r.text}"
+    assert sessions_path.exists(), "persistent store should have written sessions.json"
 
 
 def test_no_sessions_json_in_fixtures() -> None:

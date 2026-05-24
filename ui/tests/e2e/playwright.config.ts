@@ -131,9 +131,16 @@ const PROJECT_TO_PORT: Record<string, number> = {
   'webkit-board': ports.boardWebkit,
 };
 
+// Projects that intentionally have NO Playwright-managed webServer (they spawn
+// their own). Selecting ONLY these must start zero webServers — otherwise the
+// "empty wantedPorts → return all" fallback would boot all ~11 servers.
+const SELF_MANAGED_SERVER_PROJECTS = new Set<string>(['chromium-restart']);
+
 function filterWebServersByProject<T extends { url: string }>(all: T[]): T[] {
   const sel = selectedProjectNames();
   if (sel.size === 0) return all;
+  // If every selected project manages its own server, start none.
+  if ([...sel].every(p => SELF_MANAGED_SERVER_PROJECTS.has(p))) return [];
   const wantedPorts = new Set<number>();
   for (const p of sel) {
     const port = PROJECT_TO_PORT[p];
@@ -185,8 +192,13 @@ const MUTATIONS_PATTERN = /test_orchestrator_actions\.spec\.ts$/;
 // (uses _test/stale_override endpoint) — chromium-board includes MEGALODON_FAKE_SPAWNER.
 const BOARD_SPEC_PATTERN = /test_(board_[a-z0-9_]+|lane_detail|activity_wall|stale_badge|v94_phase2_smoke|v94_phase3_smoke|findings_page|signals_page|mission_page|tasks_page|approval_rules)\.spec\.ts$/;
 const GRID_SMOKE_SPEC_PATTERN = /test_v94_phase1_smoke\.spec\.ts$/;
-// Everything that doesn't match the above four/five patterns belongs to *-default.
-const DEFAULT_IGNORE = [V92_SPEC_PATTERN, FAILURE_MODES_PATTERN, MUTATIONS_PATTERN, BOARD_SPEC_PATTERN, GRID_SMOKE_SPEC_PATTERN];
+// The restart-reconnect spec (Task D6 / PW-3) manages its OWN server process
+// (Node child_process), so it runs under the dedicated `chromium-restart`
+// project which has NO Playwright-managed webServer. Every other project must
+// ignore it so they don't try to run it against their (wrong) webServer.
+const RESTART_SPEC_PATTERN = /test_restart_reconnect\.spec\.ts$/;
+// Everything that doesn't match the above patterns belongs to *-default.
+const DEFAULT_IGNORE = [V92_SPEC_PATTERN, FAILURE_MODES_PATTERN, MUTATIONS_PATTERN, BOARD_SPEC_PATTERN, GRID_SMOKE_SPEC_PATTERN, RESTART_SPEC_PATTERN];
 
 export default defineConfig({
   testDir: '.',
@@ -253,6 +265,17 @@ export default defineConfig({
       fullyParallel: false,
       workers: 1,
       use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.gridSmokeChromium}` },
+    },
+    {
+      // Task D6 / PW-3: restart-reconnect. Manages its own server process, so
+      // NO webServer entry below for this project and no baseURL (the spec uses
+      // absolute http://127.0.0.1:<port> URLs against the port it spawns).
+      // Chromium-only (no webkit needed for this server-lifecycle test).
+      name: 'chromium-restart',
+      testMatch: RESTART_SPEC_PATTERN,
+      fullyParallel: false,
+      workers: 1,
+      use: { ...devices['Desktop Chrome'] },
     },
     // ---- WebKit (Safari engine) ----
     {

@@ -60,6 +60,19 @@ Read at lifespan start from `megalodon_ui/narrator/runtime.py` (`from_env()`) an
 | `MEGALODON_NARRATOR_TIMEOUT_S` | `6.0` | Per-narrate request timeout in seconds. |
 | `MEGALODON_NARRATOR_INTERVAL_S` | `30` | Scheduler tick interval in seconds, clamped to `[15, 120]`. |
 
+## Persistent sessions + dashboard auto-open (SHIPPED 2026-05-24)
+
+- **Status:** SHIPPED (Phase 5, D1–D6). Best-effort UX for a single-operator localhost tool — explicitly **not** a security boundary (see caveats below).
+- **An open dashboard tab survives a server restart.** Sessions are persisted to `.fleet/sessions.json` (hashed at rest — only the SHA-256 digest of each session id is stored, never the raw cookie) and the bearer token in `.fleet/ui.token` is **stable** across restarts (reused, not regenerated). So after you `Ctrl-C` and relaunch, an already-open tab's `mui_session` cookie still validates and its SSE `EventSource`s auto-reconnect with **no manual re-auth** — no paste-token modal.
+- **Observed auto-open (no tab-spam):** a relaunch does **not** unconditionally open a new tab. The live-branch lifespan watches the authenticated SSE subscriber count for `MEGALODON_DASHBOARD_OPEN_GRACE_S` seconds (default **8**); if a live tab reconnects within that window it opens **nothing**, and only opens a fresh tab if no tab reconnects. The full token-bearing URL is still printed to stdout immediately on every launch regardless.
+- **`--rotate-token`:** the explicit rotation path. It deletes `.fleet/ui.token` + `sessions.json` + the auto-open marker **before** the app builds, so all prior cookies are revoked, a fresh token is minted, and a new authenticated tab is force-opened. This replaces the old (illusory) per-launch auto-rotation.
+- **`--no-browser`** (or `MEGALODON_NO_BROWSER=1`): forces auto-open OFF. Always used by the e2e/test webServers so a test run never spawns browser tabs.
+- **Caveats:**
+  - Persisted credentials assume a **localhost, single-operator** bind. If `--host` resolves to a non-loopback address the server logs a WARNING — persisted creds + non-local bind is unsupported.
+  - Two servers on the same mission (different ports) share one `sessions.json` and can clobber each other's writes; unsupported.
+  - Expiry uses wall-clock (`time.time`, 24h), so clock jumps can shorten/extend a session.
+- **Verification:** `ui/tests/e2e/test_restart_reconnect.spec.ts` (PW-3) spawns a real server, authenticates a tab, kills + respawns the server against the same `.fleet`, and asserts the cookie + SSE reconnect without the paste-token modal. Spec: `docs/superpowers/specs/2026-05-24-persistent-sessions-smart-autoopen-design.md`.
+
 ## Run lifecycle (v9.4 convention)
 
 Every mission run is scaffolded into a self-contained `runs/<UTC>--<slug>/` subdir, then archived to `.archive/<UTC>--<slug>/` with an `INDEX.md` entry when complete. No run leaves ephemera in the repo root.

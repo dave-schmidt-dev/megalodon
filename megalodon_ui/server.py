@@ -1119,6 +1119,19 @@ def make_app(
         if fake_spawner:
             from .spawn_fake import FakeFleetSpawner
 
+            # Test-only persistence seam (Task D6): the fake branch normally
+            # keeps an in-memory SessionStore (path=None) to preserve the D2
+            # WR-3 invariant and the fixtures-pollution guard for the normal
+            # suite. The restart-reconnect e2e (PW-3) needs persisted+hashed
+            # sessions WITHOUT a real tmux fleet, so it opts in by setting
+            # MEGALODON_FAKE_SESSIONS_PATH to a sessions.json path. When unset
+            # (the default for every other test) behavior is unchanged: pure
+            # in-memory, nothing written. This NEVER affects the live or
+            # test-mode branches.
+            _fake_sessions_path = os.environ.get("MEGALODON_FAKE_SESSIONS_PATH")
+            if _fake_sessions_path:
+                ctx.session_store = auth.SessionStore(path=Path(_fake_sessions_path))
+
             app.state.spawner = FakeFleetSpawner(
                 mission_dir,
                 ctx.mission_config,

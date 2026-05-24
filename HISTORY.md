@@ -10,6 +10,24 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-24 — Persistent sessions + observed dashboard auto-open (Phase 5)
+
+**Problem:** every `python -m megalodon_ui` launch unconditionally opened the dashboard in a new browser tab, so a dev session of restarts piled up dead tabs (an 11-tab incident triggered the `--no-browser` test-server fix earlier the same day). The naive "just stop reopening" was unsafe: sessions were in-memory and the bearer token regenerated each launch, so after a restart an already-open tab was **stale** — its `mui_session` cookie no longer validated and the bearer had been wiped from its URL. Skipping the reopen would have left the operator with a dead tab and no fresh one.
+
+**Solution (D1–D6):**
+- **D1** (`144efae` + `46511dd`): `auth.SessionStore` gained an optional `path` — when set it loads/prunes on construction and atomically (0600) persists `{sha256(sid): created_epoch}` on every create/revoke/expired-eviction. The **raw** session id is never written; expiry moved to wall-clock so it survives a restart. Tolerant load (corrupt/missing → empty + WARNING).
+- **D2** (`257be7b`): persistence is **live-mode-only** (invariant WR-3) — only the live lifespan branch passes `path=.fleet/sessions.json`; the test-mode and fake-spawner branches construct `SessionStore(path=None)`, so the suite never writes session state and the tracked fixture `.fleet/` dirs cannot be polluted. A guard test asserts no `sessions.json` appears under `scripts/tests/fixtures/`.
+- **D3** (`2b1b57c` + `ef77082`): the bearer token in `.fleet/ui.token` is reused if present (stable URL across restarts); never unlinked on normal exit; error-path cleanup unlinks only a token this run generated. `--rotate-token` clears token + sessions + auto-open marker **before** `make_app()`, revoking all prior cookies and minting a fresh one. The illusory per-launch auto-rotation was dropped.
+- **D5** (`c7f87e0`): token-URL hardening — `.fleet/dashboard.url` written 0600, INFO log redacts the bearer (`…/#t=<redacted>`), full URL only to stdout; non-loopback `--host` logs an unsupported-config WARNING.
+- **D4** (`2ab8e99`): **observed** auto-open. The live lifespan watches the authenticated SSE subscriber count for `MEGALODON_DASHBOARD_OPEN_GRACE_S` (default 8s); a tab reconnecting within the window → open nothing; window elapses with zero subscribers → open a fresh tab. `--no-browser` forces off, `--rotate-token` forces open. Observing reality avoids the timestamp/heartbeat contradictions a heuristic could not resolve.
+- **D6** (this commit — `feat(dashboard): restart-reconnect e2e + persistent-session docs (Task D6)`): the restart-reconnect linchpin. Added a **test-only** fake-branch persistence seam (`MEGALODON_FAKE_SESSIONS_PATH`; default stays `path=None`, preserving the WR-3 invariant) so the behavior is e2e-testable without a real tmux fleet. `ui/tests/e2e/test_restart_reconnect.spec.ts` (chromium-restart project, manages its OWN server via Node `child_process`, no Playwright webServer, `--no-browser` on both boots) authenticates a tab, kills + respawns the server against the same `.fleet`, and asserts the cookie + gated SSE reconnect with **no** re-auth and the paste-token modal never appears. A negative-control run (seam disabled) confirmed the test is load-bearing.
+
+**Provenance:** this phase was a direct response to an external contrarian review (GPT-5.5, xhigh — `verifications/2026-05-24-contrarian-persistent-sessions.md`, verdict `spec-should-be-redone`), which rejected the original timestamp/heartbeat open-heuristic and illusory token auto-rotation. The shipped design hashes sessions at rest, makes persistence live-only, observes reconnection instead of guessing, and hardens token-URL exposure. Findings PW-5 (non-local bind) and PW-7 (multi-process clobber) are accepted as documented limitations.
+
+**Verification (D6 session):** seam unit tests `scripts/tests/test_session_store_live_only.py` 4 passed (`-W error`); `test_restart_reconnect.spec.ts` 1 passed (~1.3s, no orphaned processes, no browser tabs); negative control failed exactly where expected; `ruff check megalodon_ui scripts` clean.
+
+---
+
 ## 2026-05-24 — Narrator-driven summary board (Phases 1–4) + CI/test fixes
 
 **Change:** replaced the 6-tile grid (`grid.js` deleted) with a summary-first board as the default fleet view at `/`. One row per lane shows Last / Now / Goal + state pill + tokens + inline approve/deny + a click-to-open terminal drawer. Board is `ROUTES[0]` in `app.js`.
