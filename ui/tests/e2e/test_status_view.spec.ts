@@ -15,21 +15,12 @@ test.describe('STATUS view (T-V-STATUS-e2e)', () => {
     await expect(rows).toHaveCount(6);
   });
 
-  test('stale row receives stale-color styling (T-R1-b)', async ({ page }) => {
-    await page.goto('/');
-    // fix-medium ships with 2 stale rows; assert UI marks them.
-    const stale = page.locator('[data-testid="lane-row-AUDIT"][data-stale="true"]');
-    await expect(stale).toBeVisible();
-  });
-
-  test('Last UTC reflects filesystem edits within 5s (live-update)', async ({ page }) => {
-    await page.goto('/');
-    const initial = await page.locator('[data-testid="lane-row-TEST"] [data-testid="last-utc"]').textContent();
-    // Touch STATUS.md externally — out-of-band; would be a test helper in real impl.
-    // For now, assert the wait-for affordance exists.
-    const settleAttr = await page.locator('body').getAttribute('data-last-event-id');
-    expect(settleAttr).not.toBeNull();  // P2.5-E F.2 settle hook present
-  });
+  // Removed 2026-05-24 (board migration): the `stale row styling` and `Last UTC
+  // live-update` tests asserted `lane-row-*` / `last-utc` testids from the
+  // pre-v9.4 dashboard, which the board does not render. Staleness is now a
+  // board pill (covered by test_board_stale.spec.ts); there is no per-lane
+  // last-utc affordance. Not re-added — those features were intentionally
+  // dropped in the v9.4 dashboard rebuild.
 
 });
 
@@ -42,26 +33,11 @@ test.describe('TASKS view (T-V-TASKS-e2e)', () => {
 
 });
 
-test.describe('FINDINGS view (T-V-FE-e2e)', () => {
-
-  test('filter by severity narrows the result list', async ({ page }) => {
-    await page.goto('/findings');
-    await page.locator('[data-testid="filter-severity-MAJOR"]').click();
-    const rows = page.locator('[data-testid^="finding-row-"]');
-    const count = await rows.count();
-    expect(count).toBeGreaterThan(0);
-  });
-
-  test('scratch chip toggles scratch-file visibility', async ({ page }) => {
-    // P2.5-E CHALLENGE-5 — scratch filter chip.
-    await page.goto('/findings');
-    const initial = await page.locator('[data-testid^="finding-row-"][data-scratch="true"]').count();
-    await page.locator('[data-testid="filter-scratch"]').click();
-    const after = await page.locator('[data-testid^="finding-row-"][data-scratch="true"]').count();
-    expect(after).not.toEqual(initial);
-  });
-
-});
+// FINDINGS view filter tests removed 2026-05-24: the v9.4 findings rewrite
+// (`findings.js`) is a flat list + click-to-open drawer with no severity/scratch
+// filter chips. `filter-severity-*`, `filter-scratch`, and `data-scratch` exist
+// nowhere in ui/static. The tests asserted removed UI; deleted rather than
+// re-introduce a dropped feature. (finding-row rendering is exercised elsewhere.)
 
 // 2026-05-19 regression coverage for the three frontend nav/phase bugs:
 //   bug-1: tab navigation reverts on page refresh (auth bootstrap was rewriting
