@@ -9,12 +9,18 @@ Phase 5 / Task D3: bearer token is now stable across restarts.
   - ``_rotate_clear`` wipes token + sessions before a new token is minted.
   - Normal exit no longer unlinks the token file so the URL stays valid.
   - ``--rotate-token`` forces a fresh token and revokes all active sessions.
+
+Phase 5 / Task D5: harden token-URL exposure (PW-2).
+  - ``_write_dashboard_url_atomic`` now creates the URL file at mode 0600.
+  - ``_redact_token_url`` strips the bearer from log output (stdout unchanged).
+  - ``_is_loopback_host`` detects non-local binds and issues a WARNING.
 """
 
 from __future__ import annotations
 
 import argparse
 import errno
+import ipaddress
 import os
 import socket
 import sys
@@ -90,14 +96,79 @@ def _bind_listener(host: str, port: int) -> socket.socket:
 
 
 def _write_dashboard_url_atomic(url_path: Path, url: str) -> None:
-    """Atomic write dashboard URL to url_path (mode 0644)."""
-    old_umask = os.umask(0o022)
+    """Atomic 0600 write of the dashboard URL to url_path.
+
+    The URL embeds the bearer token, so it must be owner-only — the same
+    triple-guard used by write_token_atomic: umask(0o077) biases the create
+    syscall, O_CREAT|O_EXCL gives us exclusive ownership, fchmod corrects the
+    mode if the filesystem ignored the umask.
+
+    Sequence: create temp at 0600 → write → rename (atomic on POSIX).
+    The temp file is created in the same directory so rename is a same-device
+    move.  The temp itself is 0600 from creation — no world-readable window.
+    """
+    old_umask = os.umask(0o077)
     try:
         tmp = url_path.with_suffix(".tmp")
-        tmp.write_text(url + "\n", encoding="utf-8")
+        # Remove any leftover temp from a previous interrupted run.
+        tmp.unlink(missing_ok=True)
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, (url + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
         tmp.rename(url_path)
     finally:
         os.umask(old_umask)
+
+
+def _redact_token_url(url: str) -> str:
+    """Replace the bearer value after ``#t=`` with ``<redacted>``.
+
+    If ``#t=`` is not present in *url* the string is returned unchanged —
+    the function is safe to call on any URL-like string.
+
+    Used to scrub the bearer from log files while leaving stdout output
+    (which the operator reads directly) unchanged.
+
+    Examples::
+
+        >>> _redact_token_url("http://127.0.0.1:8000/#t=SECRET")
+        'http://127.0.0.1:8000/#t=<redacted>'
+        >>> _redact_token_url("http://127.0.0.1:8000/")
+        'http://127.0.0.1:8000/'
+    """
+    marker = "#t="
+    idx = url.find(marker)
+    if idx == -1:
+        return url
+    return url[: idx + len(marker)] + "<redacted>"
+
+
+_LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+_LOOPBACK_V4_NETWORK = ipaddress.IPv4Network("127.0.0.0/8")
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True when *host* resolves to a loopback address.
+
+    Loopback: ``127.0.0.1``, ``::1``, ``localhost``, or any address in the
+    ``127.0.0.0/8`` range.  Everything else (``0.0.0.0``, LAN IPs, …) is
+    non-loopback and warrants a security warning.
+
+    Malformed addresses are treated as non-loopback (safe default).
+    """
+    if host in _LOOPBACK_NAMES:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv4Address):
+        return addr in _LOOPBACK_V4_NETWORK
+    # IPv6: check the loopback flag directly.
+    return addr.is_loopback
 
 
 def _open_dashboard(url: str, *, enabled: bool, log) -> None:
@@ -171,6 +242,19 @@ def main() -> None:
 
     log = get_logger("megalodon_ui.main", debug=args.debug)
 
+    # Step 0 (D5 PW-2): warn when bound to a non-loopback address.
+    # The token file, URL file, and session store are designed for single-
+    # operator localhost use.  A non-local bind exposes those credentials over
+    # the network without any additional transport security.
+    if not _is_loopback_host(args.host):
+        log.warning(
+            "Non-loopback bind detected (--host %s): persisted credentials "
+            "(token file, URL file, sessions) are designed for localhost "
+            "single-operator use only. Binding to a non-local address is "
+            "unsupported and exposes the bearer token over the network.",
+            args.host,
+        )
+
     # Step 1: resolve mission_dir — exit 7 if unusable.
     raw_mission = args.mission_dir or str(Path(__file__).resolve().parent.parent)
     mission_dir = Path(raw_mission).resolve()
@@ -235,9 +319,12 @@ def main() -> None:
             log.debug("Reusing existing bearer token from %s", token_path)
 
         # Step 10: compose + emit dashboard URL (stdout, log, file).
+        # stdout: full URL (operator copies it to open the dashboard).
+        # log file: redacted URL (bearer must not appear in log files, PW-2).
+        # url file: full URL at 0600 (owner-only, bearer embedded).
         dashboard_url = f"http://{args.host}:{args.port}/#t={token}"
         print(dashboard_url, flush=True)
-        log.info("Dashboard: %s", dashboard_url)
+        log.info("Dashboard: %s", _redact_token_url(dashboard_url))
         _write_dashboard_url_atomic(url_path, dashboard_url)
 
         # Step 10b: auto-open the dashboard. The listener is already bound +
