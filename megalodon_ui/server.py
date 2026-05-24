@@ -1017,6 +1017,20 @@ async def generate_lane_pane_stream_events(
 # ---------------------------------------------------------------------------
 
 
+def _parse_narrator_interval_env() -> float | None:
+    """Parse MEGALODON_NARRATOR_INTERVAL_S to a float, or None if unset/unparseable.
+
+    Returned value is fed to clamp_interval_s (None -> default 30s).
+    """
+    raw = os.environ.get("MEGALODON_NARRATOR_INTERVAL_S")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return None
+
+
 def make_app(
     *,
     mission_dir: Path,
@@ -1257,14 +1271,7 @@ def make_app(
                 ctx.mission_config.lanes,
             )
 
-        _raw_interval = os.environ.get("MEGALODON_NARRATOR_INTERVAL_S")
-        try:
-            _parsed_interval: float | None = (
-                float(_raw_interval) if _raw_interval else None
-            )
-        except (ValueError, TypeError):
-            _parsed_interval = None
-        narrator_interval_s = clamp_interval_s(_parsed_interval)
+        narrator_interval_s = clamp_interval_s(_parse_narrator_interval_env())
 
         narrator_stop_event = asyncio.Event()
         narrator_scheduler_task = asyncio.create_task(
@@ -1316,7 +1323,10 @@ def make_app(
                 await narrator_scheduler_task
             except (asyncio.CancelledError, Exception):
                 pass
-            await narrator_runtime.stop()
+            try:
+                await narrator_runtime.stop()
+            except Exception:
+                pass
             if applier_task is not None:
                 applier_task.cancel()
                 try:

@@ -456,41 +456,30 @@ class TestNarratorTeardownClean:
 
     @pytest.mark.asyncio
     async def test_interval_env_parsing(self, monkeypatch) -> None:
-        """MEGALODON_NARRATOR_INTERVAL_S is parsed and clamped correctly."""
-        import os
+        """MEGALODON_NARRATOR_INTERVAL_S parse+clamp via the real lifespan helper.
 
-        # Valid value within range.
+        Exercises ``_parse_narrator_interval_env`` (the production code the
+        lifespan calls) so a regression there is caught, plus the full
+        parse→clamp pipeline the lifespan assembles.
+        """
+        from megalodon_ui.server import _parse_narrator_interval_env
+
+        # Valid value within range → parsed float, clamp passes through.
         monkeypatch.setenv("MEGALODON_NARRATOR_INTERVAL_S", "45")
-        raw = os.environ.get("MEGALODON_NARRATOR_INTERVAL_S")
-        try:
-            parsed: float | None = float(raw) if raw else None
-        except (ValueError, TypeError):
-            parsed = None
-        assert clamp_interval_s(parsed) == 45.0
+        assert _parse_narrator_interval_env() == 45.0
+        assert clamp_interval_s(_parse_narrator_interval_env()) == 45.0
 
-        # Below minimum → clamped to 15.
+        # Below minimum → parsed, then clamped up to 15.
         monkeypatch.setenv("MEGALODON_NARRATOR_INTERVAL_S", "5")
-        raw = os.environ.get("MEGALODON_NARRATOR_INTERVAL_S")
-        try:
-            parsed = float(raw) if raw else None
-        except (ValueError, TypeError):
-            parsed = None
-        assert clamp_interval_s(parsed) == 15.0
+        assert _parse_narrator_interval_env() == 5.0
+        assert clamp_interval_s(_parse_narrator_interval_env()) == 15.0
 
-        # Unparseable → defaults to 30.
+        # Unparseable → None → clamp defaults to 30.
         monkeypatch.setenv("MEGALODON_NARRATOR_INTERVAL_S", "not-a-number")
-        raw = os.environ.get("MEGALODON_NARRATOR_INTERVAL_S")
-        try:
-            parsed = float(raw) if raw else None
-        except (ValueError, TypeError):
-            parsed = None
-        assert clamp_interval_s(parsed) == 30.0
+        assert _parse_narrator_interval_env() is None
+        assert clamp_interval_s(_parse_narrator_interval_env()) == 30.0
 
-        # Unset → defaults to 30.
+        # Unset → None → clamp defaults to 30.
         monkeypatch.delenv("MEGALODON_NARRATOR_INTERVAL_S", raising=False)
-        raw = os.environ.get("MEGALODON_NARRATOR_INTERVAL_S")
-        try:
-            parsed = float(raw) if raw else None
-        except (ValueError, TypeError):
-            parsed = None
-        assert clamp_interval_s(parsed) == 30.0
+        assert _parse_narrator_interval_env() is None
+        assert clamp_interval_s(_parse_narrator_interval_env()) == 30.0
