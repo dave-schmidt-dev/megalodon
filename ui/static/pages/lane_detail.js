@@ -393,11 +393,10 @@ function buildInjectForm(short) {
 
       if (resp.status === 202) {
         // Success: clear textarea, show toast, start debounce.
-        textarea.value = "";
-        updateCount();
-        showToast("Injected successfully", "info");
-
-        // Disable for SEND_DEBOUNCE_MS, then re-enable (unless over limit again).
+        // Arm the debounce timer BEFORE updateCount() runs: updateCount()'s
+        // re-enable branch is guarded by `!debounceTimer`, so the timer must
+        // already be set or updateCount() would immediately re-enable Send and
+        // defeat the debounce entirely.
         debounceTimer = setTimeout(() => {
           debounceTimer = null;
           const stillOver = getByteLen() > BYTE_LIMIT;
@@ -405,6 +404,10 @@ function buildInjectForm(short) {
             sendBtn.disabled = false;
           }
         }, SEND_DEBOUNCE_MS);
+
+        textarea.value = "";
+        updateCount();
+        showToast("Injected successfully", "info");
       } else {
         // Error: show status + detail.
         let detail = `HTTP ${resp.status}`;

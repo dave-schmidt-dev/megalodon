@@ -127,9 +127,7 @@ test.describe('lane_detail: live character count', () => {
 
 test.describe('lane_detail: send debounce', () => {
 
-  test('after successful send (202), Send disabled for ~6 seconds then re-enables', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === 'webkit-board',
-      'WebKit: send-debounce disable timing differs under WebKit automation — tracked follow-up.');
+  test('after successful send (202), Send disabled for ~6 seconds then re-enables', async ({ page }) => {
     // Intercept inject endpoint to return 202 immediately.
     await page.route('**/api/v1/lane/A/inject', async (route) => {
       await route.fulfill({ status: 202, contentType: 'application/json', body: '{"ok":true}' });
