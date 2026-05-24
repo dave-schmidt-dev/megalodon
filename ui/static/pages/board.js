@@ -38,6 +38,7 @@
 import { loadConfig } from "../js/config.js";
 import { mountPage } from "../js/app.js";
 import { createPermissionBanner } from "../components/permission_banner.js";
+import { createTerminalPane } from "../components/terminal_pane.js";
 
 // ---------------------------------------------------------------------------
 // Minimal DOM helpers (same pattern as grid.js / activity_wall.js — each page
@@ -198,9 +199,10 @@ function paintPill(pill, resolved) {
 /**
  * Build a lane row and return refs for in-place updates.
  * @param {{ name: string, short: string }} lane
+ * @param {(short: string) => void} onToggleTerminal  called when the terminal button is clicked
  * @returns {LaneRowRefs}
  */
-function buildRow(lane) {
+function buildRow(lane, onToggleTerminal) {
   const laneName = lane.name;
   const short = lane.short;
 
@@ -249,18 +251,17 @@ function buildRow(lane) {
     style: "color: var(--text-muted); font-size: var(--fs-sm); flex: 0 0 auto; min-width: 70px; text-align: right;",
   }, "—");
 
-  // Actions cell — terminal drawer seam (wired in Task 3.3). The affordance is
-  // present and clickable but is a no-op placeholder for now; clicking it must
-  // NOT trigger the row-level navigation.
+  // Actions cell — terminal drawer toggle. stopPropagation prevents the row's
+  // /lane/:short navigation from firing when the button is clicked.
   const terminalBtn = el("button", {
     type: "button",
     class: "button",
     "data-testid": `board-terminal-${short}`,
     "data-terminal-seam": "true",
-    title: "Open terminal drawer (wired in Task 3.3).",
+    title: "Toggle terminal drawer.",
     onclick: (/** @type {Event} */ ev) => {
       ev.stopPropagation();
-      // Task 3.3 wires the terminal drawer here.
+      onToggleTerminal(short);
     },
   }, "terminal ▸");
 
@@ -437,6 +438,118 @@ export async function render(root, _params) {
     },
   });
 
+  // --- terminal drawer seam (Task 3.3) ---
+  // Single-drawer invariant: only one terminal drawer may be open at a time.
+  // State lives here in render() so it is scoped to this page instance and
+  // is torn down with cleanup().
+
+  /** @type {(() => void)|null} */
+  let disposeTerminalDrawer = null;
+
+  /**
+   * @type {{ short: string, element: HTMLElement, cleanup: () => void }|null}
+   */
+  let currentDrawer = null;
+
+  /** Dispose the currently-open drawer, if any. */
+  function _closeCurrentDrawer() {
+    if (!currentDrawer) return;
+    try { currentDrawer.cleanup(); } catch (_) { /* ignore */ }
+    if (currentDrawer.element.parentNode) {
+      currentDrawer.element.parentNode.removeChild(currentDrawer.element);
+    }
+    currentDrawer = null;
+    disposeTerminalDrawer = null;
+  }
+
+  /**
+   * Toggle a terminal drawer for the given lane short code.
+   * - Same short while open → close (toggle).
+   * - Different short while one is open → dispose previous, open new.
+   * - Closed → open new.
+   * @param {string} short
+   */
+  function toggleTerminal(short) {
+    // Toggle: clicking the same row's button while its drawer is open closes it.
+    if (currentDrawer && currentDrawer.short === short) {
+      _closeCurrentDrawer();
+      return;
+    }
+
+    // Dispose any previously-open drawer first (single-drawer invariant).
+    if (currentDrawer) {
+      _closeCurrentDrawer();
+    }
+
+    // Build the pane.
+    const pane = createTerminalPane({ lane: short, scrollback: 1000 });
+
+    // Lane display name (fall back to short if not found in config).
+    const laneConfig = lanes.find((l) => l.short === short);
+    const displayName = laneConfig ? laneConfig.name : short;
+
+    // Close button.
+    const closeBtn = el("button", {
+      type: "button",
+      class: "button",
+      "data-testid": "board-drawer-close",
+      title: "Close terminal drawer.",
+      style: "flex: 0 0 auto;",
+    }, "× close");
+    closeBtn.addEventListener("click", () => toggleTerminal(short)); // re-entrant toggle
+
+    // Drawer header: lane name + close button.
+    const drawerHeader = el(
+      "div",
+      {
+        class: "row",
+        style: [
+          "gap: var(--sp-2);",
+          "align-items: center;",
+          "padding: var(--sp-2) var(--sp-3);",
+          "border-bottom: 1px solid var(--border);",
+          "background: var(--surface-2);",
+          "flex: 0 0 auto;",
+        ].join(" "),
+      },
+      el("span", {
+        class: "mono",
+        style: "flex: 1 1 auto; font-size: var(--fs-sm); color: var(--text);",
+      }, displayName),
+      closeBtn,
+    );
+
+    // Drawer container.
+    const drawerEl = el(
+      "div",
+      {
+        "data-testid": "board-drawer",
+        "data-board-modal": "true",
+        style: [
+          "display: flex;",
+          "flex-direction: column;",
+          "border: 1px solid var(--border);",
+          "border-radius: var(--r-1);",
+          "background: var(--surface);",
+          "margin-top: var(--sp-2);",
+          "overflow: hidden;",
+          "min-height: 280px;",
+        ].join(" "),
+      },
+      drawerHeader,
+      pane.element,
+    );
+
+    // Append to the page root so it appears below the rows (not to document.body,
+    // to keep it scoped inside the page and avoid z-index / scroll issues).
+    root.appendChild(drawerEl);
+
+    currentDrawer = { short, element: drawerEl, cleanup: pane.cleanup };
+
+    // Register teardown so page cleanup() (step 4) tears the drawer down.
+    disposeTerminalDrawer = _closeCurrentDrawer;
+  }
+
   // --- rows container ---
   const rowsContainer = el("div", {
     "data-testid": "board-rows",
@@ -444,7 +557,7 @@ export async function render(root, _params) {
   });
 
   for (const lane of lanes) {
-    const refs = buildRow(lane);
+    const refs = buildRow(lane, toggleTerminal);
     rowRefs[lane.short] = refs;
     rowsContainer.appendChild(refs.root);
   }
@@ -548,12 +661,6 @@ export async function render(root, _params) {
   pollStale();
   const staleTimer = setInterval(pollStale, 30_000);
 
-  // --- terminal drawer seam (Task 3.3): expose a disposer hook so cleanup
-  //     can tear down a drawer once 3.3 wires one. No-op until then. ---
-  /** @type {(() => void)|null} */
-  let disposeTerminalDrawer = null;
-  /** @type {any} */ (root)._boardDisposeDrawer = (fn) => { disposeTerminalDrawer = fn; };
-
   // --- cleanup (grid teardown contract) ---
   return function cleanup() {
     // 0. Mark dead first so any in-flight awaits / queued callbacks bail out.
@@ -569,12 +676,15 @@ export async function render(root, _params) {
       try { disposeTerminalDrawer(); } catch (_) { /* ignore */ }
       disposeTerminalDrawer = null;
     }
-    // 5. Remove any body-appended modal (grid teardown contract). The board
-    //    appends none today, but a defensive sweep keeps the contract honest
-    //    for the drawer/modal added in 3.3.
+    // 5. Defensive element-only sweep for any body-appended modal. The primary
+    //    teardown is step 4's disposer, which closes the terminal pane's SSE +
+    //    xterm. This sweep only REMOVES the element — it does NOT call any
+    //    cleanup() — so it is a safety net for true body-level modals, not a
+    //    substitute for the explicit disposer. The board's drawer is appended to
+    //    `root` (not body), so step 6's clearNode handles it; this sweep is for
+    //    the contract's sake.
     const orphan = document.body.querySelector('[data-board-modal="true"]');
     if (orphan && orphan.parentNode) orphan.parentNode.removeChild(orphan);
-    /** @type {any} */ (root)._boardDisposeDrawer = null;
     // 6. Clear the page root (grid.js does this; harmless and correct for
     //    independent cleanup calls).
     clearNode(root);
