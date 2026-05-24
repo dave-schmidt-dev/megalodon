@@ -204,7 +204,7 @@ fi
 # Hand off to the megalodon_ui server; exec replaces this bash process so
 # SIGTERM sent to the PID propagates directly to Python (WR-10).
 exec uv run --directory "$PROJECT_ROOT" \
-    --with fastapi --with "uvicorn[standard]" --with sse-starlette --with pyyaml --with pydantic --with starlette \
+    --with fastapi --with "uvicorn[standard]" --with sse-starlette --with pyyaml --with pydantic --with starlette --with httpx \
     python -m megalodon_ui \
     --mission-dir "$MISSION_DIR" \
     --host "$HOST" \

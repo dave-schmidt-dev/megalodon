@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Pre-commit gate — lint staged Python + a project-wide dead-code scan.
+#
+# Scope (operator decision 2026-05-24): lint + dead-code ONLY. The test suite
+# runs in CI (and may be wired to pre-push later); it is intentionally NOT run
+# here to keep commits fast.
+#
+# Lint is staged-files-only so a clean change isn't blocked by pre-existing
+# tree-wide lint debt (tracked in TASKS.md). Dead-code runs across the whole
+# package because vulture needs cross-module visibility to judge usage; its
+# config (paths, min_confidence, ignored required-by-signature names) lives in
+# pyproject.toml [tool.vulture].
+#
+# Enable once per clone:  git config core.hooksPath hooks
+# Bypass a single commit:  git commit --no-verify
+set -uo pipefail
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+fail=0
+
+# 1. Ruff on staged Python only (pinned for reproducibility).
+staged_py="$(git diff --cached --name-only --diff-filter=ACM -- '*.py')"
+if [ -n "$staged_py" ]; then
+  echo "pre-commit: ruff check ($(printf '%s\n' "$staged_py" | grep -c .) staged .py)"
+  if ! printf '%s\n' "$staged_py" | xargs uv run --with 'ruff==0.15.14' ruff check; then
+    fail=1
+  fi
+fi
+
+# 2. Vulture dead-code scan across the package (reads pyproject [tool.vulture]).
+echo "pre-commit: vulture dead-code scan"
+if ! uv run --with vulture vulture; then
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "pre-commit: FAILED — fix the lint/dead-code above (or 'git commit --no-verify' to bypass)." >&2
+  exit 1
+fi
+echo "pre-commit: OK"

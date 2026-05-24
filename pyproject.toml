@@ -2,6 +2,21 @@
 name = "megalodon"
 version = "9.4.0"
 requires-python = ">=3.11"
+# httpx is a runtime dependency: the narrator client (megalodon_ui/narrator/
+# client.py) POSTs to the local llama-server from within the server lifespan.
+# Promoted from the test extra (2026-05-24, narrator summary-board plan 1.1).
+dependencies = [
+    "httpx",
+]
+
+[tool.vulture]
+# Dead-code scan config (shared by the pre-commit hook and manual runs).
+# The ignored names are required-by-signature params (signal handlers' signum/
+# frame, context-manager __exit__'s exc_type/exc_val/exc_tb) that are unused by
+# design, not dead code.
+paths = ["megalodon_ui", "scripts"]
+min_confidence = 80
+ignore_names = ["signum", "frame", "exc_type", "exc_val", "exc_tb", "tb"]
 
 [project.optional-dependencies]
 test = [
@@ -13,5 +28,4 @@ test = [
     "uvicorn[standard]",
     "sse-starlette",
     "pyyaml",
-    "httpx",
 ]

@@ -186,12 +186,14 @@ wheels = [
 name = "megalodon"
 version = "9.4.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "httpx" },
+]
 
 [package.optional-dependencies]
 test = [
     { name = "fastapi" },
     { name = "freezegun" },
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-forked" },
@@ -204,7 +206,7 @@ test = [
 requires-dist = [
     { name = "fastapi", marker = "extra == 'test'" },
     { name = "freezegun", marker = "extra == 'test'" },
-    { name = "httpx", marker = "extra == 'test'" },
+    { name = "httpx" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "pytest-asyncio", marker = "extra == 'test'" },
     { name = "pytest-forked", marker = "extra == 'test'" },
