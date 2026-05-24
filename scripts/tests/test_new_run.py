@@ -53,6 +53,42 @@ def test_scaffold_creates_run_dir(tmp_path, monkeypatch):
         assert "{{" not in (rd / name).read_text(), f"Unresolved placeholder in {name}"
 
 
+def test_scaffold_links_scripts_for_run_dir_cwd(tmp_path, monkeypatch):
+    """Run dir must expose scripts/ so bounded tools resolve from the run-dir cwd.
+
+    Agents spawn with cwd = run dir (spawn.py: cwd=self.mission_dir) and invoke
+    bounded tools as the allowlisted relative path `scripts/<tool>` (the allowlist
+    pattern Bash(scripts/queue_submit.py:*) is a literal-string match). If scripts/
+    is absent from the run dir, the relative path file-not-founds and the only
+    resolving form (an absolute repo path) misses the allowlist and prompts —
+    Finding A from the tsgate acceptance gate (2026-05-24).
+    """
+    work = tmp_path / "repo"
+    work.mkdir()
+    (work / "templates").symlink_to(REPO / "templates")
+    (work / "scripts").symlink_to(REPO / "scripts")
+    monkeypatch.setenv("RUN_LIB_REPO_ROOT", str(work))
+    res = _run(["linkcheck", "--title", "L", "--summary", "S"], cwd=work)
+    assert res.returncode == 0, res.stderr
+    rd = next((work / "runs").glob("*--linkcheck"))
+    # Every bounded tool the launch protocol invokes resolves via the relative
+    # `scripts/` path from the run-dir cwd.
+    for tool in [
+        "queue_submit.py",
+        "claim.sh",
+        "run_tests.sh",
+        "atomic_close.py",
+        "poll.py",
+    ]:
+        assert (rd / "scripts" / tool).exists(), (
+            f"run-dir scripts/{tool} does not resolve (Finding A)"
+        )
+    # And it points at the project's real scripts/, not a divergent copy.
+    assert (rd / "scripts" / "queue_submit.py").resolve() == (
+        REPO / "scripts" / "queue_submit.py"
+    ).resolve()
+
+
 def test_refuses_when_live_run_exists(tmp_path, monkeypatch):
     work = tmp_path / "repo"
     work.mkdir()

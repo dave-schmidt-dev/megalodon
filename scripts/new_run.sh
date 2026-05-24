@@ -45,6 +45,16 @@ LANES="AUDIT, ARCHITECT, BACKEND, FRONTEND, TEST, META"
 mkdir -p "$RUN_DIR"/{findings,claims,signals,queue/pending,queue/applied,queue/rejected,.fleet}
 for d in findings claims signals queue .fleet; do touch "$RUN_DIR/$d/.gitkeep"; done
 
+# Bounded-tool access (Finding A, tsgate gate 2026-05-24): agents spawn with
+# cwd = run dir (spawn.py: cwd=self.mission_dir) and invoke bounded tools as the
+# allowlisted relative path `scripts/<tool>` (the allowlist pattern
+# Bash(scripts/queue_submit.py:*) is a literal-string match). Expose the project's
+# scripts/ inside the run dir via a relative symlink so that path resolves from
+# the run-dir cwd — without it the first bounded-tool call file-not-founds and the
+# only resolving form (an absolute repo path) misses the allowlist and prompts.
+# Relative target (../../scripts) survives an archive move to .archive/<name>/.
+ln -sfn ../../scripts "$RUN_DIR/scripts"
+
 # Copy + substitute doc templates.
 for t in MISSION STATUS TASKS HISTORY README; do
   cp "$REPO_ROOT/templates/run/${t}.md.tmpl" "$RUN_DIR/${t}.md"

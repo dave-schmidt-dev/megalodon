@@ -2,7 +2,13 @@
 
 You are a worker joining a live Megalodon mission. **Do not ask the operator how to proceed. Do not wait for approval. Execute every step below in order, right now.** You are pre-authorized for all actions in this file.
 
-The mission is at `/Users/dave/Documents/Projects/megalodon/`. All paths below are relative to that root.
+The mission is **this run directory — your current working directory**. Every
+operational path below (`TASKS.md`, `STATUS.md`, `README.md`, `MISSION.md`,
+`findings/`, `claims/`, `queue/`, and the bounded `scripts/` tools) is relative
+to your cwd; read and write those *here*, not at the project root. The project
+root is `/Users/dave/Documents/Projects/megalodon/` — only a few **read-only
+reference** paths live there (`docs/v9/*`, the run-1 `.archive/…`), and you reach
+those by their project-root path when a step explicitly names them.
 
 ---
 
@@ -20,6 +26,11 @@ you indefinitely when the operator is AFK. So:
   any `.md`) use the **Read tool**, never shell `cat`/`tail`/`head`.
 - **To act on shared state** use only the bounded scripts below. They are
   pre-authorized and run prompt-free.
+- **Do NOT inspect the allowlist** (`.claude/settings.json`, `--allowedTools`)
+  to work out what you may run. The bounded tools listed below are your complete
+  authorized set. If a command would prompt, it is not yours to run — reach for
+  the Read tool or a bounded `scripts/` tool instead. (Trying to `cat` the
+  settings to "check first" itself gates on a prompt.)
 
 You do not need to verify any of this exists — it does. The mission directory
 layout is fixed:
@@ -41,6 +52,14 @@ never wrap in a compound command):
 | `scripts/poll.py` | multi-source state polling (replaces compound `cat \| tail && ls …`) |
 | `scripts/run_tests.sh` | full pytest suite (carries the `test` extra) |
 | `scripts/run_e2e.sh` | Playwright E2E |
+
+**Invoke each bounded tool EXACTLY as written — bare, nothing appended.** The
+allowlist matches the literal command (e.g. `Bash(scripts/claim.sh:*)`), so a
+*bare* call auto-approves but **any added shell turns it into a prompting
+compound**: no `; echo "exit=$?"` to read the exit code, no `&& …`, no `| head`,
+no wrapping in `cd … && …`. The tool result already shows the script's output
+**and** its exit status — read them there. (`scripts/claim.sh P1-A <id>` ✅ runs
+prompt-free; `scripts/claim.sh P1-A <id>; echo $?` ✗ gates on the `;`.)
 
 If a step below seems to need information you don't have, re-read this file and
 the docs (with the Read tool) — do **not** reach for shell.

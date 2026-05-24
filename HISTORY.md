@@ -10,6 +10,55 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-24 — Tool-surface fresh-spawn acceptance gate (validated) + Finding A fix
+
+**Context correction.** The handoff/TASKS described the tool-surface hardening as "local
+commits, pending manual gate before push." Investigation showed it was **already on
+`origin/main`** (`999088b`, `2748eab`, `a9a3e84`); only narrator/bootstrap/cleanup commits
+are unpushed. A leftover run (since archived to `.archive/2026-05-23T20-24Z--v94h`, slug
+`v94-dogfood-hardened`) held two uncommitted findings from an earlier gate attempt: the
+agents blocked on **self-orientation shell** (`ls`/`cd`/`tail`) before reaching the bounded
+tools, and `new_run.sh` produced a **socket path over the 100-byte guard**. The orientation
+finding had since been fixed by `a9a3e84` (launch.md "Step 0"), but no gate had run *since*
+that fix.
+
+**Gate run (claude v2.1.142, Opus 4.7).** Spawned single Opus AUDIT lanes (`tsgate`,
+`tsgate2`) on current HEAD and observed bootstrap via the lane stream log.
+
+- **Orientation fix conclusively validated.** The agent oriented entirely through the Read
+  tool, quoting Step 0 back ("not shell"). The v94h `ls`/`cd`/`tail` prompt storm did not
+  recur.
+- **Finding A (HIGH — FIXED this session).** With orientation no longer blocking, the agent
+  reached the bounded tools and exposed a real defect: the spawn cwd is the **run dir**
+  (`spawn.py: cwd=self.mission_dir`), but `scripts/` lives at the **repo root** and the
+  allowlist matches the *literal* relative string `Bash(scripts/queue_submit.py:*)`. From the
+  run-dir cwd the relative path file-not-founds, and the only resolving form (absolute repo
+  path) misses the allowlist → prompt. This blocks the first bounded-tool call of any run-dir
+  mission; v94h never reached it. **Fix:** `new_run.sh` symlinks `scripts/` into each run dir
+  (`ln -sfn ../../scripts`, survives an archive move); `launch.md:5` corrected to "mission =
+  your cwd = the run dir." Regression test `test_scaffold_links_scripts_for_run_dir_cwd`
+  (TDD: red → green).
+- **Validated post-fix.** On `tsgate2`, `scripts/queue_submit.py … status` ran **prompt-free**
+  (agent: "executed prompt-free … first half of the gate satisfied"); STATUS flipped to
+  `initialized`.
+- **Findings B/C (MEDIUM — best-effort guidance).** Agents wrap bounded calls in extra shell
+  that correctly gates: `cat .claude/settings.json | head` (B), `scripts/claim.sh … ; echo
+  "exit=$?"` (C — the bare call auto-approves; the appended `;` makes it a prompting
+  compound). Both are the hardening working *as designed* (CV-2). `launch.md` Step 0
+  reinforced: don't inspect the allowlist; **invoke bounded tools bare, nothing appended**.
+
+**Decision (operator, 2026-05-24): ACCEPT — hardening validated.** Bare bounded calls
+auto-approve; compounds/extra-shell correctly prompt. Remaining prompts are agent shell-
+decoration habits, mitigated best-effort in launch.md, not tool-surface bugs.
+
+**Open follow-up (HIGH):** `new_run.sh` still does not validate the prospective socket path
+against the 100-byte guard (`SOCKET_PATH_LIMIT_BYTES`); a long slug fails late at
+`launch_fleet.sh --spawn` (exit 10). Reject over-long slugs up front with budget math.
+
+Files: `scripts/new_run.sh`, `launch.md`, `scripts/tests/test_new_run.py`.
+
+---
+
 ## 2026-05-23 — Cleanup, bootstrap fix, narrator summary-board plan (warp)
 
 **Benchmark cleanup:** removed the one-off blinded-eval (`benchmarks/narrator/blinded_eval.*`
