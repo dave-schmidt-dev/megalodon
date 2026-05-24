@@ -70,9 +70,10 @@ gated `EventSource`s auto-reconnect with no user action.
 - Stop unlinking the token on normal exit. Error-path cleanup unlinks **only if this
   run generated it** (track `token_was_generated`); never deletes a reused token.
 - `--rotate-token` flag: rotation that actually revokes. **Ordering (OW-5):** in
-  `main()`, when the flag is set, delete `.fleet/ui.token`, `sessions.json`, and the
-  auto-open marker **before** `make_app()` runs (so the new `SessionStore` loads
-  nothing), then a fresh token is generated. Clearing `sessions.json` invalidates all
+  `main()`, when the flag is set, delete `.fleet/ui.token` and `sessions.json`
+  **before** `make_app()` runs (so the new `SessionStore` loads nothing), then a
+  fresh token is generated. (The revised observed-auto-open design uses no marker
+  file, so there is nothing else to clear.) Clearing `sessions.json` invalidates all
   prior cookies → rotation revokes existing sessions (OW-4). Documented in README as
   the replacement for the old per-launch rotation.
 
