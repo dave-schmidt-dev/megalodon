@@ -168,6 +168,48 @@ def test_cleanup_on_server_run_exception(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test: a REUSED token survives an error during Server.run() (D3 security path)
+#
+# The except-branch cleanup is guarded by `if token_was_generated:`. When the
+# token was reused (pre-existing file → was_generated=False), an error must NOT
+# delete it — a restart would otherwise lose its stable URL. This is the other
+# arm of the guard that test_cleanup_on_server_run_exception (generated case)
+# does not exercise.
+# ---------------------------------------------------------------------------
+
+
+def test_reused_token_survives_server_run_exception(tmp_path: Path) -> None:
+    # Pre-create .fleet/ui.token so _resolve_token reuses it (was_generated=False).
+    fleet = tmp_path / ".fleet"
+    fleet.mkdir(mode=0o700)
+    token_path = fleet / "ui.token"
+    original_token = "preexisting-stable-token"
+    token_path.write_text(original_token)
+
+    _CapturingServer.captured = None
+    _CapturingServer.side_effect = OSError("startup-timeout (synthetic)")
+
+    with (
+        _patched_main_env(),
+        patch("megalodon_ui.__main__.uvicorn.Server", _CapturingServer),
+        pytest.raises(OSError, match="startup-timeout"),
+    ):
+        _run_main(tmp_path)
+
+    # The reused token must NOT be unlinked, and its content must be unchanged.
+    assert token_path.exists(), (
+        "a reused token must survive a Server.run() error (never deleted)"
+    )
+    assert token_path.read_text() == original_token, (
+        "reused token content must be preserved untouched after error"
+    )
+    # dashboard.url is written from the reused token, so it is preserved too.
+    assert (fleet / "dashboard.url").exists(), (
+        "dashboard.url should be preserved when the token was reused"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test: EADDRINUSE exits 9
 # ---------------------------------------------------------------------------
 
