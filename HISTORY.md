@@ -10,6 +10,25 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-24 — Narrator-driven summary board (Phases 1–4) + CI/test fixes
+
+**Change:** replaced the 6-tile grid (`grid.js` deleted) with a summary-first board as the default fleet view at `/`. One row per lane shows Last / Now / Goal + state pill + tokens + inline approve/deny + a click-to-open terminal drawer. Board is `ROUTES[0]` in `app.js`.
+
+**Scope decision:** Last and Goal are deterministic (latest closed task id + description; claimed task description or lane role). **Now** is the only narrator-generated field — a single advisory phrase per lane. The gemma-e2b prompt was validated for one phrase per inference; producing two structured phrases (Last + Now) was out of scope and deferred as OQ1.
+
+**Narrator runtime:** a supervised `llama-server` subprocess wired into the FastAPI lifespan (live branch only). `runtime.start()` is non-blocking — the dashboard serves immediately regardless of narrator readiness; lanes show "narrator offline" until `/health` passes. The watcher-gated scheduler narrates only while ≥1 SSE subscriber is connected. Degraded mode (missing model, missing/incompatible binary, held port): WARNING logged once after a consecutive-failure ceiling; never fatal. Clean `finally`-block teardown. `MEGALODON_NARRATOR_URL` skips subprocess spawn.
+
+**Phase 4 commits:** `19b1eb1` (lifespan wire-up) · `1b460bc` (polish) · `68ee6c1` (Playwright tab fix) · `5033054` (lint) · `0064e60` (CI forked step). Earlier phases already on main: P1 `ef4ea18`, P2 `2d7211e`, P3 culminating `41d3984`.
+
+**Three pre-existing fixes landed alongside:**
+- **Dashboard tab-spam** (`68ee6c1`): `SERVER_CMD` in `ui/tests/e2e/playwright.config.ts` never passed `--no-browser`; each project's webServer opened a real browser tab; 11 projects = 11 tabs per `npx playwright test`. Fixed by adding `--no-browser` to `SERVER_CMD`.
+- **17 whole-tree ruff errors** (`5033054`): E741 ambiguous `l`→`lane` (×6), E401 split imports (×2), F841 unused locals (×2: `after_utc`; `log` in `poll.main`), E402 (×5: hoisted `applier.py` package imports above its logger-setup fn; `# noqa: E402` on two deliberate section-local test imports). The pre-commit hook lints staged files only, so these were invisible locally but red on CI's whole-tree `ruff check`.
+- **CI forked step** (`0064e60`): `.github/workflows/test.yml` used `pytest -p forked` (errors under current pytest: "No module named 'forked'"); changed to `--forked` flag; dropped redundant `--with pytest-forked`.
+
+**Full-suite gate (verified this session):** pytest non-isolated 961 passed / 34 skipped / 3 xfailed; isolated `--forked` 12 passed; ruff whole-tree clean; Playwright all 11 projects 159 passed / 9 skipped, zero tabs.
+
+---
+
 ## 2026-05-24 — Tool-surface fresh-spawn acceptance gate (validated) + Finding A fix
 
 **Context correction.** The handoff/TASKS described the tool-surface hardening as "local

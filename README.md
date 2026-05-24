@@ -37,6 +37,29 @@ A blackboard multi-agent coordination protocol for parallel review, audit, synth
 - **Test coverage:** 795 Python tests pass (+126 v9.4 tests). Playwright 23 chromium-grid tests green. Pre-existing v9.3-era failures on deprecated surface (v92-dashboard, default) preserved intentionally.
 - **Plan archive:** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (plan v2 warp-complete) + tasks + synthesis + reviews. See `HISTORY.md` "V9.4 SHIPPED" for full manifest.
 
+## Narrator summary board (SHIPPED 2026-05-24)
+
+- **Status:** SHIPPED. Phases 1–4 complete on `origin/main`. Full gate: 961 Python tests passed / 34 skipped / 3 xfailed; 12 isolated (`--forked`); Playwright 159 passed / 9 skipped, all 11 projects.
+- **Board is the default fleet view at `/`** — `ROUTES[0]` now loads `board.js`; `grid.js` was deleted. One row per lane shows **Last / Now / Goal** + a state pill + token count + inline approve/deny + a click-to-open terminal drawer.
+- **Column sourcing:** Last (latest closed task id + description) and Goal (claimed task description, else lane role) are **deterministic** — they render from mission state with no model involved. **Now** is the only narrator-generated field: one short advisory phrase. Deterministic facts are load-bearing; the narrator supplies advisory prose only.
+- **Narrative endpoints** (both session-cookie gated): `GET /api/v1/narrative` (cached map, initial paint) and `GET /api/v1/narrative-stream` (SSE, activity-wall pattern, watcher-gated).
+- **Narrator runtime:** a supervised local `llama-server` subprocess serving the locked **gemma-e2b** model over an OpenAI-compatible API. Wired into the FastAPI lifespan (live branch only): `runtime.start()` is non-blocking, so **the dashboard serves immediately regardless of narrator readiness**. Lanes show a "narrator offline" dot until `/health` passes. The scheduler narrates only while ≥1 SSE subscriber is connected. Clean teardown in the lifespan `finally` block.
+- **Degraded mode (CV-6/CR-8):** missing model file, missing/incompatible `llama-server` binary, or a held port all degrade to stable "not ready" (a single WARNING after a consecutive-failure ceiling; never fatal). The dashboard and all deterministic fields keep working.
+- **External prerequisite (CR-8):** `llama-server` (current llama.cpp) must be on `PATH`, exposing `/health` and `/v1/chat/completions`. It is NOT a Python dependency and cannot be pinned in `pyproject.toml`. Full locked argv (from `megalodon_ui/narrator/runtime.py` `_build_argv`): `llama-server -m <model> --alias narrator --chat-template-kwargs '{"enable_thinking":false}' -ngl 99 -c 8192 --jinja --host 127.0.0.1 --port <port>`.
+- **Plan archive:** `~/Documents/Projects/.plans/megalodon/narrator-summary-board-2026-05-23.md` + tasks. Spec: `docs/superpowers/specs/2026-05-23-narrator-summary-board-design.md`.
+
+### Narrator environment variables
+
+Read at lifespan start from `megalodon_ui/narrator/runtime.py` (`from_env()`) and `megalodon_ui/server.py`. All optional.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `MEGALODON_NARRATOR_URL` | (unset) | Use this already-running OpenAI-compatible base URL; skip spawning a subprocess (best-effort health-gated). |
+| `MEGALODON_NARRATOR_MODEL` | `~/models/narrator-bench/gemma-e2b/gemma-4-E2B-it-Q4_K_M.gguf` | GGUF model path passed to `llama-server -m`. Missing file → degraded, non-fatal. |
+| `MEGALODON_NARRATOR_PORT` | `8085` | Local port `llama-server` binds (also forms the client base URL). |
+| `MEGALODON_NARRATOR_TIMEOUT_S` | `6.0` | Per-narrate request timeout in seconds. |
+| `MEGALODON_NARRATOR_INTERVAL_S` | `30` | Scheduler tick interval in seconds, clamped to `[15, 120]`. |
+
 ## Run lifecycle (v9.4 convention)
 
 Every mission run is scaffolded into a self-contained `runs/<UTC>--<slug>/` subdir, then archived to `.archive/<UTC>--<slug>/` with an `INDEX.md` entry when complete. No run leaves ephemera in the repo root.

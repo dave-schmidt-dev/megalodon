@@ -156,16 +156,16 @@ be dropped without losing any fact. The board must never block on the model.
 
 ## Done when
 
-- [ ] Narrator runtime supervises `llama-server` (locked config), health-gated,
+- [x] Narrator runtime supervises `llama-server` (locked config), health-gated,
   restarts on crash, torn down on exit; `MEGALODON_NARRATOR_URL` override works.
-- [ ] Per-lane scheduler emits narratives on the configurable interval
+- [x] Per-lane scheduler emits narratives on the configurable interval
   (default 30 s, tunable to 15 s), gated on board subscribers.
-- [ ] Board renders 3-line rows (hybrid sourcing), inline approve/deny wired to
+- [x] Board renders 3-line rows (hybrid sourcing), inline approve/deny wired to
   the existing endpoint, terminal drawer via `terminal_pane.js`.
-- [ ] `grid.js` deleted; board is the default fleet view; removal guard test
+- [x] `grid.js` deleted; board is the default fleet view; removal guard test
   green.
-- [ ] Narrator-down path leaves the deterministic board fully functional.
-- [ ] Unit + integration + Playwright suites green; full suite green.
+- [x] Narrator-down path leaves the deterministic board fully functional.
+- [x] Unit + integration + Playwright suites green; full suite green.
 - [ ] Then (operator follow-up): exercise on the next v9.4 dogfood.
 
 ## Build order (one spec, phased)
