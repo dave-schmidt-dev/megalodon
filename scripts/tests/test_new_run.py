@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -15,6 +17,15 @@ def _run(args, cwd):
         capture_output=True,
         text=True,
     )
+
+
+@pytest.fixture(autouse=True)
+def _skip_socket_budget(monkeypatch):
+    """Scaffold tests run under deep pytest tmp paths whose prospective socket
+    path exceeds the 100-byte guard; they never spawn, so bypass the budget gate
+    by default. The rejection test opts back in by deleting this env var.
+    """
+    monkeypatch.setenv("MEGALODON_SKIP_SOCKET_BUDGET", "1")
 
 
 def test_scaffold_creates_run_dir(tmp_path, monkeypatch):
@@ -87,6 +98,37 @@ def test_scaffold_links_scripts_for_run_dir_cwd(tmp_path, monkeypatch):
     assert (rd / "scripts" / "queue_submit.py").resolve() == (
         REPO / "scripts" / "queue_submit.py"
     ).resolve()
+
+
+def test_rejects_slug_whose_socket_path_exceeds_budget(tmp_path, monkeypatch):
+    """new_run.sh must reject up front when <run>/.fleet/tmux.sock would exceed
+    the 100-byte guard, rather than letting launch_fleet.sh --spawn fail late with
+    exit 10 (socket-path finding, tsgate gate 2026-05-24). Under the deep pytest
+    tmp root the prospective socket path already overflows, so an over-long slug
+    is rejected with actionable budget math and no run dir is created.
+    """
+    monkeypatch.delenv("MEGALODON_SKIP_SOCKET_BUDGET", raising=False)
+    work = tmp_path / "repo"
+    work.mkdir()
+    (work / "templates").symlink_to(REPO / "templates")
+    (work / "scripts").symlink_to(REPO / "scripts")
+    monkeypatch.setenv("RUN_LIB_REPO_ROOT", str(work))
+    res = _run(
+        ["this-is-an-overlong-slug-that-blows-the-socket-budget", "--force"],
+        cwd=work,
+    )
+    assert res.returncode != 0
+    out = (res.stderr + res.stdout).lower()
+    assert "socket path" in out, out
+    assert "100" in out, out  # the byte budget appears in the message
+    assert not list((work / "runs").glob("*--this-is-an-overlong-slug*"))
+
+
+def test_socket_budget_limit_matches_product_constant():
+    """new_run.sh's hardcoded budget must match the product guard (no drift)."""
+    from megalodon_ui._v92_constants import SOCKET_PATH_LIMIT_BYTES
+
+    assert str(SOCKET_PATH_LIMIT_BYTES) in (REPO / "scripts/new_run.sh").read_text()
 
 
 def test_refuses_when_live_run_exists(tmp_path, monkeypatch):

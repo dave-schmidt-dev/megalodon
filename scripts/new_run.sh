@@ -37,6 +37,27 @@ fi
 UTC="$(run_utc)"; UTC_ISO="$(run_utc_iso)"; DATE="$(date -u +%Y-%m-%d)"
 RUN_DIR="$REPO_ROOT/runs/${UTC}--${SLUG}"
 [[ -e "$RUN_DIR" && $FORCE -eq 0 ]] && { echo "REFUSING: $RUN_DIR exists (use --force)" >&2; exit 1; }
+
+# Socket-path budget (socket-path finding, tsgate gate 2026-05-24). The fleet's
+# per-mission tmux socket is <RUN_DIR>/.fleet/tmux.sock; macOS caps sun_path near
+# 104 and the product guards at SOCKET_PATH_LIMIT_BYTES (megalodon_ui/
+# _v92_constants.py). Reject an over-budget slug HERE rather than letting
+# launch_fleet.sh --spawn fail late with exit 10, after the operator has already
+# scaffolded docs and started the applier. Export MEGALODON_SKIP_SOCKET_BUDGET=1
+# to bypass (tests that scaffold under deep tmp paths but never spawn).
+SOCKET_PATH_LIMIT_BYTES=100   # keep in sync with megalodon_ui/_v92_constants.py
+SOCK_PATH="$RUN_DIR/.fleet/tmux.sock"
+SOCK_BYTES="$(printf '%s' "$SOCK_PATH" | wc -c | tr -d ' ')"
+if [[ "${MEGALODON_SKIP_SOCKET_BUDGET:-0}" != "1" && "$SOCK_BYTES" -gt "$SOCKET_PATH_LIMIT_BYTES" ]]; then
+  OVER=$(( SOCK_BYTES - SOCKET_PATH_LIMIT_BYTES ))
+  {
+    echo "REFUSING: socket path would be $SOCK_BYTES bytes > $SOCKET_PATH_LIMIT_BYTES guard."
+    echo "  path: $SOCK_PATH"
+    echo "  Shorten the slug by at least $OVER char(s), or use a shorter project root."
+  } >&2
+  exit 2
+fi
+
 # Pre-create parent so assert_under_runs_or_archive can resolve it.
 mkdir -p "$REPO_ROOT/runs"
 assert_under_runs_or_archive "$RUN_DIR"
