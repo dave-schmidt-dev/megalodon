@@ -116,29 +116,6 @@ function writeFixtureSignal(
   writeFileSync(path.join(dir, name), body, 'utf-8');
 }
 
-/**
- * POST _test/stale_override to seed a stale lane.
- * Reads CSRF token from the page's meta tag.
- */
-async function setStaleOverride(
-  page: import('@playwright/test').Page,
-  lane: string,
-  seconds: number,
-): Promise<void> {
-  const csrf = await readCsrfToken(page);
-  const resp = await page.request.post(
-    `/api/v1/_test/stale_override?lane=${encodeURIComponent(lane)}&seconds=${seconds}`,
-    {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-      },
-      data: {},
-    },
-  );
-  expect(resp.status(), `stale_override POST for lane ${lane}`).toBe(200);
-}
-
 // ---------------------------------------------------------------------------
 // Case A: Activity-wall picks up 4 event sources
 // ---------------------------------------------------------------------------
@@ -332,62 +309,6 @@ test.describe('v94 phase2 smoke: Case B — permission prompt approval flow', ()
 
 });
 
-// ---------------------------------------------------------------------------
-// Case C: Stale badge end-to-end
-// ---------------------------------------------------------------------------
-
-test.describe('v94 phase2 smoke: Case C — stale badge end-to-end', () => {
-
-  // SKIPPED on the board: asserts the grid-only stale-badge + stale_modal UI
-  // (stale_modal.js is mounted only by grid.js). The board surfaces staleness as
-  // a per-row STALE pill instead; a board-native equivalent is Task 3.5b and the
-  // grid assertion retires with grid.js (Task 3.4). See Task 3.5a report.
-  test.skip('C: stale_override for lane A → badge "1 stale" visible → click → modal with lane A row', async ({ page }, testInfo) => {
-    await authenticateAndGotoGrid(page, testInfo);
-
-    // ---- POST stale_override for lane A (1200 s = 20 min) -----------------
-    await setStaleOverride(page, 'A', 1200);
-
-    // ---- Reload to trigger the initial mount poll -------------------------
-    // The stale-badge component polls /api/v1/lanes/stale on mount.
-    // A page.reload() is faster than waiting for the next 30 s poll cycle.
-    await page.reload();
-    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
-
-    // ---- Assert badge "1 stale" with red background -----------------------
-    const badge = page.locator('[data-testid="stale-badge"]');
-    await expect(badge).toBeVisible({ timeout: 8_000 });
-    await expect(badge).toContainText('1 stale', { timeout: 5_000 });
-
-    // Verify the red-background class/style (badge should have a warning colour).
-    // The stale_modal.js sets background style on the badge element when count > 0.
-    const badgeBg = await badge.evaluate((el: Element) => {
-      const style = (el as HTMLElement).style.background || (el as HTMLElement).style.backgroundColor;
-      return style;
-    });
-    // Accept non-empty background style (red/warning colour applied by component).
-    expect(badgeBg, 'badge should have a background colour when stale > 0').toBeTruthy();
-
-    // ---- Click badge → modal opens with lane A row -----------------------
-    await badge.click();
-
-    const modal = page.locator('[data-testid="stale-modal"]');
-    await expect(modal).toBeVisible({ timeout: 5_000 });
-
-    // Modal title must reference the count.
-    await expect(page.locator('[data-testid="stale-modal-title"]')).toContainText(
-      'Stale Lanes (1)',
-      { timeout: 3_000 },
-    );
-
-    // Lane A row must be present in the modal.
-    await expect(page.locator('[data-testid="stale-lane-row-A"]')).toBeVisible({ timeout: 3_000 });
-
-    // Duration must show ~20 min.
-    await expect(page.locator('[data-testid="stale-lane-duration-A"]')).toContainText(
-      '20m',
-      { timeout: 3_000 },
-    );
-  });
-
-});
+// Case C (grid-only stale-badge + stale_modal end-to-end) removed 2026-05-24:
+// stale_modal.js was mounted only by grid.js, now deleted. The board surfaces
+// staleness as a per-row STALE pill — covered by test_board_stale.spec.ts.
