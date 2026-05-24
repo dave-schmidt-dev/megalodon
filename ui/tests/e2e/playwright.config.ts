@@ -72,6 +72,7 @@ const fixtures = {
   mutationsWebkit: prepareFixture('fix-medium', 'mut-w'),
   failureModesWebkit: prepareFixture('fix-medium-failure-modes', 'fail-w'),
   v92Webkit: prepareFixture('fix-medium-v92', 'v92-w'),
+  boardWebkit: prepareFixture('fix-small', 'board-w'),
 };
 
 // Port allocation: keep chromium on the original 8765-8767 plus 8768 for v92;
@@ -89,6 +90,7 @@ const ports = {
   mutationsWebkit: 8776,
   failureModesWebkit: 8777,
   v92Webkit: 8778,
+  boardWebkit: 8779,
 };
 
 const SERVER_CMD = (port: number, missionDir: string) =>
@@ -123,6 +125,7 @@ const PROJECT_TO_PORT: Record<string, number> = {
   'webkit-mutations': ports.mutationsWebkit,
   'webkit-failure-modes': ports.failureModesWebkit,
   'webkit-v92-dashboard': ports.v92Webkit,
+  'webkit-board': ports.boardWebkit,
 };
 
 function filterWebServersByProject<T extends { url: string }>(all: T[]): T[] {
@@ -273,6 +276,15 @@ export default defineConfig({
       workers: 1,
       use: { ...devices['Desktop Safari'], baseURL: `http://127.0.0.1:${ports.v92Webkit}` },
     },
+    {
+      // Safari-engine coverage for the board (operator uses Safari). Mirrors
+      // chromium-board: same BOARD_SPEC_PATTERN, fix-small fixture, fake spawner.
+      name: 'webkit-board',
+      testMatch: BOARD_SPEC_PATTERN,
+      fullyParallel: false,
+      workers: 1,
+      use: { ...devices['Desktop Safari'], baseURL: `http://127.0.0.1:${ports.boardWebkit}` },
+    },
   ],
 
   webServer: filterWebServersByProject([
@@ -309,5 +321,8 @@ export default defineConfig({
     { command: SERVER_CMD(ports.v92Webkit, fixtures.v92Webkit),
       url: `http://127.0.0.1:${ports.v92Webkit}/`,
       reuseExistingServer: false, timeout: 30_000, env: V92_ENV },
+    { command: SERVER_CMD(ports.boardWebkit, fixtures.boardWebkit),
+      url: `http://127.0.0.1:${ports.boardWebkit}/`,
+      reuseExistingServer: false, timeout: 30_000, env: GRID_SMOKE_ENV },
   ]),
 });

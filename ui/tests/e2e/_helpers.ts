@@ -34,6 +34,7 @@ const PROJECT_TO_LABEL: Record<string, string> = {
   'webkit-mutations': 'mut-w',
   'webkit-failure-modes': 'fail-w',
   'webkit-v92-dashboard': 'v92-w',
+  'webkit-board': 'board-w',
 };
 
 export function fixtureRootForProject(testInfo: TestInfo): string {
