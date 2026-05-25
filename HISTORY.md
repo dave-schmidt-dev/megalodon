@@ -10,6 +10,43 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-25 — Campaign: parallel bug-hunt + fix wave to make the fleet actually run
+
+**Why:** the run kept stalling in INIT every time. Ran a 6-agent parallel bug-hunt
+across subsystems (mission-progression, spawn, queue/applier, narrator, permission,
+frontend). Found ~25 issues; the headline reframe: **the fleet was never wired to
+self-progress** — task seeding + phase flips are operator-only by design, and
+several mandated agent commands were structurally un-runnable.
+
+**Fixed (commit `7f463b3`), all TDD, full suite 1003 passed / 34 skipped / 1 xfail:**
+- **Loop heartbeat:** bootstrap prompt now `/loop 5m … run one tick` (was bare
+  `/loop … run one iteration`, which made lanes do one tick and stop — one
+  transcript literally said "Since you asked for one iteration, I did not arm the
+  /loop 5m heartbeat"). launch.md Step 5 no longer re-arms (bootstrap owns it).
+- **Permission deadlock:** `chmod +x scripts/*.py|*.sh` so `scripts/poll.py …`
+  matches the `Bash(scripts/poll.py:*)` allowlist instead of forcing a forbidden
+  `python3` prefix.
+- **Queue:** removed `history_append` double-submit; fallback applier acquires the
+  singleton before draining; **wired `tasks-inject` (+ status-row-insert,
+  event-correction) into the agent CLI** so lanes can create tasks at all.
+- **Narrator:** `_capture_doc_order` crash-proofed; readiness gated on the owned
+  llama-server child being alive (no false-ready against an orphan on :8085).
+- **Frontend:** `store.js` guarded against undefined status-change rows (live
+  console TypeError); SSE "connected" only on resync success; reconnect race fixed.
+
+**Validated live:** the new `tasks-inject` CLI seeded 6 PHASE-1 tasks into the
+running v10-prep mission (journal: all APPLIED). Known gap: tasks-inject has no
+phase-section targeting, so rows landed in the CROSS-LANE pool, not "PHASE 1 —
+PLAN" — tracked in `docs/v10-readiness-plan.md` §3.
+
+**Remaining work + design decisions:** see `docs/v10-readiness-plan.md` (M2–M5:
+tasks-inject section targeting, reset-and-seed + phase-flip, spawn-lifecycle
+hardening incl. discovery ordering + lane-death supervisor + resume, correctness
+sweep, polish). The live v10-prep agents are degraded (permission loops / context
+corruption per META's own diagnosis) and need a clean reset+restart with the fixes.
+
+---
+
 ## 2026-05-24 — Bugfix: narrator never comes online (no transcripts → no narrate)
 
 **Symptom:** `narrator_ok=false` for every lane; the narrator dot stayed offline
