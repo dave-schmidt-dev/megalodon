@@ -15,7 +15,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from megalodon_ui.narrator.board_state import (
+    _owning_agent_id,
     _pick_latest,
+    _resolve_session_ids_by_agent,
     assemble_lane_rows,
     build_lane_rows,
 )
@@ -494,6 +496,187 @@ class TestStatusFallback:
         rows = assemble_lane_rows(tasks_fe, cfgs, digests, {})
         assert rows["A"].state == "open"
         assert rows["A"].now is None
+
+
+# ---------------------------------------------------------------------------
+# Session-id self-heal: recover a lane's transcript by agent-id correlation when
+# the spawner's time-window discovery failed (live_repl + shared projects dir).
+# ---------------------------------------------------------------------------
+
+
+def _write_transcript(path: Path, *, agent_id: str | None, lead_lines: int = 5) -> None:
+    """Write a minimal Claude-style JSONL transcript.
+
+    Leading lines are metadata (no agent-id), mirroring real transcripts where
+    the launch identity appears a few lines in. If agent_id is given it is
+    embedded in a later 'user' line (the launch prompt).
+    """
+    import json as _json
+
+    lines = []
+    for _ in range(lead_lines):
+        lines.append(_json.dumps({"type": "permission-mode", "mode": "default"}))
+    if agent_id is not None:
+        lines.append(
+            _json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": f"You are {agent_id}. Begin.",
+                    },
+                }
+            )
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class TestSessionIdSelfHeal:
+    """_owning_agent_id / _resolve_session_ids_by_agent + build_lane_rows fallback."""
+
+    def test_owning_agent_id_returns_first_match(self, tmp_path: Path) -> None:
+        f = tmp_path / "s.jsonl"
+        _write_transcript(f, agent_id="agent-58f3")
+        assert _owning_agent_id(f) == "agent-58f3"
+
+    def test_owning_agent_id_none_when_absent(self, tmp_path: Path) -> None:
+        f = tmp_path / "s.jsonl"
+        _write_transcript(f, agent_id=None)
+        assert _owning_agent_id(f) is None
+
+    def test_owning_agent_id_first_wins_over_later_crossref(
+        self, tmp_path: Path
+    ) -> None:
+        """The lane's OWN id appears first; a later cross-ref to another lane loses."""
+        import json as _json
+
+        f = tmp_path / "s.jsonl"
+        f.write_text(
+            "\n".join(
+                [
+                    _json.dumps({"type": "permission-mode"}),
+                    _json.dumps(
+                        {
+                            "type": "user",
+                            "message": {
+                                "role": "user",
+                                "content": "You are agent-011f.",
+                            },
+                        }
+                    ),
+                    _json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {"content": "noting agent-58f3 is unclaimed"},
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        assert _owning_agent_id(f) == "agent-011f"
+
+    def test_resolve_maps_lanes_to_newest_matching_transcript(
+        self, tmp_path: Path
+    ) -> None:
+        import os
+
+        # Two transcripts for agent-011f (a relaunch); newest mtime must win.
+        old = tmp_path / "old-011f.jsonl"
+        new = tmp_path / "new-011f.jsonl"
+        other = tmp_path / "aud.jsonl"
+        _write_transcript(old, agent_id="agent-011f")
+        _write_transcript(new, agent_id="agent-011f")
+        _write_transcript(other, agent_id="agent-58f3")
+        # Force mtimes: old older than new.
+        os.utime(old, (1_000, 1_000))
+        os.utime(new, (2_000, 2_000))
+
+        resolved = _resolve_session_ids_by_agent(
+            tmp_path, {"B": "agent-011f", "A": "agent-58f3"}
+        )
+        assert resolved["B"] == "new-011f"  # newest, not "old-011f"
+        assert resolved["A"] == "aud"
+
+    def test_resolve_skips_unmatched_agent(self, tmp_path: Path) -> None:
+        _write_transcript(tmp_path / "x.jsonl", agent_id="agent-aaaa")
+        resolved = _resolve_session_ids_by_agent(tmp_path, {"A": "agent-zzzz"})
+        assert resolved == {}
+
+    def test_resolve_missing_dir_is_empty(self, tmp_path: Path) -> None:
+        assert (
+            _resolve_session_ids_by_agent(tmp_path / "nope", {"A": "agent-aaaa"}) == {}
+        )
+
+    @pytest.mark.asyncio
+    async def test_build_lane_rows_self_heals_session_id(self, tmp_path: Path) -> None:
+        """A claude lane with session_id=None recovers via STATUS agent-id → digest read."""
+        mission_dir = tmp_path / "mission"
+        mission_dir.mkdir()
+        (mission_dir / "TASKS.md").write_text("## PHASE-PLAN\n", encoding="utf-8")
+
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        _write_transcript(proj / "uuid-aud.jsonl", agent_id="agent-58f3")
+
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        session = _session(session_id=None, cwd=mission_dir)
+        sessions = {"A": session}
+        lane_cfgs = [_lane_cfg("AUDIT", "A", "Audit role", cli="claude")]
+        status_rows = [_status_row("AUDIT", "working: P1-A", agent="agent-58f3")]
+
+        fake_adapter = MagicMock()
+        fake_adapter.session_log_dir.return_value = proj
+        fake_adapter.session_log_path.side_effect = lambda cwd, sid: (
+            proj / f"{sid}.jsonl"
+        )
+
+        with patch(
+            "megalodon_ui.narrator.board_state.parse_session",
+            return_value=_digest(4321),
+        ):
+            rows = await build_lane_rows(
+                mission_dir,
+                tasks_fe,
+                sessions,
+                lambda cli: fake_adapter,
+                lane_cfgs,
+                status_rows=status_rows,
+            )
+
+        # session_id recovered + persisted; digest read happened → narratable.
+        assert session.session_id == "uuid-aud"
+        assert rows["A"].tokens == 4321
+        assert rows["A"].digest_text is not None
+        assert (
+            mission_dir / ".fleet" / "A.session.txt"
+        ).read_text().strip() == "uuid-aud"
+
+    @pytest.mark.asyncio
+    async def test_build_lane_rows_skips_unclaimed_agent(self, tmp_path: Path) -> None:
+        """An 'unclaimed' STATUS agent is not correlated (no transcript guesswork)."""
+        mission_dir = tmp_path / "mission"
+        mission_dir.mkdir()
+        (mission_dir / "TASKS.md").write_text("## PHASE-PLAN\n", encoding="utf-8")
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        _write_transcript(proj / "uuid-x.jsonl", agent_id="agent-58f3")
+
+        session = _session(session_id=None, cwd=mission_dir)
+        fake_adapter = MagicMock()
+        fake_adapter.session_log_dir.return_value = proj
+
+        rows = await build_lane_rows(
+            mission_dir,
+            _tasks_fe({"PHASE-PLAN": []}),
+            {"A": session},
+            lambda cli: fake_adapter,
+            [_lane_cfg("AUDIT", "A", "Audit role", cli="claude")],
+            status_rows=[_status_row("AUDIT", "unclaimed", agent="unclaimed")],
+        )
+        assert session.session_id is None
+        assert rows["A"].tokens is None
 
 
 # ---------------------------------------------------------------------------

@@ -236,10 +236,18 @@ class ClaudeAdapter:
         return self.session_log_dir(cwd) / f"{session_id}.jsonl"  # type: ignore[operator]
 
     def session_log_dir(self, cwd: pathlib.Path) -> pathlib.Path | None:
-        # Sanitise: remove leading slash, replace '/' with '-', collapse
-        # consecutive leading dashes produced by an absolute path like /tmp.
-        raw = str(cwd).lstrip("/")
-        sanitized = raw.replace("/", "-").lstrip("-") or "root"
+        # Sanitise to match Claude Code's on-disk project-dir encoding EXACTLY:
+        # every '/' AND every '.' becomes '-' (underscores are preserved). The
+        # leading '/' of an absolute path therefore becomes a leading '-' — it
+        # must NOT be stripped, or the computed dir won't match the real one
+        # (verified against real entries, e.g. -Users-dave-Documents-... and
+        # -Users-dave--launchd from /Users/dave/.launchd). A previous version
+        # did `.lstrip("/").lstrip("-")` and dropped the leading dash, which
+        # silently broke session-log discovery and transcript reads.
+        sanitized = str(cwd).replace("/", "-").replace(".", "-")
+        # Degenerate cwd ("/" → "-", or empty) keeps the historical sentinel.
+        if sanitized in ("", "-"):
+            sanitized = "root"
         return pathlib.Path.home() / ".claude" / "projects" / sanitized
 
     # ------------------------------------------------------------------

@@ -10,6 +10,52 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-24 — Bugfix: narrator never comes online (no transcripts → no narrate)
+
+**Symptom:** `narrator_ok=false` for every lane; the narrator dot stayed offline
+and Now/Last carried no LLM phrases — despite llama-server being healthy (model
+loaded, port 8085 listening).
+
+**Root cause (two bugs, both upstream of the model):**
+
+1. **Discovery never resolves a session_id.** `scheduler.narrate_rows` skips any
+   lane whose `digest_text is None`, which `build_lane_rows` sets only for claude
+   lanes with a non-None `session_id`. The spawner's `_spawn_one` runs the 5s
+   session-id discovery poll *before* delivering the initial prompt (a separate
+   `_deliver_initial_prompt` task that waits 5s first) — but a live-REPL Claude
+   writes no transcript until the first prompt. So discovery's window always
+   precedes transcript creation; it times out, and with all 6 lanes sharing one
+   `~/.claude/projects` dir the "single new file" heuristic is ambiguous anyway.
+   Every lane ended with `session_id=None`.
+
+2. **`ClaudeAdapter.session_log_dir` computed the wrong dir.** It did
+   `str(cwd).lstrip("/").replace("/","-").lstrip("-")`, dropping the leading dash
+   Claude actually preserves, and never mapped `.`→`-`. Verified against real
+   entries: `/Users/dave/.launchd` → `-Users-dave--launchd`. So even with a
+   session_id the transcript read would miss. Latent because discovery never
+   produced an id to exercise it.
+
+**Fix (self-healing agent-id correlation, operator's choice):**
+`board_state.build_lane_rows` now recovers a missing `session_id` by matching the
+lane's STATUS.md agent-id (baked uniquely into each launch prompt) to the
+*newest* transcript whose first-appearing `agent-XXXX` is that id
+(`_owning_agent_id` / `_resolve_session_ids_by_agent`), then mutates the live
+session and persists `.fleet/<lane>.session.txt` (CV-5). This self-heals on the
+next narrator tick with no respawn and is robust to the timing/shared-dir issues.
+`ClaudeAdapter.session_log_dir` corrected to `str(cwd).replace("/","-").replace(".","-")`
+(leading dash preserved; root sentinel kept for the degenerate `/`).
+
+**Verified:** against the live `v10-prep` transcripts all 6 lanes resolve a
+session_id → `narratable=True` (real token counts); a live `narrate()` against
+llama-server returned a phrase. **Regression:** `test_board_state.py`
+`TestSessionIdSelfHeal` (8 cases: helpers, newest-wins, cross-ref-first-wins,
+unclaimed-skip, build_lane_rows integration + persistence) and corrected
+`test_session_log_dir.py` (leading-dash + dot mapping). 75 tests pass across the
+affected suites. NOTE: the spawn-time ordering bug itself is left in place
+(the self-heal makes it moot); revisit if resume-at-spawn is needed.
+
+---
+
 ## 2026-05-24 — Bugfix: summary board horizontal scrollbar (long Now phrase)
 
 **Symptom:** After the STATUS.md fallback populated the board's Now line with

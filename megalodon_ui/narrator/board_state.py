@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -397,6 +398,155 @@ def _capture_doc_order(mission_dir: Path) -> dict[str, int]:
     return order
 
 
+# ---------------------------------------------------------------------------
+# Session-id self-heal (agent-id correlation)
+#
+# The spawner's time-window session-id discovery fails for live_repl lanes: the
+# Claude transcript is created only after the initial prompt is delivered (well
+# after the discovery poll window), and all lanes share one ``~/.claude/projects``
+# dir, so the "exactly one new file" heuristic is ambiguous. The result is
+# session_id=None for every lane → no transcript digest → the narrator never
+# narrates. We recover each lane's session_id by matching its STATUS.md agent-id
+# (baked uniquely into each lane's launch prompt) to the transcript that opens
+# with that identity.
+# ---------------------------------------------------------------------------
+
+_AGENT_ID_RE = re.compile(rb"agent-[0-9a-f]{4}")
+
+
+def _owning_agent_id(jsonl_path: Path, *, max_lines: int = 400) -> str | None:
+    """Return the FIRST ``agent-XXXX`` id appearing in a transcript.
+
+    A lane's own launch identity is the first agent-id to appear (it is baked
+    into the launch prompt that opens the session); cross-references to other
+    lanes only appear in later turns. Reads at most ``max_lines`` lines, stopping
+    at the first match, so it stays cheap on large transcripts. Returns None on
+    any read error or when no id appears in the scanned window.
+    """
+    try:
+        with jsonl_path.open("rb") as fh:
+            for _ in range(max_lines):
+                line = fh.readline()
+                if not line:
+                    break
+                m = _AGENT_ID_RE.search(line)
+                if m:
+                    return m.group(0).decode("ascii")
+    except OSError:
+        return None
+    return None
+
+
+def _resolve_session_ids_by_agent(
+    log_dir: Path, agent_by_lane: dict[str, str]
+) -> dict[str, str]:
+    """Map lane short code → transcript stem (== session_id) via agent-id.
+
+    Scans ``*.jsonl`` in ``log_dir`` newest-mtime-first; the first (newest)
+    transcript owned by each wanted agent wins. Pure synchronous I/O — call via
+    ``asyncio.to_thread``. Returns a possibly-partial ``{short: stem}`` (lanes
+    with no matching transcript are omitted). Never raises: a missing/unreadable
+    dir yields ``{}``.
+    """
+    try:
+        if not log_dir.is_dir():
+            return {}
+        transcripts = sorted(
+            log_dir.glob("*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return {}
+
+    wanted = set(agent_by_lane.values())
+    stem_by_agent: dict[str, str] = {}
+    for p in transcripts:
+        if wanted.issubset(stem_by_agent.keys()):
+            break  # every wanted agent resolved (newest already won)
+        aid = _owning_agent_id(p)
+        if aid and aid in wanted and aid not in stem_by_agent:
+            stem_by_agent[aid] = p.stem
+
+    return {
+        short: stem_by_agent[aid]
+        for short, aid in agent_by_lane.items()
+        if aid in stem_by_agent
+    }
+
+
+def _persist_session_id(mission_dir: Path, lane_short: str, session_id: str) -> None:
+    """Persist a recovered session_id to ``.fleet/<lane>.session.txt`` (CV-5).
+
+    Mirrors the spawner's write so a later server start can ``--resume`` without
+    re-discovery. Best-effort: any OSError is swallowed (the in-memory id is what
+    the current process needs; persistence is an optimisation).
+    """
+    try:
+        txt = mission_dir / ".fleet" / f"{lane_short}.session.txt"
+        txt.parent.mkdir(parents=True, exist_ok=True)
+        txt.write_text(session_id + "\n", encoding="utf-8")
+        txt.chmod(0o644)
+    except OSError:
+        _log.debug("board_state: could not persist session id for lane %s", lane_short)
+
+
+async def _recover_missing_session_ids(
+    mission_dir: Path,
+    sessions: dict[str, Any],
+    adapter_resolver: Callable[[str], Any],
+    lane_cfgs: list[Any],
+    status_rows: list[dict[str, Any]] | None,
+) -> None:
+    """Fill in session_id for claude lanes the spawner left unresolved.
+
+    Mutates ``sessions[short].session_id`` in place (and persists) for any lane
+    recovered via agent-id correlation. No-op when nothing is recoverable
+    (no status rows, every lane already resolved, or unclaimed agents).
+    """
+    status_index = _index_status_rows(status_rows)
+    if not status_index:
+        return
+
+    # Group eligible lanes by transcript dir. Lanes share a cwd in practice, but
+    # resolving per-dir stays correct if that ever changes.
+    by_dir: dict[Path, dict[str, str]] = {}
+    for cfg in lane_cfgs:
+        short = getattr(cfg, "short", None)
+        if not short or getattr(cfg.harness, "cli", None) != "claude":
+            continue
+        session = sessions.get(short)
+        if session is None or session.session_id is not None:
+            continue
+        status_row = _lookup_status_row(cfg, status_index)
+        agent_id = str(status_row.get("agent", "")).strip() if status_row else ""
+        if not agent_id or agent_id.lower() == "unclaimed":
+            continue
+        try:
+            log_dir = adapter_resolver("claude").session_log_dir(session.cwd)
+        except Exception:
+            log_dir = None
+        if log_dir is None:
+            continue
+        by_dir.setdefault(Path(log_dir), {})[short] = agent_id
+
+    for log_dir, agent_by_lane in by_dir.items():
+        resolved = await asyncio.to_thread(
+            _resolve_session_ids_by_agent, log_dir, agent_by_lane
+        )
+        for short, sid in resolved.items():
+            session = sessions.get(short)
+            if session is not None:
+                session.session_id = sid
+                _persist_session_id(mission_dir, short, sid)
+                _log.info(
+                    "board_state: recovered session_id %s for lane %s via agent-id %s",
+                    sid,
+                    short,
+                    agent_by_lane[short],
+                )
+
+
 async def build_lane_rows(
     mission_dir: Path,
     tasks_fe: dict[str, Any],
@@ -429,6 +579,12 @@ async def build_lane_rows(
     """
     # Capture document order from TASKS.md once (pure synchronous read).
     doc_order = _capture_doc_order(mission_dir)
+
+    # Self-heal session ids the spawner failed to discover (live_repl + shared
+    # projects dir) so the lanes below become narratable without a respawn.
+    await _recover_missing_session_ids(
+        mission_dir, sessions, adapter_resolver, lane_cfgs, status_rows
+    )
 
     # Resolve digests per lane — off-loop reads for Claude lanes with sessions.
     digests: dict[str, SessionDigest | None] = {}

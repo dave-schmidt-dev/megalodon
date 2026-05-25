@@ -23,11 +23,22 @@ from megalodon_ui.harnesses.vibe import VibeAdapter
 
 
 def test_claude_session_log_dir_is_sanitised_cwd_under_projects():
+    # Claude maps EVERY '/' (including the leading one) to '-', so an absolute
+    # cwd yields a leading-dash dir name. Verified against real
+    # ~/.claude/projects entries (e.g. -Users-dave-Documents-...).
     cwd = pathlib.Path("/tmp/megalodon-fix-medium")
     d = ClaudeAdapter().session_log_dir(cwd)
     assert (
-        d == pathlib.Path.home() / ".claude" / "projects" / "tmp-megalodon-fix-medium"
+        d == pathlib.Path.home() / ".claude" / "projects" / "-tmp-megalodon-fix-medium"
     )
+
+
+def test_claude_session_log_dir_replaces_dots():
+    # Claude also maps '.' to '-' (underscores are preserved). Verified against
+    # the real entry -Users-dave--launchd from cwd /Users/dave/.launchd.
+    cwd = pathlib.Path("/Users/dave/.launchd")
+    d = ClaudeAdapter().session_log_dir(cwd)
+    assert d == pathlib.Path.home() / ".claude" / "projects" / "-Users-dave--launchd"
 
 
 def test_claude_session_log_dir_handles_root_cwd():
