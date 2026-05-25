@@ -35,12 +35,12 @@ A blackboard multi-agent coordination protocol for parallel review, audit, synth
 
 - **Status:** SHIPPED. Dashboard FE fully rewritten. 30 of 31 tasks complete; dogfood gate (T4.3) in progress (lifecycle + harness ready; dogfood is the next operator step).
 - **Grid page** (`/lane/:short`) — replaces flat terminal layout with N-pane grid (config-driven; click a lane tile to open lane_detail modal with inject form, stale badge, restart-loop button).
-- **Activity wall** — right-side panel merging 6 event sources (findings, signals, history, queue events, inject log, approval decisions). Filter chips by source type, pause button, expandable details drawer.
+- **Activity wall** — right-side panel merging 6 event sources (findings, signals, history, queue events, inject log, governor audit log). The 6th source tails `.fleet/governor-log-*.jsonl` (PreToolUse governor decisions, event `type:"governor"`); it replaced the old approval-decisions feed. Filter chips by source type, pause button, expandable details drawer.
 - **Stale-lanes detection** — mission header shows count of lanes exceeding 15-min staleness threshold. Restart-loop button triggers per-lane loop restart.
-- **Approve & remember flow** — operator selects a finding → extracts pattern via regex modal → persists rule to `.fleet/approval-rules.json` → merged into `--allowedTools` at next spawn, **after the `_is_unbounded_tool` filter drops any interpreter/network/compound pattern** (2026-05-22 tool-surface policy — "approve & remember" can never re-admit `python`/`curl`). Complete audit trail in approval-rules page (CRUD UI).
+- **Approve & remember flow** — operator selects a finding → extracts pattern via regex modal → persists rule to `.fleet/approval-rules.json`. The rule is now consumed by the **governor** (`policy.decide`) as an audited **allow-override**: it flips a *non-floor* deny → allow when a stored `Bash(<specifier>)` matches the specific denied segment. The old `--allowedTools` plumbing and the `_is_unbounded_tool` filter are gone (removed in Task 3.3). The floor categories — `bash-root-destructive`, `bash-privilege`, `secret-read` — are **non-overridable**: no approval rule can re-admit them. Complete audit trail in approval-rules page (CRUD UI).
 - **Page rewrites** — 6 pages migrated to v9.4 patterns: findings (severity filter + search), signals (sortable columns), mission (orchestrator actions), tasks (kanban board), approval_rules (new page), grid (N-pane layout).
 - **Backend endpoints** — 5 new: `POST /api/v1/lane/{short}/inject`, `POST /api/v1/lane/{short}/restart-loop`, `GET /api/v1/lanes/stale`, `GET /api/v1/activity-wall` + `POST /api/v1/activity-wall/snapshot`, `GET|POST|DELETE /api/v1/approval-rules` + `POST /api/v1/approval-rules/extract`.
-- **PermissionWatcher.on_change callback** — (lane, info, action) signature where action is approve/approve_remember/deny. Activity wall surfaces these lifecycle events.
+- **PermissionWatcher.on_change callback** *(decommissioned 2026-05-25, Phase 3)* — the screen-scraping `PermissionWatcher` and its `/api/v1/permission_prompts` endpoints were removed when the PreToolUse governor hook replaced the prompt-scraping model. See the "Governor (permission system)" section below.
 - **Migration note:** Fresh `.fleet/` required. Old `approval-rules.json` from prior runs is ignored (schema unversioned by design).
 - **Test coverage:** 795 Python tests pass (+126 v9.4 tests). Playwright 23 chromium-grid tests green. Pre-existing v9.3-era failures on deprecated surface (v92-dashboard, default) preserved intentionally.
 - **Plan archive:** `~/Documents/Projects/.plans/megalodon/v9-4-dashboard-rebuild-2026-05-19.md` (plan v2 warp-complete) + tasks + synthesis + reviews. See `HISTORY.md` "V9.4 SHIPPED" for full manifest.
@@ -151,11 +151,14 @@ The orchestrator (you, or a dedicated Claude session) sets Mission status, pushe
 
 ---
 
-## Operator allowlist for v9 helper scripts
+## Permissions: operator session vs spawned fleet
 
-Workers invoke three scripts that must be wildcard-allowlisted once to prevent
-mid-mission permission prompts (SIG-ORCH-6 cause). Add to your Claude Code
-permissions (`settings.json` `allow` list or equivalent):
+There are **two distinct surfaces** — keep them separate:
+
+**1. The operator's own interactive `claude` in this repo** uses `.claude/settings.json`
+(allow/deny lists). To avoid mid-mission permission prompts (SIG-ORCH-6 cause) when
+you drive the orchestrator by hand, wildcard-allowlist the helper scripts in your
+own `settings.json` `allow` list:
 
     python3 scripts/atomic_close.py *
     python3 scripts/poll.py *
@@ -165,15 +168,19 @@ The scripts internally validate ALL args against strict whitelist regexes
 (see `docs/superpowers/specs/2026-05-16-v9-m3-helper-scripts-design.md` §6.1).
 Any non-conforming arg is rejected with exit code 2 and a stderr explanation.
 The wildcard is safe because the scripts — not the allowlist — enforce input safety.
-
 See RULES 12, 13, 14 in `launch.md` for the worker-side discipline these scripts enable.
+This `.claude/settings.json` surface is unchanged by the governor work.
 
-> **Two distinct surfaces.** The above is the *operator's own* interactive session
-> allowlist (`.claude/settings.json`). The **spawned-fleet** allowlist is separate —
-> a bounded set built in `megalodon_ui/harnesses/claude.py` (`build_argv`, `live_repl`):
-> native tools + path-scoped scripts (`poll.py`, `atomic_close.py`, `claim.sh`,
-> `queue_submit.py`, `run_e2e.sh`, `run_tests.sh`) + `sleep`/`date`/`printf`, and
-> nothing else — no `python`/`uv run`/`curl`/compound (2026-05-22 tool-surface policy).
+**2. Spawned fleet lanes** are governed by the **PreToolUse governor hook**, NOT a
+per-script `--allowedTools` allowlist. Each lane's `claude` is launched with
+`--settings .claude/governor-settings.json` (wired via `governor_kwargs` in
+`megalodon_ui/governor/wiring.py`), which installs the PreToolUse hook + a
+non-overridable `permissions.deny` floor. The hook adjudicates every tool call on
+its real structured input (`policy.decide`): allow-by-default, deny matched-dangerous.
+The sanctioned `scripts/*` run because the governor's policy allows them (bounded by
+location/scope), not because of an allowlist flag — the old `--allowedTools` allowlist
+and its `_is_unbounded_tool`/`_FORBIDDEN_HEAD_CMDS` filter were removed in Task 3.3.
+See the "Governor (permission system)" section below.
 
 ---
 
@@ -538,7 +545,15 @@ The orchestrator reads STATUS.md every cadence interval.
 
 ## Permission management
 
-Workers run autonomously when `.claude/settings.json` defines a Bash allowlist + deny list. Auto-accept edits (Shift+Tab in Claude Code) covers file ops; the allowlist covers Bash. Both are needed for fully prompt-free operation.
+**Spawned fleet lanes are governed by the PreToolUse governor hook** (see the
+"Governor (permission system)" section below) — not by a per-lane `--allowedTools`
+allowlist. A hook `allow` decision auto-approves a tool without an operator prompt, so
+governed lanes run prompt-free.
+
+The `.claude/settings.json` below is the **operator's own interactive session** config
+in this repo (separate from the spawned-fleet governor; see "Permissions: operator
+session vs spawned fleet" above). Auto-accept edits (Shift+Tab in Claude Code) covers
+file ops; the allow/deny lists cover Bash.
 
 **First-time setup (after cloning):**
 ```bash
@@ -548,6 +563,45 @@ cp .claude/settings.example.json .claude/settings.json
 ```
 
 `.claude/settings.json` is gitignored (per-user / per-machine config); commit changes to `.claude/settings.example.json` if you want the template updated.
+
+---
+
+## Governor (permission system)
+
+The spawned fleet's permission gate is a Claude Code **PreToolUse hook** that
+adjudicates every tool call on its real structured input — replacing the old
+screen-scraping permission system (decommissioned in Phases 1–4, 2026-05-25).
+
+- **Policy** (`megalodon_ui/governor/policy.py`) — a pure, fail-closed
+  `decide(tool_name, tool_input, *, project_dir, lane) -> Decision`. **Allow-by-default,
+  deny matched-dangerous**: Bash is segmented quote-aware via `shlex`; interpreter /
+  code-exec / privilege / network / installer / destructive heads are denied; read/write
+  tool paths are secret- and scope-checked against `project_dir`; command/process
+  substitution and any parse failure fail closed (deny). Any internal exception → deny
+  (`governor-error`).
+- **Operator allow-override** — `.fleet/approval-rules.json` is read as an audited
+  override that flips a *non-floor* deny → allow for the specific matched segment. The
+  **floor** — `bash-root-destructive`, `bash-privilege`, `secret-read` — is
+  non-overridable.
+- **Hook** (`megalodon_ui/governor/hook.py`, executable shim `scripts/governor_hook.py`)
+  — reads the PreToolUse event from stdin, emits the `permissionDecision` JSON to stdout,
+  and appends one audit line to `.fleet/governor-log-YYYY-MM-DD.jsonl`
+  (`{ts, lane, tool, permission, category, reason, input_sha256}`). Raw `tool_input` is
+  **never** logged — only the sha256 of its canonical JSON; the durable `reason` is
+  per-category sanitized so no command/path/secret reaches the log.
+- **Wiring** — `.claude/governor-settings.json` (the `PreToolUse` hook + `permissions.deny`
+  floor) is attached via `--settings` on every governed `claude` argv. The mission-config
+  **`governor_enabled` kill-switch** (default `true`) gates it; when on, spawn runs a
+  `preflight_governor` reachability check and a `governor_canary_selftest` (a sentinel
+  `echo megalodon-governor-canary-v1` that MUST be denied) and aborts the spawn LOUDLY if
+  the governor is not actually enforcing. Reattached lanes whose live process predates the
+  governor are marked **`ungoverned`** (provenance, distinct from the deny-loop status).
+- **Deny-loop alarm** — `GET /api/v1/lanes/stale` surfaces a `governor_blocked` list:
+  a lane with **≥5 denies within 60s** in the governor log is `governor-blocked`,
+  surfaced as the board **BLOCKED** pill and excluded from `stale_lanes` (so an operator
+  does not kill it thinking it is merely silent).
+- **Claude-only fleet** — the governor is a Claude Code feature; non-`claude` harnesses
+  are not governed. This is an accepted tradeoff: the fleet is now Claude-only.
 
 ---
 

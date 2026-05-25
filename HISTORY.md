@@ -10,6 +10,72 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-25 (PM) — Phase 5: governor-migration documentation pass (Task 5.1)
+
+**What:** Reconciled the docs to the implemented governor-hook reality (no code change).
+- **README.md:** activity-wall 6th source corrected (approval decisions → governor audit
+  log, event `type:"governor"`); the "Approve & remember flow" rewritten to the
+  allow-override model (consumed by `policy.decide`, not `--allowedTools`; floor
+  non-overridable); the v9 "Operator allowlist" section reframed as two distinct surfaces
+  (operator's own `.claude/settings.json` vs spawned-fleet governor `--settings`); a new
+  **"Governor (permission system)"** section added (policy / hook / wiring / kill-switch /
+  canary / deny-loop / Claude-only); stale `PermissionWatcher.on_change` line marked
+  decommissioned.
+- **tasks.md / v10-readiness-plan.md:** governor Phases 1–5 marked done; a follow-ups /
+  tech-debt section captured (jsonl-tail dedup, distinct GOV-BLOCK pill, stale-fetch
+  BLOCKED flicker, persistent `http` governor, lane settings isolation, sub-agent
+  governance, MCP/A2A tool governance). v10-readiness §1b reconciled to "done — governor
+  hook implemented, fleet Claude-only".
+
+---
+
+## 2026-05-25 (PM) — Phase 4: permission-prompt UI removed; governor-blocked + governor activity wired into the dashboard
+
+**Task 4.1 (board.js — banner removal + blockedLanes repurposed):**
+- Removed the old permission-prompt banner UI from `ui/static/pages/board.js`.
+- `blockedLanes` is now sourced from the `/api/v1/lanes/stale` response's `governor_blocked`
+  list (lanes the governor is deny-looping, ≥5 denies/60s) and drives the **BLOCKED** pill.
+  Precedence enforced **BLOCKED > STALE > RUNNING/IDLE**; the SSE handler never overwrites a
+  BLOCKED lane's pill. The single `/lanes/stale` poll drives both the STALE and BLOCKED sets.
+
+**Task 4.2 (activity_wall — governor rendering + e2e overhaul):**
+- `ui/static/components/activity_wall.js` renders the governor event `type:"governor"`
+  (allow/deny, category, reason) so governed-lane tool activity is visible in the wall.
+- E2E specs overhauled to cover the governor activity view and the BLOCKED-pill path;
+  permission-prompt-era specs removed.
+
+---
+
+## 2026-05-25 (PM) — Task 3.2: stale-helper dropped pending_approval; deny-loop alarm + ActivityWall governor-log tail (visibility fix)
+
+**The operator-validated visibility fix from the P3 canary finding.**
+- **`/api/v1/lanes/stale` reshaped:** dropped the old `pending_approval` field; added a
+  `governor_blocked` list. `_compute_governor_blocked` reads today's
+  `.fleet/governor-log-YYYY-MM-DD.jsonl` and flags any lane with **≥5 deny decisions inside a
+  60s window** (`_GOVERNOR_BLOCK_DENY_COUNT=5`, `_GOVERNOR_BLOCK_WINDOW_SECONDS=60`, tail
+  bounded to `_GOVERNOR_LOG_TAIL_LINES=500`). A governor-blocked lane is **excluded** from
+  `stale_lanes` so an operator does not kill it thinking it is merely silent. Robust by
+  design: missing file → `{}`, bad lines/timestamps skipped, never raises.
+- **ActivityWall governor-log tail:** added `_source_governor_log` as the 6th source in
+  `megalodon_ui/activity_wall.py`, tailing `.fleet/governor-log-*.jsonl` and emitting
+  `type:"governor"` events — closing the P3.2 visibility gap (the prior permission-watcher
+  source went silent for governed lanes because the hook suppresses prompts).
+
+---
+
+## 2026-05-25 (PM) — Task 3.1: PermissionWatcher backend decommissioned
+
+**What:** Removed the screen-scraping permission system's backend now that the PreToolUse
+governor hook is the live gate.
+- Deleted the `permission_watcher` module and the `/api/v1/permission_prompts` endpoints.
+- Removed the watcher's lifespan startup/teardown wiring from the server.
+- Removed/updated the associated gate-regex and watcher plumbing.
+- **Tests:** the permission-watcher-specific tests were deleted; a
+  `scripts/tests/test_permission_watcher_decommission.py` regression guard was added to
+  assert the module and endpoints stay gone (the endpoint now 404s).
+
+---
+
 ## 2026-05-25 (PM) — Task 3.3: approval-rules consumer moved to the governor (BREAKING) + allowlist removed
 
 **Breaking change — the consumer of `.fleet/approval-rules.json` changed:**

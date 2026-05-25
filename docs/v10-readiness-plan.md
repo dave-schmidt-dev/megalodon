@@ -7,7 +7,16 @@ operator babysitting every keystroke.
 
 ---
 
-## UPDATE 2026-05-25 — Architectural pivot: the "governor hook"
+## UPDATE 2026-05-25 — Architectural pivot: the "governor hook" — **IMPLEMENTED & DONE**
+
+**Status: SHIPPED 2026-05-25.** The governor-hook architecture below was executed
+across Phases 1–5 (policy + hook → settings/wiring/canary → watcher decommission →
+UI → docs). The screen-scraping permission system is fully decommissioned. As an
+accepted tradeoff, **the fleet is now Claude-only** (the `PreToolUse` hook is a
+Claude Code feature; non-`claude` harnesses are not governed). See `HISTORY.md`
+(governor Phase 1–5 entries), the README "Governor (permission system)" section,
+and the warp plan `~/Documents/Projects/.plans/megalodon/governor-hook-permission-architecture-2026-05-25.md`.
+**This resolves §1b** — the exploration-stall risk is structurally eliminated.
 
 A long design session (auto-approver → MCP gateway → PreToolUse hook) reached a
 new direction that supersedes the §1b auto-approver and reframes §9:
@@ -39,9 +48,10 @@ new direction that supersedes the §1b auto-approver and reframes §9:
 - **MCP is reserved for NEW capabilities, not governance.** A future MCP server
   (megalodon protocol ops; the general A2A `call_agent` cross-CLI delegation tool)
   is an additive layer — separate from the hook, separate plan.
-- **`permission_watcher.py` is slated for decommission** in favor of the governor
-  hook; the dashboard/narrator move from pane-scraping to reading the hook's
-  structured audit log. (Full implementation is the warp plan dated 2026-05-25.)
+- **`permission_watcher.py` was decommissioned** (Task 3.1) in favor of the governor
+  hook; the dashboard/ActivityWall now read the hook's structured audit log
+  (`.fleet/governor-log-*.jsonl`) instead of pane-scraping. (Done — warp plan dated
+  2026-05-25, Phases 1–5.)
 
 ---
 
