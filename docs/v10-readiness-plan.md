@@ -225,6 +225,46 @@ run so they audit *observed behavior*, not just code.
 
 ---
 
+## 9. Strategic direction: a custom MCP server for agent tooling (operator-proposed)
+
+**Idea:** replace the current "bounded `scripts/*` + CLI.md + custom launch
+prompts + Bash allowlist" approach with a **custom MCP server** the lanes connect
+to, exposing the fleet's capabilities as typed MCP tools — and, longer-term, a
+tool to invoke *other* CLIs (codex/gemini/…) as delegated subagents.
+
+**Why this is the right shape (it directly solves §1b):** MCP tools are
+authorized as a unit (`mcp__megalodon__*`) and do **not** go through Claude Code's
+per-command Bash permission prompt. So agents call structured, pre-authorized
+tools instead of raw shell — the `find`/`python3` stall class disappears, and we
+stop depending on prose (launch.md/CLI.md) to constrain tool choice. It also
+replaces brittle allowlist-pattern matching (the `python3 scripts/poll.py`
+deadlock, the `Bash(scripts/x:*)` head-matching fragility) with real typed tools
+the agent discovers via MCP.
+
+**Candidate tools:** `submit_intent`, `claim_task`, `close_task`, `poll_state`,
+`read_findings`, `survey_files`(glob/grep wrapper), `append_history` — i.e. the
+v9 protocol surface as MCP tools. Plus a guarded `run_cli(adapter, args)` for
+cross-CLI delegation (this one needs its own allowlist/sandbox or it just moves
+the unbounded-exec risk down a layer — design carefully; **Security > all**).
+
+**Open questions / spike scope (tomorrow):**
+- stdio vs HTTP MCP; how each lane's `claude` is launched with `--mcp-config`
+  (wire into `spawn.py` / mission config).
+- Map the existing `scripts/*` + queue intents to MCP tools 1:1 first (lowest
+  risk), measure whether the permission stalls vanish, THEN consider `run_cli`.
+- How this relates to the harness *adapters* (those spawn lanes; this is lanes
+  *calling out*) — keep the two concerns separate.
+- Does it subsume the §1b auto-approver? Likely yes for the protocol surface;
+  raw exploration would still need either the MCP `survey_files` tool or the
+  auto-approver.
+- Effort: moderate. Build as a design spike + a thin MCP server mapping the queue
+  client, prove the stall-elimination on one lane, then expand.
+
+This is a promising v10 architecture bet; recommend a scoped spike tomorrow
+before committing to it wholesale.
+
+---
+
 ## 7. Session checkpoint (2026-05-25 ~03:30Z — STOPPED for the night)
 
 **Commits this session:** `3ff8ef8`, `d696fd2`, `141ea41`, `7f463b3`, `c4f13aa`,
