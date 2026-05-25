@@ -39,7 +39,7 @@ A blackboard multi-agent coordination protocol for parallel review, audit, synth
 
 ## Narrator summary board (SHIPPED 2026-05-24)
 
-- **Status:** SHIPPED. Phases 1–4 complete on `origin/main`. Full gate: 961 Python tests passed / 34 skipped / 3 xfailed; 12 isolated (`--forked`); Playwright 159 passed / 9 skipped, all 11 projects.
+- **Status:** SHIPPED. Phases 1–4 complete on `origin/main`, plus post-ship board enhancements (CR-4 blocked pill, staleness modal, narrator-on-Last). See also the "Persistent sessions + dashboard auto-open" section below (Phase 5). Current full gate: 1056 Python tests passed / 34 skipped / 3 xfailed; 12 isolated (`--forked`); Playwright 171 passed / 8 skipped, across 12 projects.
 - **Board is the default fleet view at `/`** — `ROUTES[0]` now loads `board.js`; `grid.js` was deleted. One row per lane shows **Last / Now / Goal** + a state pill + token count + inline approve/deny + a click-to-open terminal drawer. The state pill shows BLOCKED when a lane has a blocked task (precedence: blocked > claimed > done > open). Clicking a STALE pill opens a staleness details modal.
 - **Column sourcing:** Last (latest closed task id + description) and Goal (claimed task description, else lane role) are **deterministic** — they render from mission state with no model involved. **Now** and **Last** both carry advisory narrator phrases — each produced by its own independent single-phrase call. When narrator is unavailable, deterministic text is the fallback. Deterministic facts are load-bearing; the narrator supplies advisory prose only.
 - **Narrative endpoints** (both session-cookie gated): `GET /api/v1/narrative` (cached map, initial paint) and `GET /api/v1/narrative-stream` (SSE, activity-wall pattern, watcher-gated).
