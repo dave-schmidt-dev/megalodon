@@ -123,3 +123,39 @@ kill -TERM $(lsof -nP -iTCP:8765 -sTCP:LISTEN -t | head -1)
   reconciler insert handling, orphan llama reclaim.
 - **M5:** polish — token accounting, SSE teardown, PermissionWatcher multi-prompt,
   MISSION.md matrix, docs.
+
+---
+
+## 7. Session checkpoint (2026-05-25 ~03:25Z — pause/compact point)
+
+**Commits this session:** `3ff8ef8`, `d696fd2`, `141ea41`, `7f463b3`, `c4f13aa`,
+`ab2494b`. Full Python suite green (1003 passed); board e2e 51 passed.
+
+**Live run state (`runs/2026-05-24T22-14Z--v10-prep`, server on :8765):**
+- Clean-restarted with all fixes. Mission flipped to **PHASE-PLAN**; `TASKS.md`
+  seeded `P1-A..P1-F` under PHASE 1. Standalone applier PID 74540 alive.
+- Lanes re-spawned fresh (new agent-ids). META `working:P1-F`, AUDIT/ARCHITECT/
+  BACKEND claimed/initialized. **FRONTEND/TEST + others parked on `find` permission
+  prompts** (the exact stall — fixed by `ab2494b`, effective when lanes re-read
+  the regenerated launch-*.md on their next 5-min tick; the 4 currently-parked
+  prompts need a one-time approve OR will clear when the tick re-fires).
+- Narrator: an orphan `llama-server` held :8085 (from a prior server) so the new
+  owned child couldn't bind → readiness gate correctly kept it offline. Killed the
+  orphan; new owned child (was PID 93525) is loading the model. `narrator_ok` should
+  climb as lanes gain transcripts+STATUS rows. UI overflow: fixed (1440==1440).
+
+**Immediate next steps on resume:**
+1. Verify the next tick: lanes use Glob/Grep (no `find` prompts), claim remaining
+   P1 tasks, produce findings → board RUNNING, not IDLE.
+2. Confirm narrator dot goes green (model finished loading + lanes narratable).
+3. **New high-priority code fixes surfaced live (add to M3/M4):**
+   - **Orphan-llama reclaim** — `NarratorRuntime` must kill/await a stale listener
+     on its port before spawning (this bit us every restart). *(runtime.py:279)*
+   - **Narrator UI visibility** — the only indicator is a tiny dot; add a panel
+     (online/offline, model, last-narrate ok/latency) so operators can see narrator
+     health. (user-requested)
+   - **Permission autonomy decision** — Glob/Grep guidance handles survey stalls,
+     but a narrow auto-approver for read-only inspection (find/ls/grep w/o
+     -exec/-delete/redirects) would make runs truly unattended. Security call.
+4. Then: `tasks-inject` phase-section targeting (M2), spawn discovery ordering +
+   lane-death supervisor (M3).
