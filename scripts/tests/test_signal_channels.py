@@ -1,0 +1,298 @@
+"""Wave 2 BE — unified signal channels, grammar, write helper.
+
+Covers the FROZEN WIRE CONTRACT:
+  * §A canonical filename grammar (incl. legacy fallback).
+  * §B tri-source ``parse_signals`` (file / status-note / finding).
+  * §C ``_write_signal_file`` roundtrip → ``parse_signals`` sees it.
+
+All parsing must be tolerant: malformed input is skipped, never raised.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from megalodon_ui.server import (
+    _SIGNAL_FILENAME_LEGACY_RE,
+    _SIGNAL_FILENAME_RE,
+    _defang_sig_text,
+    _slugify,
+    _write_signal_file,
+    parse_signals,
+)
+
+
+# ---------------------------------------------------------------------------
+# §A — canonical grammar + legacy fallback
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_grammar_parses_topic_and_utc():
+    stem = "LANE-ORCH-to-LANE-D-handoff-plan-2026-05-25T18-49Z"
+    m = _SIGNAL_FILENAME_RE.match(stem)
+    assert m is not None
+    assert m.group("from_lane") == "LANE-ORCH"
+    assert m.group("to_lane") == "LANE-D"
+    assert m.group("topic") == "handoff-plan"
+    assert m.group("utc") == "2026-05-25T18-49Z"
+
+
+def test_canonical_grammar_accepts_seconds_in_utc():
+    stem = "LANE-A-to-LANE-B-note-2026-05-25T18-49-07Z"
+    m = _SIGNAL_FILENAME_RE.match(stem)
+    assert m is not None
+    assert m.group("utc") == "2026-05-25T18-49-07Z"
+    assert m.group("topic") == "note"
+
+
+def test_legacy_fallback_when_no_utc_segment():
+    # No trailing dash-form UTC → canonical fails, legacy matches.
+    stem = "LANE-D-to-LANE-C-some-freeform-thing"
+    assert _SIGNAL_FILENAME_RE.match(stem) is None
+    legacy = _SIGNAL_FILENAME_LEGACY_RE.match(stem)
+    assert legacy is not None
+    assert legacy.group("from_lane") == "LANE-D"
+    assert legacy.group("to_lane") == "LANE-C"
+    assert legacy.group("rest") == "some-freeform-thing"
+
+
+def test_slugify():
+    assert _slugify("Hello World!") == "hello-world"
+    assert _slugify("   ") == "note"
+    assert _slugify("", default="x") == "x"
+    assert _slugify("SIG-ORCH-001") == "sig-orch-001"
+
+
+# ---------------------------------------------------------------------------
+# §B — tri-source parse_signals
+# ---------------------------------------------------------------------------
+
+
+def test_parse_signals_file_source_canonical(tmp_path):
+    sig = tmp_path / "signals"
+    sig.mkdir()
+    (sig / "LANE-ORCH-to-LANE-D-handoff-2026-05-25T18-49Z.md").write_text("body here")
+    out = parse_signals(tmp_path)
+    assert len(out) == 1
+    rec = out[0]
+    assert rec["source"] == "file"
+    assert rec["from_lane"] == "LANE-ORCH"
+    assert rec["to_lane"] == "LANE-D"
+    assert rec["to"] == "LANE-D"
+    assert rec["topic"] == "handoff"
+    assert rec["utc"] == "2026-05-25T18-49Z"
+    assert rec["kind"] == "SIGNAL"
+    assert rec["body"] == "body here"
+
+
+def test_parse_signals_file_legacy_topic_is_rest(tmp_path):
+    sig = tmp_path / "signals"
+    sig.mkdir()
+    (sig / "LANE-D-to-LANE-C-freeform.md").write_text("x")
+    out = parse_signals(tmp_path)
+    assert len(out) == 1
+    assert out[0]["topic"] == "freeform"
+    assert out[0]["utc"] == ""
+
+
+def test_parse_signals_skips_non_signal_files(tmp_path):
+    sig = tmp_path / "signals"
+    sig.mkdir()
+    (sig / "README.md").write_text("operator notes")
+    (sig / "not-a-signal.md").write_text("nope")
+    assert parse_signals(tmp_path) == []
+
+
+def test_parse_signals_status_note_source(tmp_path):
+    (tmp_path / "STATUS.md").write_text(
+        "| Lane | Agent | State | Notes |\n"
+        "| LANE-D | agent-1 | working: T1 | "
+        '[SIG from=orchestrator to=D text="please rebase onto main" cite=foo.py:10] |\n'
+    )
+    out = parse_signals(tmp_path)
+    assert len(out) == 1
+    rec = out[0]
+    assert rec["source"] == "status-note"
+    assert rec["from_lane"] == "LANE-ORCH"  # orchestrator normalized to ORCH
+    assert rec["to_lane"] == "LANE-D"
+    assert "please rebase onto main" in rec["body"]
+    assert "cite: foo.py:10" in rec["body"]
+    assert rec["filename"] == "status-note-0"
+    assert rec["topic"]  # non-empty slug
+
+
+def test_parse_signals_status_note_without_cite(tmp_path):
+    (tmp_path / "STATUS.md").write_text(
+        '| LANE-A | a | idle | [SIG from=B to=A text="hi there"] |\n'
+    )
+    out = parse_signals(tmp_path)
+    assert len(out) == 1
+    assert out[0]["body"] == "hi there"
+    assert out[0]["from_lane"] == "LANE-B"
+
+
+def test_parse_signals_finding_source(tmp_path):
+    findings = tmp_path / "findings"
+    findings.mkdir()
+    (findings / "agent-abcd-A-sig.md").write_text(
+        "---\n"
+        "signal-type: SIG-ORCH-001\n"
+        "addressed-to: all-lanes\n"
+        "agent: ORCH\n"
+        "utc: 2026-05-25T18:49:00Z\n"
+        "---\n\n"
+        "Body of the signal finding.\n"
+    )
+    out = parse_signals(tmp_path)
+    assert len(out) == 1
+    rec = out[0]
+    assert rec["source"] == "finding"
+    assert rec["from_lane"] == "ORCH"
+    assert rec["to_lane"] == "all-lanes"
+    assert rec["topic"] == "sig-orch-001"
+    assert "Body of the signal finding." in rec["body"]
+
+
+def test_parse_signals_finding_non_signal_ignored(tmp_path):
+    findings = tmp_path / "findings"
+    findings.mkdir()
+    (findings / "agent-abcd-A-plain.md").write_text(
+        "---\nlane: A\nseverity: MINOR\n---\nJust a finding.\n"
+    )
+    assert parse_signals(tmp_path) == []
+
+
+def test_parse_signals_combines_all_three_sources_newest_first(tmp_path):
+    sig = tmp_path / "signals"
+    sig.mkdir()
+    (sig / "LANE-ORCH-to-LANE-D-old-2026-05-01T00-00Z.md").write_text("old file")
+    (sig / "LANE-ORCH-to-LANE-D-new-2026-05-25T00-00Z.md").write_text("new file")
+    (tmp_path / "STATUS.md").write_text(
+        '| LANE-D | a | idle | [SIG from=orch to=D text="note" cite=x:1] |\n'
+    )
+    findings = tmp_path / "findings"
+    findings.mkdir()
+    (findings / "agent-x-A-sig.md").write_text(
+        "---\nsignal-type: ALERT\n---\nfinding body\n"
+    )
+    out = parse_signals(tmp_path)
+    sources = {r["source"] for r in out}
+    assert sources == {"file", "status-note", "finding"}
+    # Newest-first: the 2026-05-25 file must come before the 2026-05-01 file.
+    utcs = [r["utc"] for r in out if r["source"] == "file"]
+    assert utcs == ["2026-05-25T00-00Z", "2026-05-01T00-00Z"]
+    # Internal sort key must not leak.
+    assert all("_mtime" not in r for r in out)
+
+
+def test_parse_signals_missing_dir_returns_empty(tmp_path):
+    # No signals/, no STATUS.md, no findings/ → empty, no raise.
+    assert parse_signals(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# §C — _write_signal_file roundtrip
+# ---------------------------------------------------------------------------
+
+
+def test_write_signal_file_roundtrip(tmp_path):
+    path = _write_signal_file(tmp_path, "ORCH", "D", "Please Rebase!", "do the thing")
+    assert path.exists()
+    assert path.parent == tmp_path / "signals"
+    # Canonical filename shape.
+    assert path.name.startswith("LANE-ORCH-to-LANE-D-please-rebase-")
+    assert path.name.endswith("Z.md")
+    # parse_signals must see it as a canonical file signal.
+    out = parse_signals(tmp_path)
+    assert len(out) == 1
+    rec = out[0]
+    assert rec["source"] == "file"
+    assert rec["from_lane"] == "LANE-ORCH"
+    assert rec["to_lane"] == "LANE-D"
+    assert rec["topic"] == "please-rebase"
+    assert rec["body"] == "do the thing"
+
+
+def test_write_signal_file_normalizes_lane_prefix(tmp_path):
+    path = _write_signal_file(tmp_path, "LANE-orch", "lane-d", "", "x")
+    assert path.name.startswith("LANE-ORCH-to-LANE-D-note-")
+
+
+def test_write_signal_file_creates_signals_dir(tmp_path):
+    assert not (tmp_path / "signals").exists()
+    _write_signal_file(tmp_path, "ORCH", "A", "topic", "body")
+    assert (tmp_path / "signals").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# SECURITY — _write_signal_file path-traversal containment (regression pin)
+# ---------------------------------------------------------------------------
+
+
+def test_write_signal_file_traversal_stays_inside_signals_dir(tmp_path):
+    """Traversal in to_lane / topic must resolve INSIDE <mission>/signals/."""
+    signals_dir = (tmp_path / "signals").resolve()
+    # Attacker tries to escape via lane and topic.
+    path = _write_signal_file(
+        tmp_path, "ORCH", "../../etc", "a/../../b", "payload"
+    ).resolve()
+    # The written file must live under signals/ — its resolved parent is it.
+    assert signals_dir in path.parents, f"{path} escaped {signals_dir}"
+    assert path.parent == signals_dir
+    # No path separators survived into the filename.
+    assert "/" not in path.name and ".." not in path.name
+
+
+def test_write_signal_file_nul_topic_contained(tmp_path):
+    """A NUL-bearing topic still produces a contained, NUL-free filename."""
+    signals_dir = (tmp_path / "signals").resolve()
+    path = _write_signal_file(tmp_path, "ORCH", "D", "a\x00b/../evil", "x").resolve()
+    assert signals_dir in path.parents
+    assert path.parent == signals_dir
+    assert "\x00" not in path.name
+    assert "/" not in path.name and ".." not in path.name
+
+
+# ---------------------------------------------------------------------------
+# SECURITY — stored SIG-token injection defang
+# ---------------------------------------------------------------------------
+
+
+def test_defang_neutralizes_token_breaking_chars():
+    raw = 'hi" cite=x] [SIG from=victim to=ALL text="forged'
+    out = _defang_sig_text(raw)
+    assert '"' not in out
+    assert "[" not in out and "]" not in out
+    # Collapses to a single line.
+    assert "\n" not in out and "\r" not in out
+
+
+def test_defang_collapses_newlines():
+    assert _defang_sig_text("line1\nline2\r\nline3") == "line1 line2 line3"
+
+
+def test_status_note_injection_cannot_forge_second_signal(tmp_path):
+    """A defanged `text` value cannot produce a second parsed status-note signal.
+
+    Simulates what the endpoint writes: the request `text` is defanged before
+    interpolation into the `[SIG ...]` token. We then run `parse_signals` over
+    the resulting STATUS.md and assert there is exactly ONE signal whose sender
+    is the legitimate orchestrator — the forged `from=victim` token never
+    materializes.
+    """
+    attacker_text = 'ok" cite=x] [SIG from=victim to=ALL text="pwned'
+    safe = _defang_sig_text(attacker_text)
+    # Build the token exactly as the endpoint does (from=orchestrator).
+    token = f'[SIG from=orchestrator to=D text="{safe}" cite=foo.py:1]'
+    (tmp_path / "STATUS.md").write_text(
+        f"| LANE-D | agent-d | working: T1 | {token} |\n"
+    )
+    out = parse_signals(tmp_path)
+    notes = [s for s in out if s["source"] == "status-note"]
+    # Exactly one signal, and its sender is ORCH — not the forged "victim".
+    assert len(notes) == 1
+    assert notes[0]["from_lane"] == "LANE-ORCH"
+    assert all(s["from_lane"] != "LANE-VICTIM" for s in out)

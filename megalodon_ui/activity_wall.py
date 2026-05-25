@@ -55,6 +55,19 @@ SUBSCRIBER_QUEUE_MAXLEN: int = 100
 # Pattern: agent-XXXX-L-PPHASE-topic-...-UTC.md (with optional .scratch)
 _FINDING_STEM_RE = re.compile(r"^agent-[A-Za-z0-9]+-([A-Z])(?:-|$)")
 
+# Canonical signal filename grammar (mirrors server.py:_SIGNAL_FILENAME_RE).
+# Kept here as a *local copy* (not imported from server) to avoid an import
+# cycle: server.py imports ActivityWall, so activity_wall must not import
+# server at module load. The two regexes are intentionally identical — if one
+# changes the other must too (see server.py FROZEN WIRE CONTRACT §A).
+_SIGNAL_FILENAME_RE = re.compile(
+    r"^(?P<from_lane>LANE-[A-Z0-9]+)-to-(?P<to_lane>LANE-[A-Z0-9]+)-"
+    r"(?P<topic>.+)-(?P<utc>\d{4}-\d{2}-\d{2}T\d{2}-\d{2}(?:-\d{2})?Z)$"
+)
+_SIGNAL_FILENAME_LEGACY_RE = re.compile(
+    r"^(?P<from_lane>LANE-[A-Z0-9]+)-to-(?P<to_lane>LANE-[A-Z0-9]+)-(?P<rest>.+)$"
+)
+
 # Applier log timestamp: "2026-05-16T22:00:00Z | INFO | ..."
 _APPLIER_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z")
 # Lane field in applier log lines
@@ -125,10 +138,91 @@ class ActivityWall:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Launch the fan-in background task."""
+        """Backfill the ring from existing state, then launch the fan-in task.
+
+        The file-tail sources seek to EOF on attach, so on a server restart the
+        wall would otherwise be empty until brand-new writes arrive. We replay a
+        bounded slice of the current on-disk state (HISTORY.md tail, findings/,
+        signals/) into the ring *before* the live watchers start, so the
+        snapshot is populated immediately after a restart.
+        """
         if self._task is not None:
             return  # already running
+        try:
+            self._backfill()
+        except Exception:
+            _log.exception("activity-wall: backfill on start failed")
         self._task = asyncio.create_task(self._fan_in(), name="activity-wall-fan-in")
+
+    # ------------------------------------------------------------------
+    # History replay on restart
+    # ------------------------------------------------------------------
+
+    #: Bound on how much existing state to replay on start.
+    BACKFILL_HISTORY_LINES: int = 200
+    BACKFILL_MAX_FILES: int = 200
+
+    def _backfill(self) -> None:
+        """Emit synthetic events for existing state (bounded, ordered by ts).
+
+        Reads the tail of HISTORY.md, existing findings/*.md, and existing
+        signals/*.md, builds events, sorts them oldest-first by ts, and emits
+        them so they land in the ring (capped to the ring size). Every read is
+        best-effort and never raises out of this method.
+        """
+        events: list[dict] = []
+
+        # HISTORY.md tail
+        history_path = self._mission_dir / "HISTORY.md"
+        try:
+            if history_path.is_file():
+                lines = history_path.read_text(errors="replace").splitlines()
+                for raw in lines[-self.BACKFILL_HISTORY_LINES :]:
+                    stripped = raw.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    ts = _parse_history_ts(stripped) or _now_utc_iso()
+                    events.append(
+                        {
+                            "type": "history",
+                            "lane": None,
+                            "ts": ts,
+                            "summary": stripped[:200],
+                            "payload": {"line": stripped},
+                        }
+                    )
+        except OSError:
+            pass
+
+        # findings/ and signals/ existing files
+        for sub, etype in (("findings", "finding"), ("signals", "signal")):
+            d = self._mission_dir / sub
+            try:
+                if not d.is_dir():
+                    continue
+                paths = [
+                    p for p in d.iterdir() if p.is_file() and p.name.endswith(".md")
+                ]
+            except OSError:
+                continue
+            # Newest files first, capped, so a huge dir doesn't blow the ring.
+            try:
+                paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            except OSError:
+                pass
+            for p in paths[: self.BACKFILL_MAX_FILES]:
+                try:
+                    ev = self._build_file_event(etype, p)
+                    if ev:
+                        events.append(ev)
+                except Exception:
+                    _log.exception("activity-wall: backfill error on %s", p)
+
+        # Oldest-first so the ring's natural newest-at-tail ordering holds; cap
+        # to the ring maxlen so we never emit more than the buffer can hold.
+        events.sort(key=lambda e: e.get("ts") or "")
+        for ev in events[-RING_BUFFER_MAXLEN:]:
+            self._emit(ev)
 
     async def stop(self) -> None:
         """Cancel and await the fan-in task."""
@@ -149,10 +243,17 @@ class ActivityWall:
         """Return the most-recent *limit* events, newest-first.
 
         ``limit`` must be in [1, 500]; callers must clamp before calling.
+
+        Events are sorted by ``ts`` descending. Insertion order is *not* a
+        reliable proxy for chronology: findings/signals use file mtime, history
+        uses the parsed line timestamp, and ``_backfill`` replays existing state
+        before the live watchers attach — so a strict ts sort is required for a
+        correct newest-first view. Events with an unparseable/empty ``ts`` sort
+        last (treated as oldest).
         """
         buf = list(self._ring)
-        # buf is oldest-first; return newest-first slice
-        return buf[-limit:][::-1]
+        buf.sort(key=lambda e: e.get("ts") or "", reverse=True)
+        return buf[:limit]
 
     def subscribe(self) -> asyncio.Queue:
         """Register a new SSE subscriber; return its per-connection queue."""
@@ -260,7 +361,14 @@ class ActivityWall:
             _log.exception("activity-wall: signals source crashed")
 
     def _build_file_event(self, event_type: str, path: Path) -> dict | None:
-        """Build an event dict for a findings/ or signals/ file."""
+        """Build an event dict for a findings/ or signals/ file.
+
+        For ``event_type == "signal"`` the canonical filename grammar
+        (``LANE-<FROM>-to-LANE-<TO>-<topic>-<UTC>.md``) is parsed so the event
+        carries ``from_lane``/``to_lane``/``topic``/``utc`` and a directional
+        summary. Non-canonical / legacy signal files fall back to the plain
+        filename-only payload (and still emit) so nothing is dropped.
+        """
         try:
             mtime = path.stat().st_mtime
             ts = (
@@ -271,6 +379,10 @@ class ActivityWall:
         except OSError:
             ts = _now_utc_iso()
         lane = _parse_lane_from_filename(path.name)
+
+        if event_type == "signal":
+            return self._build_signal_event(path, ts, lane)
+
         return {
             "type": event_type,
             "lane": lane,
@@ -279,6 +391,55 @@ class ActivityWall:
             "payload": {
                 "filename": path.name,
                 "path": str(path),
+            },
+        }
+
+    def _build_signal_event(self, path: Path, ts: str, lane: str | None) -> dict | None:
+        """Build an enriched signal event from a signals/ file.
+
+        Parses the canonical grammar to extract from/to/topic/utc and a body
+        excerpt. Falls back gracefully when the filename is non-canonical.
+        """
+        stem = path.name[:-3] if path.name.endswith(".md") else path.name
+        from_lane = to_lane = topic = utc = ""
+        m = _SIGNAL_FILENAME_RE.match(stem)
+        if m:
+            from_lane = m.group("from_lane")
+            to_lane = m.group("to_lane")
+            topic = m.group("topic")
+            utc = m.group("utc")
+        else:
+            legacy = _SIGNAL_FILENAME_LEGACY_RE.match(stem)
+            if legacy:
+                from_lane = legacy.group("from_lane")
+                to_lane = legacy.group("to_lane")
+                topic = legacy.group("rest")
+                utc = ""
+
+        excerpt = ""
+        try:
+            excerpt = path.read_text(errors="replace")[:200]
+        except OSError:
+            pass
+
+        if from_lane and to_lane:
+            summary = f"{from_lane}→{to_lane}: {topic}"[:200]
+        else:
+            summary = stem[:200]
+
+        return {
+            "type": "signal",
+            "lane": lane,
+            "ts": ts,
+            "summary": summary,
+            "payload": {
+                "filename": path.name,
+                "path": str(path),
+                "from_lane": from_lane,
+                "to_lane": to_lane,
+                "topic": topic,
+                "utc": utc,
+                "excerpt": excerpt,
             },
         }
 

@@ -36,6 +36,7 @@ from pydantic import BaseModel
 
 from .config import AppConfig
 from . import primitives
+from . import signal_parser
 from .queue import queue_client as _qc
 from .mission_config import load_mission_config
 from .mission_config.schema import MissionConfig
@@ -77,7 +78,7 @@ from .harnesses import get_adapter
 
 #: Path prefixes that ALWAYS require a valid mui_session cookie. Any method.
 _V92_GATED_PATH_RE = re.compile(
-    r"^/api/v1/(lane/[^/]+|__fake__|activity-wall|narrative-stream|narrative|approval-rules|lanes/stale|_test)(/|$)"
+    r"^/api/v1/(lane/[^/]+|__fake__|activity-wall|narrative-stream|narrative|approval-rules|lanes/stale|coordination|_test)(/|$)"
 )
 
 #: Exact (method, path) pairs that require a cookie.
@@ -652,10 +653,14 @@ def _detect_stuck_flip_lock(mission_dir: Path) -> dict[str, Any] | None:
 def _list_claim_dirs(mission_dir: Path) -> list[dict[str, Any]]:
     """List immediate subdirs of `claims/` for the FE non-canonical panel.
 
-    Each entry: {dirname, has_done, mtime}. `dirname` is the raw on-disk name
-    (preserving Unicode like `P2-C→B`). The FE's tasks.js cross-references
+    Each entry: {dirname, has_done, mtime, owner}. `dirname` is the raw on-disk
+    name (preserving Unicode like `P2-C→B`). The FE's tasks.js cross-references
     these against TASKS task ids and surfaces any dir without a matching id
     as a "non-canonical claim" — T-FX-FAILMODE-b asserts on this.
+
+    `owner` is the stripped contents of an ``owner.txt`` inside the claim dir
+    when present (forward-compat for owner-stamped claims), else ``None``.
+    Today's claim dirs carry no owner.txt, so ``owner`` is expected to be null.
     """
     claims_dir = mission_dir / "claims"
     if not claims_dir.is_dir():
@@ -668,11 +673,19 @@ def _list_claim_dirs(mission_dir: Path) -> list[dict[str, Any]]:
             mtime = p.stat().st_mtime
         except OSError:
             mtime = 0.0
+        owner: str | None = None
+        owner_path = p / "owner.txt"
+        try:
+            if owner_path.is_file():
+                owner = owner_path.read_text(errors="replace").strip() or None
+        except OSError:
+            owner = None
         out.append(
             {
                 "dirname": p.name,
                 "has_done": (p / "done").is_file(),
                 "mtime": mtime,
+                "owner": owner,
             }
         )
     return out
@@ -876,54 +889,309 @@ def parse_tasks_fe_shape(
     return {"phases": phases, "cross": cross}
 
 
-# Signals — `<mission>/signals/LANE-X-to-LANE-Y-<UTC>.md`.
-# Filename grammar: from-lane, to-lane, UTC stamp. The body is markdown free-
-# form (see live LANE-D-to-LANE-C example). FE consumer ui/static/pages/
-# signals.js:179-180,621-622 reads sig.from_lane, sig.to, sig.utc, sig.kind.
+# Signals — `<mission>/signals/LANE-<FROM>-to-LANE-<TO>-<topic>-<UTC>.md`.
+# Canonical filename grammar (FROZEN WIRE CONTRACT §A): from-lane, to-lane,
+# topic (slug), and a filesystem-safe dash-form UTC anchored at the end. The
+# body is markdown free-form. FE consumer ui/static/pages/signals.js reads
+# sig.from_lane, sig.to, sig.utc, sig.topic, sig.kind.
+#
+# NOTE: a *copy* of the canonical regex lives in activity_wall.py
+# (``_SIGNAL_FILENAME_RE``) to avoid an import cycle (server imports
+# ActivityWall). Keep the two in sync if the grammar changes.
 _SIGNAL_FILENAME_RE = re.compile(
-    r"^(?P<from_lane>LANE-[A-Z0-9]+)-to-(?P<to_lane>LANE-[A-Z0-9]+)-(?P<utc>.+)\.md$"
+    r"^(?P<from_lane>LANE-[A-Z0-9]+)-to-(?P<to_lane>LANE-[A-Z0-9]+)-"
+    r"(?P<topic>.+)-(?P<utc>\d{4}-\d{2}-\d{2}T\d{2}-\d{2}(?:-\d{2})?Z)$"
+)
+# Legacy fallback (no separate utc segment): topic = remainder, utc = "".
+_SIGNAL_FILENAME_LEGACY_RE = re.compile(
+    r"^(?P<from_lane>LANE-[A-Z0-9]+)-to-(?P<to_lane>LANE-[A-Z0-9]+)-(?P<rest>.+)$"
+)
+
+# `[SIG from=X to=Y text="..." cite=...]` token embedded in STATUS.md notes.
+_SIG_TOKEN_RE = re.compile(
+    r'\[SIG\s+from=(\S+)\s+to=(\S+)\s+text="([^"]*)"\s*(?:cite=(\S+))?\s*\]'
 )
 
 
-def parse_signals(mission_dir: Path) -> list[dict[str, Any]]:
-    """Scan `<mission>/signals/*.md`, return list of signal dicts.
+def _defang_sig_text(text: str) -> str:
+    """Neutralize chars that could forge a second `[SIG ...]` token.
 
-    Each dict has: ``filename``, ``from_lane``, ``to_lane``, ``to`` (alias for
-    signals.js), ``utc``, ``kind`` (always "SIGNAL"), ``body`` (truncated
-    file contents up to 4 KB so the SSE payload stays small).
+    The signal endpoints interpolate request-supplied ``text``/``claim`` into a
+    ``[SIG from=X to=Y text="..." cite=...]`` token written into STATUS.md
+    notes, which ``_parse_status_note_signals`` later reads back. Without
+    defanging, a payload containing ``"`` plus ``]``/``[`` could close the
+    token early and inject a SECOND token with an attacker-chosen ``from=``
+    sender label (stored injection). We therefore:
 
-    Files that don't match the LANE-X-to-LANE-Y-UTC grammar are skipped — the
-    operator-only README or stray files won't break the timeline render.
-    Missing signals/ dir returns []. Read failures per-file are tolerated.
+      * replace ``"`` → ``'`` (can't close the quoted text field),
+      * drop ``[`` and ``]`` (can't open/close a token),
+      * collapse CR/LF and runs of whitespace to single spaces (can't break the
+        STATUS.md table row).
+
+    Non-breaking by design — ordinary quoted prose survives (as single-quoted)
+    so ``validate_signal`` and existing callers are unaffected.
     """
-    signals_dir = mission_dir / "signals"
-    if not signals_dir.is_dir():
-        return []
+    cleaned = str(text).replace('"', "'").replace("[", "").replace("]", "")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _slugify(text: str, default: str = "note") -> str:
+    """Return a lowercase ``[a-z0-9-]+`` slug, or *default* if empty.
+
+    Collapses runs of non-alphanumerics to single dashes and trims leading /
+    trailing dashes. Always returns a non-empty slug.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
+    return slug or default
+
+
+def _mtime_iso(path: Path) -> str:
+    """Best-effort ISO-8601 UTC mtime of *path*; "" on failure."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return ""
+    return (
+        datetime.fromtimestamp(mtime, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _signal_sort_key(rec: dict[str, Any]) -> str:
+    """Sort key for newest-first ordering: best-available timestamp string.
+
+    Prefers ``utc`` when present; otherwise falls back to the mtime ISO stamp
+    stashed under ``_mtime`` by ``parse_signals``. Both are ISO-8601-ish and
+    sort lexicographically in chronological order. Empty sorts oldest.
+    """
+    return rec.get("utc") or rec.get("_mtime") or ""
+
+
+def _parse_file_signals(signals_dir: Path) -> list[dict[str, Any]]:
+    """Parse ``signals/*.md`` files into signal dicts (``source:"file"``)."""
     out: list[dict[str, Any]] = []
-    for p in sorted(signals_dir.iterdir()):
-        if not p.is_file() or not p.name.endswith(".md"):
+    try:
+        entries = sorted(signals_dir.iterdir())
+    except OSError:
+        return out
+    for p in entries:
+        try:
+            if not p.is_file() or not p.name.endswith(".md"):
+                continue
+        except OSError:
             continue
-        m = _SIGNAL_FILENAME_RE.match(p.name)
-        if not m:
-            continue
+        stem = p.name[:-3]  # strip ".md"
+        from_lane = to_lane = topic = utc = ""
+        m = _SIGNAL_FILENAME_RE.match(stem)
+        if m:
+            from_lane = m.group("from_lane")
+            to_lane = m.group("to_lane")
+            topic = m.group("topic")
+            utc = m.group("utc")
+        else:
+            legacy = _SIGNAL_FILENAME_LEGACY_RE.match(stem)
+            if not legacy:
+                # Not a signal file (README / stray) — skip silently.
+                continue
+            from_lane = legacy.group("from_lane")
+            to_lane = legacy.group("to_lane")
+            topic = legacy.group("rest")
+            utc = ""
         rec: dict[str, Any] = {
             "filename": p.name,
-            "from_lane": m.group("from_lane"),
-            "to_lane": m.group("to_lane"),
-            "to": m.group("to_lane"),  # signals.js:162 reads sig.to
-            "utc": m.group("utc"),
+            "from_lane": from_lane,
+            "to_lane": to_lane,
+            "to": to_lane,  # signals.js reads sig.to
+            "topic": topic,
+            "utc": utc,
             "kind": "SIGNAL",
+            "source": "file",
+            "_mtime": _mtime_iso(p),
         }
         try:
-            body = p.read_text(errors="replace")
-            # Truncate to keep payload small — operator can hit the file
-            # directly for the full content via /findings-style endpoint
-            # if/when one is added for signals.
-            rec["body"] = body[:4096]
+            rec["body"] = p.read_text(errors="replace")[:4096]
         except OSError:
-            pass
+            rec["body"] = ""
         out.append(rec)
     return out
+
+
+def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
+    """Parse `[SIG ...]` tokens out of STATUS.md notes (``source:"status-note"``)."""
+    status_path = mission_dir / "STATUS.md"
+    out: list[dict[str, Any]] = []
+    try:
+        if not status_path.is_file():
+            return out
+        text = status_path.read_text(errors="replace")
+    except OSError:
+        return out
+    mtime = _mtime_iso(status_path)
+    for idx, m in enumerate(_SIG_TOKEN_RE.finditer(text)):
+        from_raw = (m.group(1) or "").strip()
+        to_raw = (m.group(2) or "").strip()
+        sig_text = (m.group(3) or "").strip()
+        cite = (m.group(4) or "").strip()
+        # Normalize lane labels to LANE-<X> with a non-empty short.
+        from_short = from_raw.upper() or "UNKNOWN"
+        if from_short == "ORCHESTRATOR":
+            from_short = "ORCH"
+        to_short = to_raw.upper() or "ALL"
+        from_lane = (
+            from_short if from_short.startswith("LANE-") else f"LANE-{from_short}"
+        )
+        to_lane = to_short if to_short.startswith("LANE-") else f"LANE-{to_short}"
+        topic = _slugify(" ".join(sig_text.split()[:5]))
+        body = sig_text + (f" (cite: {cite})" if cite else "")
+        out.append(
+            {
+                "filename": f"status-note-{idx}",
+                "from_lane": from_lane,
+                "to_lane": to_lane,
+                "to": to_lane,
+                "topic": topic,
+                "utc": "",
+                "kind": "SIGNAL",
+                "source": "status-note",
+                "body": body[:4096],
+                "_mtime": mtime,
+            }
+        )
+    return out
+
+
+def _parse_finding_signals(mission_dir: Path) -> list[dict[str, Any]]:
+    """Scan ``findings/*.md`` for SIGNAL-class findings (``source:"finding"``)."""
+    findings_dir = mission_dir / "findings"
+    out: list[dict[str, Any]] = []
+    try:
+        if not findings_dir.is_dir():
+            return out
+        entries = sorted(findings_dir.iterdir())
+    except OSError:
+        return out
+    for p in entries:
+        try:
+            if not p.is_file() or not p.name.endswith(".md"):
+                continue
+        except OSError:
+            continue
+        try:
+            fm = signal_parser.parse_signal(p)
+        except Exception:
+            fm = None
+        if not fm:
+            continue
+        # from/to from frontmatter if present, else file lane / "ALL".
+        from_lane = str(
+            fm.get("from-lane")
+            or fm.get("from_lane")
+            or fm.get("agent")
+            or fm.get("lane")
+            or "UNKNOWN"
+        ).strip()
+        to_lane = str(
+            fm.get("to-lane") or fm.get("to_lane") or fm.get("addressed-to") or "ALL"
+        ).strip()
+        topic = _slugify(str(fm.get("signal-type", "note")))
+        body = ""
+        try:
+            raw = p.read_text(errors="replace")
+            # Body is everything after the closing frontmatter `---`.
+            if raw.startswith("---"):
+                end = raw.find("\n---", 3)
+                if end >= 0:
+                    raw = raw[end + 4 :].lstrip("\n")
+            body = raw[:4096]
+        except OSError:
+            pass
+        out.append(
+            {
+                "filename": p.name,
+                "from_lane": from_lane,
+                "to_lane": to_lane,
+                "to": to_lane,
+                "topic": topic,
+                "utc": str(fm.get("utc", "")).strip(),
+                "kind": "SIGNAL",
+                "source": "finding",
+                "body": body,
+                "_mtime": _mtime_iso(p),
+            }
+        )
+    return out
+
+
+def parse_signals(mission_dir: Path) -> list[dict[str, Any]]:
+    """Return signal dicts unified from all THREE comms channels, newest-first.
+
+    The three channels (the "schism" this fixes):
+      * ``source:"file"`` — ``signals/*.md`` files (canonical grammar §A, with a
+        legacy fallback where topic=remainder and utc="").
+      * ``source:"status-note"`` — ``[SIG from=X to=Y text="..." cite=...]``
+        tokens embedded in STATUS.md notes cells.
+      * ``source:"finding"`` — SIGNAL-class findings (``signal-type`` in YAML
+        frontmatter), via ``signal_parser.parse_signal``.
+
+    Each dict has: ``filename``, ``from_lane``, ``to_lane``, ``to`` (alias),
+    ``topic``, ``utc``, ``kind`` (always "SIGNAL"), ``body`` (≤4 KB), and
+    ``source``. Ordered newest-first by best-available timestamp (``utc`` if
+    present, else file mtime).
+
+    Tolerant by design: a missing dir, malformed file, or unreadable token
+    never raises — the offending item is skipped so the timeline still renders.
+    """
+    signals_dir = mission_dir / "signals"
+    combined: list[dict[str, Any]] = []
+    if signals_dir.is_dir():
+        combined.extend(_parse_file_signals(signals_dir))
+    combined.extend(_parse_status_note_signals(mission_dir))
+    combined.extend(_parse_finding_signals(mission_dir))
+    # Newest-first by best-available timestamp.
+    combined.sort(key=_signal_sort_key, reverse=True)
+    # Drop the internal sort-helper key before returning to callers/FE.
+    for rec in combined:
+        rec.pop("_mtime", None)
+    return combined
+
+
+def _write_signal_file(
+    mission_dir: Path,
+    from_lane: str,
+    to_lane: str,
+    topic: str,
+    body_text: str,
+) -> Path:
+    """Write a canonical ``signals/*.md`` file and return its path.
+
+    Composes ``signals/LANE-<FROM>-to-LANE-<TO>-<topic>-<UTC>.md`` per the
+    canonical grammar (§A), creating ``signals/`` if needed. This is the key
+    fix: the channel the UI actually reads now receives writes, and the
+    activity-wall ``signals/`` watcher emits a live event for free.
+
+    ``from_lane`` / ``to_lane`` may be passed with or without the ``LANE-``
+    prefix and are normalized to ``LANE-<SHORT>`` (uppercased short). ``topic``
+    is slugified; empty topic defaults to ``"note"``.
+    """
+
+    def _norm(lane: str) -> str:
+        short = str(lane).strip().upper()
+        if short.startswith("LANE-"):
+            short = short[len("LANE-") :]
+        short = re.sub(r"[^A-Z0-9]", "", short) or "UNKNOWN"
+        return f"LANE-{short}"
+
+    from_norm = _norm(from_lane)
+    to_norm = _norm(to_lane)
+    topic_slug = _slugify(topic)
+    utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%MZ")
+    filename = f"{from_norm}-to-{to_norm}-{topic_slug}-{utc}.md"
+    signals_dir = mission_dir / "signals"
+    signals_dir.mkdir(parents=True, exist_ok=True)
+    path = signals_dir / filename
+    path.write_text(body_text or "", encoding="utf-8")
+    return path
 
 
 def _read_mission_md_fields(mission_dir: Path) -> dict[str, Any]:
@@ -2257,6 +2525,11 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             raise HTTPException(status_code=422, detail=str(e))
         text = str(body.get("text", "")).strip()
         cite = str(body.get("cite") or body.get("evidence") or "").strip()
+        topic = str(body.get("topic") or "").strip() or _slugify(text)
+        # Defang token-breaking chars so a crafted `text` can't forge a second
+        # `[SIG ...]` token with an attacker-chosen sender (stored injection).
+        safe_text = _defang_sig_text(text)
+        safe_cite = _defang_sig_text(cite)
 
         # Append to STATUS.md row's Notes column (CAS-naive minimal impl).
         status_path = ctx.mission_dir / "STATUS.md"
@@ -2265,7 +2538,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         status_text = status_path.read_text()
 
         # Find the target lane's row line; append a SIG token to its Notes cell.
-        sig_token = f' [SIG from=orchestrator to={lane} text="{text}" cite={cite}]'
+        sig_token = (
+            f' [SIG from=orchestrator to={lane} text="{safe_text}" cite={safe_cite}]'
+        )
         # Simplest: append the signal text + cite to the Notes column (last cell).
         lines = status_text.splitlines(keepends=True)
         new_lines = []
@@ -2296,6 +2571,20 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         if not appended:
             raise HTTPException(status_code=404, detail=f"lane {lane!r} row not found")
         status_path.write_text("".join(new_lines))
+
+        # ALSO write a canonical signals/*.md file so the channel the UI reads
+        # actually receives the write (and the activity-wall watcher fires).
+        # from_lane = "ORCH" per the FROZEN WIRE CONTRACT §C. Best-effort: a
+        # signals-write failure must not fail the (already-committed) STATUS write.
+        body_md = safe_text + (f"\n\ncite: {safe_cite}\n" if safe_cite else "\n")
+        try:
+            _write_signal_file(ctx.mission_dir, "ORCH", lane, topic, body_md)
+        except OSError:
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "post_signal: failed to write signals/ file", exc_info=True
+            )
         return JSONResponse(content={"ok": True}, status_code=201)
 
     @app.post("/api/mission/flip")
@@ -2465,6 +2754,11 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         to_lane = str(body.get("to_lane", "")).strip()
         claim = str(body.get("claim", "")).strip()
         evidence = str(body.get("evidence", "")).strip()
+        topic = str(body.get("topic") or "").strip() or _slugify(claim)
+        # Defang token-breaking chars so a crafted `claim` can't forge a second
+        # `[SIG ...]` token with an attacker-chosen sender (stored injection).
+        safe_claim = _defang_sig_text(claim)
+        safe_evidence = _defang_sig_text(evidence)
         if not to_lane:
             raise HTTPException(status_code=422, detail="to_lane required")
         try:
@@ -2479,7 +2773,8 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             raise HTTPException(status_code=404, detail=f"lane {to_lane!r} not found")
 
         sig_token = (
-            f'[SIG from=orchestrator to={to_lane} text="{claim}" cite={evidence}]'
+            f"[SIG from=orchestrator to={to_lane} "
+            f'text="{safe_claim}" cite={safe_evidence}]'
         )
         new_notes = f"{target['notes']} {sig_token}".strip()
         rid = _qc.status_update(
@@ -2489,10 +2784,101 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             new_state=target["state"],
             new_notes=new_notes,
         )
+
+        # ALSO write a canonical signals/*.md file so the channel the UI reads
+        # receives the write directly (the STATUS note above is queued/async;
+        # this gives the operator an immediate, durable signal record and fires
+        # the activity-wall watcher). from_lane="ORCH" per FROZEN WIRE §C.
+        # Best-effort: a signals-write failure must not change the 202 contract.
+        body_md = safe_claim + (
+            f"\n\ncite: {safe_evidence}\n" if safe_evidence else "\n"
+        )
+        try:
+            _write_signal_file(ctx.mission_dir, "ORCH", to_lane, topic, body_md)
+        except OSError:
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "post_v1_signal: failed to write signals/ file", exc_info=True
+            )
         return JSONResponse(
             status_code=202,
             content={"request_id": rid, "intent": "STATUS_UPDATE", "status": "pending"},
             headers={"Location": f"/api/v1/queue/{rid}"},
+        )
+
+    @app.get("/api/v1/coordination")
+    async def get_v1_coordination(request: Request):  # noqa: ANN201
+        """Coordination / handoff / contention view (cookie-gated via §F regex).
+
+        Joins three authoritative sources so the operator can SEE who is doing
+        what, what is claimed, and the most recent cross-lane signals:
+
+        * ``lanes`` — from ``parse_status``; each row mapped to
+          ``{lane, agent, state, working_task, blocked, notes_excerpt}``.
+          ``working_task`` is parsed from a ``working: <id>`` state; ``blocked``
+          is True when the state mentions "blocked".
+        * ``claims`` — from ``_list_claim_dirs``; each enriched with
+          ``task_id`` (canonical dirname), ``working_lane`` (the lane whose
+          working_task matches this claim, else null), and ``contested`` (True
+          when no lane is working on it AND it has no ``done`` marker — an
+          orphaned/contended claim).
+        * ``signals_recent`` — top 20 from the unified ``parse_signals``.
+
+        Grounded entirely in STATUS / on-disk state — no invented data.
+        """
+        status_rows = parse_status(ctx.mission_dir, ctx)
+        lanes: list[dict[str, Any]] = []
+        # Map canonical task_id -> lane short currently working it.
+        working_by_task: dict[str, str] = {}
+        for row in status_rows:
+            state = row.get("state", "") or ""
+            wm = re.search(r"working:\s*(\S+)", state)
+            working_task = wm.group(1) if wm else None
+            blocked = "blocked" in state.lower()
+            if working_task:
+                working_by_task[primitives.canonicalize_task_id(working_task)] = (
+                    row.get("lane", "")
+                )
+            lanes.append(
+                {
+                    "lane": row.get("lane", ""),
+                    "agent": row.get("agent", ""),
+                    "state": state,
+                    "working_task": working_task,
+                    "blocked": blocked,
+                    "notes_excerpt": (row.get("notes", "") or "")[:160],
+                }
+            )
+
+        claims: list[dict[str, Any]] = []
+        for c in _list_claim_dirs(ctx.mission_dir):
+            dirname = c.get("dirname", "")
+            task_id = primitives.canonicalize_task_id(dirname)
+            has_done = bool(c.get("has_done"))
+            working_lane = working_by_task.get(task_id)
+            # Contested: nobody is actively working it and it isn't marked done.
+            contested = working_lane is None and not has_done
+            mtime = c.get("mtime", 0.0)
+            claims.append(
+                {
+                    "task_id": task_id,
+                    "dirname": dirname,
+                    "has_done": has_done,
+                    "mtime": mtime,
+                    "owner": c.get("owner"),
+                    "working_lane": working_lane,
+                    "contested": contested,
+                }
+            )
+
+        signals_recent = parse_signals(ctx.mission_dir)[:20]
+        return JSONResponse(
+            content={
+                "lanes": lanes,
+                "claims": claims,
+                "signals_recent": signals_recent,
+            }
         )
 
     @app.post(API_RECLAIM)

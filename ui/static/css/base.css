@@ -297,6 +297,33 @@ body {
 .lane-chip.TEST      { border-left-color: var(--lane-test);      color: var(--lane-test); }
 .lane-chip.META      { border-left-color: var(--lane-meta);      color: var(--lane-meta); }
 
+/* ---------- Signals source/channel chip ------------------------------------- */
+/* Small chip on each signal row marking which channel carried it
+ * (file / status / finding) so the operator can read the provenance. */
+.signals-source-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-1, 4px);
+  border-radius: var(--r-1, 3px);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: lowercase;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.signals-source--file    { color: var(--accent); }
+.signals-source--status-note { color: var(--sev-minor); }
+.signals-source--finding { color: var(--sev-major); }
+
+/* ---------- Coordination page ----------------------------------------------- */
+.coordination-page .card { padding: var(--sp-3, 12px); }
+.coordination-page [data-testid^="coordination-claim-"][data-contested="true"] {
+  border-radius: var(--r-1, 3px);
+}
+
 /* ---------- Staleness indicators -------------------------------------------- */
 .staleness {
   display: inline-flex;

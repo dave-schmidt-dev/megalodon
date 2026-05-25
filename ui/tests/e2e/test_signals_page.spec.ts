@@ -172,6 +172,23 @@ test.describe('signals page: empty state', () => {
       });
     });
 
+    // The signals page is now ALSO fed live by the activity-wall channel
+    // (Wave 2 FE: signals appear in real time). Earlier tests in this file
+    // wrote signal files into the shared fixture, so the activity-wall would
+    // otherwise re-deliver them and the view would NOT be empty. Stub the
+    // snapshot to an empty event list and refuse the SSE stream so the merged
+    // view is genuinely empty for this assertion.
+    await page.route('**/api/v1/activity-wall/snapshot**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ events: [] }),
+      });
+    });
+    await page.route('**/api/v1/activity-wall', async (route) => {
+      await route.fulfill({ status: 204, contentType: 'text/event-stream', body: '' });
+    });
+
     const token = readUiToken(testInfo);
     await page.goto(`/#t=${token}`);
     await expect(page).toHaveURL('/', { timeout: 10_000 });

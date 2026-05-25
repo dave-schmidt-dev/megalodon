@@ -11,8 +11,17 @@
  * or normalization — two filenames with different whitespace/case are different
  * threads.
  *
- * Data: reads `signals.list` from the store (Signal[]). Snapshot on mount; no
- * polling or SSE within this page.
+ * Data: two channels, merged.
+ *   1. `signals.list` snapshot from the store (Signal[]) — the durable on-disk
+ *      scan hydrated at /state time.
+ *   2. LIVE: an EventSource on `/api/v1/activity-wall` (the working SSE channel).
+ *      Each `type:"signal"` event carries a payload we turn into a signal dict
+ *      and merge into the rendered threads (deduped by filename, newest-first),
+ *      so new signals appear in real time without a reload.
+ *
+ * Each signal dict (server source of truth — prefer these over parsed values):
+ *   {filename, from_lane, to_lane, to, topic, utc, kind, body, source}
+ *   source ∈ "file" | "status-note" | "finding"  → rendered as a channel chip.
  *
  * Contract: export render(root) -> cleanup().
  *
@@ -20,30 +29,43 @@
  */
 
 import { store } from "../js/store.js";
+import { authedFetch, probeReauthOn401, onReauthSuccess } from "../js/auth.js";
 
 // ---- filename parser --------------------------------------------------------
 
 /**
- * Parse a signal filename into `{sender_lane, receiver_lane, topic}`.
+ * Parse a signal filename into `{sender_lane, receiver_lane, topic, utc}`.
  *
- * Grammar: `LANE-(X)-to-LANE-(Y)-<topic>.md`
- * Example: `LANE-A-to-LANE-B-code-review.md` → sender=LANE-A, receiver=LANE-B,
- *           topic=code-review
+ * Canonical grammar (frozen wire contract):
+ *   `LANE-<FROM>-to-LANE-<TO>-<topic>-<UTC>.md`
+ *   UTC := `\d{4}-\d{2}-\d{2}T\d{2}-\d{2}(-\d{2})?Z` (dash-form)
+ * Example: `LANE-A-to-LANE-B-code-review-2026-05-25T18-49Z.md` →
+ *   sender=LANE-A, receiver=LANE-B, topic=code-review, utc=2026-05-25T18-49Z
  *
- * Falls back to `{sender_lane: "?", receiver_lane: "?", topic: filename}` when
- * the pattern does not match.
+ * The UTC stamp is anchored at the END so `topic` (which may itself contain
+ * dashes) is everything between `to-LANE-Y-` and the trailing UTC.
+ *
+ * Legacy fallback (no trailing UTC): `LANE-X-to-LANE-Y-<topic>` → topic=rest,
+ * utc="". Final fallback: `{sender_lane:"?", receiver_lane:"?", topic:base, utc:""}`.
  *
  * @param {string} filename
- * @returns {{ sender_lane: string, receiver_lane: string, topic: string }}
+ * @returns {{ sender_lane: string, receiver_lane: string, topic: string, utc: string }}
  */
 export function parseSignalFilename(filename) {
   const base = String(filename || "").replace(/\.md$/i, "");
-  // LANE-X-to-LANE-Y-<topic>
-  const m = base.match(/^(LANE-[A-Z0-9]+)-to-(LANE-[A-Z0-9]+)-(.+)$/);
+  // Canonical: anchor the UTC at the end; topic is the greedy middle.
+  const m = base.match(
+    /^(LANE-[A-Z0-9]+)-to-(LANE-[A-Z0-9]+)-(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}(?:-\d{2})?Z)$/,
+  );
   if (m) {
-    return { sender_lane: m[1], receiver_lane: m[2], topic: m[3] };
+    return { sender_lane: m[1], receiver_lane: m[2], topic: m[3], utc: m[4] };
   }
-  return { sender_lane: "?", receiver_lane: "?", topic: base || filename || "?" };
+  // Legacy: no trailing UTC stamp.
+  const legacy = base.match(/^(LANE-[A-Z0-9]+)-to-(LANE-[A-Z0-9]+)-(.+)$/);
+  if (legacy) {
+    return { sender_lane: legacy[1], receiver_lane: legacy[2], topic: legacy[3], utc: "" };
+  }
+  return { sender_lane: "?", receiver_lane: "?", topic: base || filename || "?", utc: "" };
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -110,7 +132,34 @@ function markRead(filename) {
 }
 
 /**
- * Group signals by topic (exact string, no normalization).
+ * Resolve a signal's effective display fields. Server-provided fields
+ * (`from_lane`/`to_lane`/`topic`/`utc`) are authoritative; we fall back to
+ * parsing the filename for any that are missing (legacy / activity-wall rows).
+ *
+ * @param {object} sig
+ * @returns {{ sender_lane: string, receiver_lane: string, topic: string, utc: string }}
+ */
+function signalFields(sig) {
+  const parsed = parseSignalFilename(sig.filename || "");
+  return {
+    sender_lane: sig.from_lane || parsed.sender_lane,
+    receiver_lane: sig.to_lane || sig.to || parsed.receiver_lane,
+    topic: sig.topic || parsed.topic,
+    utc: sig.utc || parsed.utc || "",
+  };
+}
+
+/** Human label for a signal's source channel. */
+function sourceLabel(source) {
+  if (source === "status-note") return "status";
+  if (source === "finding") return "finding";
+  if (source === "file") return "file";
+  return source || "file";
+}
+
+/**
+ * Group signals by topic (exact string, no normalization). Prefers the
+ * server-provided `topic` field, falling back to the parsed filename topic.
  *
  * @param {Array<object>} signals
  * @returns {Map<string, Array<object>>} topic → signals[]
@@ -118,10 +167,10 @@ function markRead(filename) {
 function groupByTopic(signals) {
   const map = new Map();
   for (const sig of signals) {
-    const parsed = parseSignalFilename(sig.filename || "");
-    const topic = parsed.topic;
+    const fields = signalFields(sig);
+    const topic = fields.topic;
     if (!map.has(topic)) map.set(topic, []);
-    map.get(topic).push({ ...sig, _parsed: parsed });
+    map.get(topic).push({ ...sig, _parsed: fields });
   }
   return map;
 }
@@ -192,7 +241,7 @@ export async function render(root, _params) {
 
     // Populate drawer title.
     clearChildren(drawerTitle);
-    const parsed = sig._parsed || parseSignalFilename(sig.filename || "");
+    const parsed = sig._parsed || signalFields(sig);
     drawerTitle.appendChild(el("span", {
       cls: "lane-chip",
       text: parsed.sender_lane,
@@ -248,8 +297,34 @@ export async function render(root, _params) {
   const listEl = el("div", { cls: "signals-thread-list", testid: "signals-thread-list" });
   page.appendChild(listEl);
 
+  // Live signals received over the activity-wall SSE, keyed by filename so a
+  // re-delivery (reconnect backfill) or a snapshot overlap dedupes cleanly.
+  /** @type {Map<string, object>} */
+  const liveByFilename = new Map();
+
+  /**
+   * Merge the store snapshot with live SSE signals. Dedupe by filename
+   * (live wins — it is the freshest), newest-first by UTC.
+   * @returns {Array<object>}
+   */
+  function mergedSignals() {
+    const byFilename = new Map();
+    for (const s of store.get("signals.list") || []) {
+      if (s && s.filename) byFilename.set(s.filename, s);
+    }
+    for (const [fn, s] of liveByFilename) byFilename.set(fn, s);
+    const all = [...byFilename.values()];
+    // Newest-first by resolved UTC (dash-form sorts lexicographically by time).
+    all.sort((a, b) => {
+      const ua = signalFields(a).utc;
+      const ub = signalFields(b).utc;
+      return ub.localeCompare(ua);
+    });
+    return all;
+  }
+
   function renderThreads() {
-    const signals = (store.get("signals.list") || []).slice();
+    const signals = mergedSignals();
     clearChildren(listEl);
 
     if (signals.length === 0) {
@@ -288,10 +363,11 @@ export async function render(root, _params) {
 
       for (const sig of topicSignals) {
         const filename = sig.filename || "";
-        const parsed = sig._parsed || parseSignalFilename(filename);
+        const parsed = sig._parsed || signalFields(sig);
         const read = isRead(filename);
-        // Use sig.utc from server (the suffix), or fall back to parsed topic.
-        const age = utcAgo(sig.utc || "");
+        // Prefer the parsed/server UTC for the age display (no more mashed suffix).
+        const utc = parsed.utc;
+        const age = utcAgo(utc);
 
         const row = el("div", {
           cls: `signals-thread__row${read ? " is-read" : ""}`,
@@ -319,8 +395,16 @@ export async function render(root, _params) {
         const dot = el("span", { cls: "text-muted", text: " · " });
         const ageEl = el("span", {
           cls: "mono text-muted signals-row__age",
-          text: age || sig.utc || "",
-          attrs: { title: sig.utc ? `UTC: ${sig.utc}` : "" },
+          text: age || utc || "",
+          attrs: { title: utc ? `UTC: ${utc}` : "" },
+        });
+        // Source/channel chip (file / status / finding) so the operator knows
+        // which channel carried the signal.
+        const srcChip = el("span", {
+          cls: `signals-source-chip signals-source--${sig.source || "file"}`,
+          testid: "signal-source-chip",
+          text: sourceLabel(sig.source),
+          attrs: { title: `channel: ${sourceLabel(sig.source)}`, "data-source": sig.source || "file" },
         });
 
         row.appendChild(sender);
@@ -328,6 +412,8 @@ export async function render(root, _params) {
         row.appendChild(receiver);
         row.appendChild(dot);
         row.appendChild(ageEl);
+        row.appendChild(el("span", { cls: "text-muted", text: " · " }));
+        row.appendChild(srcChip);
 
         row.addEventListener("click", () => openDrawer(sig));
         row.addEventListener("keydown", (e) => {
@@ -348,12 +434,120 @@ export async function render(root, _params) {
   // Initial paint.
   renderThreads();
 
-  // Subscribe to store updates (SSE may push new signals).
+  // Subscribe to store updates (the legacy dead path; harmless if it never fires).
   const unsubSignals = store.subscribe("signals.list", () => renderThreads());
+
+  // ---- LIVE: activity-wall SSE ----------------------------------------------
+  // The working channel. We hydrate from the snapshot, then stream. Each
+  // `type:"signal"` event becomes a signal dict merged into the thread list so
+  // new signals appear in real time without a reload.
+
+  let disposed = false;
+  /** @type {EventSource|null} */
+  let es = null;
+  let reconnectDelay = 500;
+  const RECONNECT_MAX_MS = 30_000;
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let reconnectTimer = null;
+
+  /**
+   * Turn an activity-wall signal event into a signal dict and merge it.
+   * @param {{type?:string, payload?:object}} ev
+   */
+  function ingestEvent(ev) {
+    if (!ev || ev.type !== "signal") return;
+    const p = ev.payload || {};
+    const filename = p.filename || "";
+    if (!filename) return;
+    const sig = {
+      filename,
+      from_lane: p.from_lane || "",
+      to_lane: p.to_lane || "",
+      to: p.to_lane || "",
+      topic: p.topic || "",
+      utc: p.utc || "",
+      kind: "SIGNAL",
+      // The activity-wall payload carries an excerpt, not the full body. Use it
+      // as the drawer body when no fuller body is known.
+      body: p.excerpt || p.body || "",
+      source: p.source || "file",
+    };
+    liveByFilename.set(filename, sig);
+  }
+
+  async function hydrateSnapshot() {
+    try {
+      const resp = await authedFetch("/api/v1/activity-wall/snapshot?limit=200");
+      if (!resp.ok) return;
+      const json = await resp.json();
+      const events = Array.isArray(json.events) ? json.events : [];
+      for (const ev of events) ingestEvent(ev);
+      if (!disposed) renderThreads();
+    } catch (_) { /* tolerate; snapshot is best-effort */ }
+  }
+
+  function _clearReconnectTimer() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function _scheduleReconnect() {
+    if (disposed) return;
+    _clearReconnectTimer();
+    const delay = Math.min(reconnectDelay, RECONNECT_MAX_MS);
+    reconnectTimer = setTimeout(async () => {
+      reconnectTimer = null;
+      if (disposed) return;
+      await hydrateSnapshot();
+      if (disposed) return;
+      startSSE();
+    }, delay);
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
+  }
+
+  function startSSE() {
+    if (disposed) return;
+    es = new EventSource("/api/v1/activity-wall", { withCredentials: true });
+    es.onopen = () => { reconnectDelay = 500; };
+    es.onmessage = (ev) => {
+      try {
+        const event = JSON.parse(ev.data);
+        if (event && event.type === "signal") {
+          ingestEvent(event);
+          if (!disposed) renderThreads();
+        }
+      } catch (_) { /* malformed event — ignore */ }
+    };
+    es.onerror = () => {
+      if (!es || es.readyState !== EventSource.CLOSED) return;
+      try { es.close(); } catch (_) { /* ignore */ }
+      es = null;
+      probeReauthOn401("/api/v1/activity-wall");
+      _scheduleReconnect();
+    };
+  }
+
+  // Bootstrap: snapshot then live stream.
+  hydrateSnapshot().then(() => { if (!disposed) startSSE(); });
+
+  // Force an immediate reconnect after a successful re-auth.
+  const offReauth = onReauthSuccess(() => {
+    if (disposed) return;
+    _clearReconnectTimer();
+    reconnectDelay = 500;
+    if (es) { try { es.close(); } catch (_) { /* ignore */ } es = null; }
+    hydrateSnapshot().then(() => { if (!disposed) startSSE(); });
+  });
 
   // ---- cleanup --------------------------------------------------------------
 
   return function cleanup() {
+    disposed = true;
+    _clearReconnectTimer();
+    try { offReauth(); } catch (_) { /* ignore */ }
+    if (es) { try { es.close(); } catch (_) { /* ignore */ } es = null; }
     try { unsubSignals(); } catch (_) { /* ignore */ }
     window.removeEventListener("keydown", onKeydown);
     clearChildren(root);

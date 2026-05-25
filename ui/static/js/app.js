@@ -1,7 +1,8 @@
 // app.js — Bootstrap and router for the Megalodon orchestrator console.
 //
 // Responsibilities:
-// - History-API based routing for 5 pages (/, /tasks, /findings, /signals, /mission)
+// - History-API based routing (/, /tasks, /findings, /signals, /coordination,
+//   /mission, /approval-rules, /lane/:short)
 // - Mount/unmount page modules into #app-root
 // - Wire up the control-mode toggle (localStorage + body[data-control-mode])
 // - Reflect store.mission.phase onto phase-segment aria-current="step"
@@ -19,6 +20,7 @@ const ROUTES = [
   { pattern: /^\/tasks$/, loader: () => import("../pages/tasks.js"), params: () => ({}) },
   { pattern: /^\/findings$/, loader: () => import("../pages/findings.js"), params: () => ({}) },
   { pattern: /^\/signals$/, loader: () => import("../pages/signals.js"), params: () => ({}) },
+  { pattern: /^\/coordination$/, loader: () => import("../pages/coordination.js"), params: () => ({}) },
   { pattern: /^\/mission$/, loader: () => import("../pages/mission.js"), params: () => ({}) },
   { pattern: /^\/approval-rules$/, loader: () => import("../pages/approval_rules.js"), params: () => ({}) },
 ];

@@ -104,6 +104,89 @@ function formatTime(ts) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Parse a signal filename into from/to/topic when the server payload didn't
+ * enrich it. Canonical grammar (UTC anchored at the end so topic may contain
+ * dashes): `LANE-<FROM>-to-LANE-<TO>-<topic>-<UTC>.md`; legacy: no trailing UTC.
+ *
+ * @param {string} filename
+ * @returns {{ from_lane: string, to_lane: string, topic: string }}
+ */
+function _parseSignalFilename(filename) {
+  const base = String(filename || '').replace(/\.md$/i, '');
+  const m = base.match(
+    /^(LANE-[A-Z0-9]+)-to-(LANE-[A-Z0-9]+)-(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}(?:-\d{2})?Z)$/,
+  );
+  if (m) return { from_lane: m[1], to_lane: m[2], topic: m[3] };
+  const legacy = base.match(/^(LANE-[A-Z0-9]+)-to-(LANE-[A-Z0-9]+)-(.+)$/);
+  if (legacy) return { from_lane: legacy[1], to_lane: legacy[2], topic: legacy[3] };
+  return { from_lane: '', to_lane: '', topic: base };
+}
+
+/**
+ * Build the who→whom·topic content for a signal row. Uses payload.from_lane/
+ * to_lane/topic, falling back to parsing payload.filename.
+ *
+ * @param {{ summary?: string, payload?: object }} event
+ * @returns {HTMLElement}
+ */
+function _buildSignalSummary(event) {
+  const payload = event.payload || {};
+  let from = payload.from_lane || '';
+  let to = payload.to_lane || '';
+  let topic = payload.topic || '';
+  if ((!from || !to) && payload.filename) {
+    const parsed = _parseSignalFilename(payload.filename);
+    from = from || parsed.from_lane;
+    to = to || parsed.to_lane;
+    topic = topic || parsed.topic;
+  }
+
+  const wrap = el('span', {
+    class: 'aw-row__summary aw-row__signal',
+    'data-testid': 'aw-signal-summary',
+    style: [
+      'display: flex;',
+      'align-items: center;',
+      'gap: 4px;',
+      'font-size: 12px;',
+      'color: var(--text, #e7e9ec);',
+      'overflow: hidden;',
+      'white-space: nowrap;',
+      'flex: 1 1 0;',
+      'min-width: 0;',
+    ].join(' '),
+    title: from && to ? `${from} → ${to} · ${topic}` : (event.summary || ''),
+  });
+
+  const chipStyle = [
+    'font-family: var(--font-mono, ui-monospace, monospace);',
+    'font-size: 11px;',
+    'padding: 0 4px;',
+    'border-radius: 3px;',
+    'background: var(--surface-2, #1c1f24);',
+    'border: 1px solid var(--border, #2a2e35);',
+    'color: var(--accent, #6db8ff);',
+    'flex-shrink: 0;',
+  ].join(' ');
+
+  if (from && to) {
+    wrap.appendChild(el('span', { class: 'aw-signal__from', style: chipStyle }, from));
+    wrap.appendChild(el('span', { style: 'flex-shrink: 0; color: var(--text-muted, #9aa0a8);', 'aria-hidden': 'true' }, '→'));
+    wrap.appendChild(el('span', { class: 'aw-signal__to', style: chipStyle }, to));
+    wrap.appendChild(el('span', {
+      class: 'aw-signal__topic',
+      style: 'overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; color: var(--text-muted, #9aa0a8);',
+    }, topic ? `· ${topic}` : ''));
+  } else {
+    // Non-canonical: show whatever summary the server gave us.
+    wrap.appendChild(el('span', {
+      style: 'overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;',
+    }, event.summary || payload.filename || 'signal'));
+  }
+  return wrap;
+}
+
+/**
  * Build a single event row element.
  *
  * @param {{ type: string, lane: string|null, ts: string, summary: string, payload: object }} event
@@ -154,19 +237,24 @@ function buildRow(event, onRowClick) {
     ].join(' '),
   }, type);
 
-  const summarySpan = el('span', {
-    class: 'aw-row__summary',
-    style: [
-      'font-size: 12px;',
-      'color: var(--text, #e7e9ec);',
-      'overflow: hidden;',
-      'text-overflow: ellipsis;',
-      'white-space: nowrap;',
-      'flex: 1 1 0;',
-      'min-width: 0;',
-    ].join(' '),
-    title: summary,
-  }, summary);
+  // For signal rows render sender→receiver · topic (who→whom→subject) instead
+  // of the raw filename/summary. Falls back to parsing payload.filename when the
+  // server didn't enrich the payload (legacy / non-canonical signal files).
+  const summarySpan = (type === 'signal')
+    ? _buildSignalSummary(event)
+    : el('span', {
+        class: 'aw-row__summary',
+        style: [
+          'font-size: 12px;',
+          'color: var(--text, #e7e9ec);',
+          'overflow: hidden;',
+          'text-overflow: ellipsis;',
+          'white-space: nowrap;',
+          'flex: 1 1 0;',
+          'min-width: 0;',
+        ].join(' '),
+        title: summary,
+      }, summary);
 
   const sep = () => el('span', {
     style: 'color: var(--border, #2a2e35); flex-shrink: 0;',
@@ -307,6 +395,25 @@ function buildDrawer() {
     ].join(' '),
   });
 
+  // Signal excerpt/body block — surfaced above the raw JSON so a signal's
+  // human-readable handoff text is the first thing the operator sees.
+  const excerptPre = el('pre', {
+    'data-testid': 'aw-drawer-excerpt',
+    style: [
+      'font-family: var(--font-mono, ui-monospace, monospace);',
+      'font-size: 12px;',
+      'color: var(--text, #e7e9ec);',
+      'white-space: pre-wrap;',
+      'word-break: break-word;',
+      'margin: 0 0 12px;',
+      'padding: 8px 10px;',
+      'background: var(--surface-2, #1c1f24);',
+      'border: 1px solid var(--border, #2a2e35);',
+      'border-radius: 4px;',
+      'display: none;',
+    ].join(' '),
+  });
+
   const payloadPre = el('pre', {
     'data-testid': 'aw-drawer-payload',
     style: [
@@ -319,12 +426,25 @@ function buildDrawer() {
     ].join(' '),
   });
 
+  drawerBody.appendChild(excerptPre);
   drawerBody.appendChild(payloadPre);
   drawer.appendChild(drawerHeader);
   drawer.appendChild(drawerBody);
   overlay.appendChild(drawer);
 
   function openDrawer(/** @type {object} */ event) {
+    // Signal events: surface the excerpt/body text prominently above the JSON.
+    const payload = (event && event.payload) || {};
+    const excerpt = event && event.type === 'signal'
+      ? String(payload.excerpt || payload.body || '')
+      : '';
+    if (excerpt.trim()) {
+      excerptPre.textContent = excerpt;
+      excerptPre.style.display = '';
+    } else {
+      excerptPre.textContent = '';
+      excerptPre.style.display = 'none';
+    }
     payloadPre.textContent = JSON.stringify(event, null, 2);
     overlay.style.display = 'block';
     overlay.style.pointerEvents = 'auto';
@@ -334,6 +454,8 @@ function buildDrawer() {
     overlay.style.display = 'none';
     overlay.style.pointerEvents = 'none';
     payloadPre.textContent = '';
+    excerptPre.textContent = '';
+    excerptPre.style.display = 'none';
   }
 
   closeBtn.addEventListener('click', closeDrawer);
@@ -626,24 +748,49 @@ export function createActivityWall({ container }) {
     if (seenKeys.has(key)) return; // dedupe (bug #5: reconnect backfill overlap)
     seenKeys.add(key);
     const row = buildRow(/** @type {any} */ (event), onRowClick);
+    // Tag the row with its dedupe key so cap-eviction can drop it from seenKeys
+    // in lockstep (bug: seenKeys grew unbounded — a long-lived wall leaked one
+    // key per event forever even though the DOM was capped at MAX_DOM_ROWS).
+    row.dataset.eventKey = key;
     if (!_isRowVisible(row)) {
       row.style.display = 'none';
     }
 
-    const scrollAtTop = listEl.scrollTop === 0;
-
     listEl.insertBefore(row, listEl.firstChild);
 
-    // Enforce cap
-    while (listEl.children.length > MAX_DOM_ROWS) {
-      listEl.removeChild(listEl.lastChild);
-    }
+    _enforceCap();
 
     // Auto-scroll to top only if not paused and user was already at top
     if (!paused) {
       listEl.scrollTop = 0;
     }
     _refreshEmptyState();
+  }
+
+  /**
+   * Enforce MAX_DOM_ROWS, counting/evicting ONLY `.aw-row` elements so the
+   * `emptyEl` placeholder (a non-row child of listEl) does not consume a slot.
+   *
+   * Two bugs fixed here:
+   *  - emptyEl off-by-one: the old loop used `listEl.children.length`, which
+   *    counts emptyEl, so the cap was effectively MAX_DOM_ROWS-1 real rows and
+   *    `removeChild(lastChild)` could even target emptyEl at the boundary.
+   *  - seenKeys leak: each evicted row's key is removed from `seenKeys` so the
+   *    set stays bounded by the number of rows actually in the DOM.
+   */
+  function _enforceCap() {
+    let rows = listEl.querySelectorAll('.aw-row');
+    while (rows.length > MAX_DOM_ROWS) {
+      const oldest = rows[rows.length - 1];
+      const k = oldest.dataset && oldest.dataset.eventKey;
+      if (k) seenKeys.delete(k);
+      listEl.removeChild(oldest);
+      rows = listEl.querySelectorAll('.aw-row');
+    }
+    // Observability hook (also a regression guard): reflect the dedupe-set size
+    // onto the root so a test can assert seenKeys stays bounded by the row cap
+    // rather than leaking one entry per event forever.
+    root.dataset.seenKeys = String(seenKeys.size);
   }
 
   // ---- snapshot hydration -------------------------------------------------
@@ -656,18 +803,24 @@ export function createActivityWall({ container }) {
       if (!resp.ok) return;
       const json = await resp.json();
       const events = Array.isArray(json.events) ? json.events : [];
-      // Snapshot is newest-first. We want to render newest at top.
-      // Append in reverse (oldest first) so the final order is newest at top.
+      // Snapshot is newest-first (server sorts by ts desc). A DocumentFragment
+      // inserts its children IN ORDER, so to land newest at the top of the list
+      // the fragment must itself be newest-first — i.e. iterate the events
+      // forward. (The old reverse-iteration put the OLDEST event at the top,
+      // which only looked correct while every snapshot event shared the same
+      // arrival order as its ts; once history events — old ts — entered the
+      // snapshot they wrongly floated to the top.)
       // Dedupe against rows already present (a reconnect backfill re-fetches the
       // snapshot to recover missed events — bug #5 — and must not duplicate).
       const fragment = document.createDocumentFragment();
       let appended = 0;
-      for (let i = events.length - 1; i >= 0; i--) {
+      for (let i = 0; i < events.length; i++) {
         const event = events[i];
         const key = _eventKey(event);
         if (seenKeys.has(key)) continue;
         seenKeys.add(key);
         const row = buildRow(event, onRowClick);
+        row.dataset.eventKey = key;
         if (!_isRowVisible(row)) {
           row.style.display = 'none';
         }
@@ -677,6 +830,7 @@ export function createActivityWall({ container }) {
       if (appended > 0) {
         // Insert the whole batch at the top in one operation.
         listEl.insertBefore(fragment, listEl.firstChild);
+        _enforceCap();
         // After hydration: scroll to top so newest is visible.
         listEl.scrollTop = 0;
       }
