@@ -10,6 +10,33 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-25 (PM) — Architectural pivot: governor hook (design + warp plan; not yet implemented)
+
+**Why:** §1b's read-only auto-approver was killed by a GPT-5.5 contrarian review
+(`spec-should-be-redone` — parsing the watcher's lossy `command_preview` is unsound:
+`rg --pre`/`fd -x`/`git --ext-diff` exec, `ls Do you want ; rm x` truncation, secret reads).
+
+**Decision (this session):** govern lanes with a Claude Code **`PreToolUse` hook** instead.
+Empirically validated live: a hook `permissionDecision:"allow"` suppresses the prompt with no
+allowlist entry; `"deny"` blocks + feeds the model a reason; the hook sees the **real** command
+string; configured per-project via `--settings`. This kills the stall, keeps lanes **interactive**
+(the subsidized bucket — `claude -p`/programmatic moves to a capped credit on **June 15 2026**),
+operates on ground truth (not scraped previews), and gives one audited control point.
+`permission_watcher.py` is slated for decommission. **Accepted constraint:** hooks are
+Claude-only → claude-only fleet for now; MCP/A2A cross-CLI governance deferred.
+
+**Artifacts:** warp-tier plan + tasks + synthesis in
+`~/Documents/Projects/.plans/megalodon/governor-hook-permission-architecture-2026-05-25*`;
+decision recorded in `docs/v10-readiness-plan.md` (UPDATE 2026-05-25); auto-approver spec marked
+SUPERSEDED; contrarian report in `verifications/2026-05-25-contrarian-readonly-auto-approver.md`.
+Reviewed by 3 parallel reviewers (auditor verified all citations; contrarian + constructive →
+15 findings) + a Kimi pre-mortem (10 failure modes). **Status: planned, not implemented.**
+
+**Regression note:** the two pending test-hygiene fixes (`test_preview.py` resolve(),
+`test_tmux_version` package import) were committed `9845509` at session start (suite green, 1077 passed).
+
+---
+
 ## 2026-05-25 — Campaign: parallel bug-hunt + fix wave to make the fleet actually run
 
 **Why:** the run kept stalling in INIT every time. Ran a 6-agent parallel bug-hunt
