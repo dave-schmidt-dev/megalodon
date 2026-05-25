@@ -45,6 +45,20 @@ hardening incl. discovery ordering + lane-death supervisor + resume, correctness
 sweep, polish). The live v10-prep agents are degraded (permission loops / context
 corruption per META's own diagnosis) and need a clean reset+restart with the fixes.
 
+**Session end (2026-05-25 ~03:30Z):** clean-restarted v10-prep with all fixes —
+flipped to PHASE-PLAN, seeded `P1-A..P1-F`, lanes re-spawned fresh and began
+claiming real tasks (META `working:P1-F`; AUDIT/ARCHITECT/BACKEND claimed). UI
+overflow gone. **Two red flags surfaced and are now the top of the plan
+(`docs/v10-readiness-plan.md` §1b/§1c):** (1) lanes still stall on `find` within
+~5 min — prose constraints don't reliably bind agent tool choice and the hardened
+surface fights the survey tasks; structural fix needed (auto-approver for
+read-only inspection and/or pre-baked manifest), not just the `Glob`/`Grep`
+guidance shipped in `ab2494b`. (2) Zero operator visibility into the narrator — a
+bare online/offline dot with no "why"; needs a narrator-health endpoint + UI chip.
+Also: an orphan `llama-server` holding :8085 across restarts needs a reclaim fix.
+Run stopped for the night (server + applier + tmux + llama all down). Commits:
+`3ff8ef8 d696fd2 141ea41 7f463b3 c4f13aa ab2494b 5f5bd2b` + docs.
+
 ---
 
 ## 2026-05-24 — Bugfix: narrator never comes online (no transcripts → no narrate)

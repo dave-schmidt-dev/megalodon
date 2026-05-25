@@ -6,6 +6,14 @@ A blackboard multi-agent coordination protocol for parallel review, audit, synth
 **Last updated:** 2026-05-17
 **Default cadence:** 3 minutes (configurable in MISSION.md or `.mission-config.yaml`)
 
+> **Current state (2026-05-25):** active work toward a *barely-workable autonomous
+> run* is tracked in **[`docs/v10-readiness-plan.md`](docs/v10-readiness-plan.md)**.
+> A 6-agent bug-hunt + fix wave landed (board, narrator, loop heartbeat, perms,
+> queue, frontend); the fleet now restarts cleanly into PHASE-PLAN with seeded
+> tasks and lanes that claim real work. **Top open risks:** lanes still stall on
+> shell exploration (`find`) in the first minutes (§1b), and there is no operator
+> visibility into the narrator (§1c). See the plan's §8 for tomorrow's sweep.
+
 **v9.1 shipped 2026-05-17:** mission-config-driven lanes/phases/harnesses via `.mission-config.yaml`. Operators define lane names, phase sequences, and per-lane harness bindings in one YAML file; the fleet reads it on every tick. Three reference docs: `docs/v9/v9-1-MISSION-CONFIG.md` (schema + examples), `docs/v9/v9-1-HARNESS-ADAPTERS.md` (Claude/Codex/Gemini must-pass + Copilot/Cursor/Vibe experimental), `docs/v9/v9-1-PREFLIGHT.md` (pre-flight CLI interview REPL). Quick-start: `python -m megalodon_ui.mission_config init` writes the default software-engineering template; `python -m megalodon_ui.preflight "<goal>"` opens a Claude-assisted interview and proposes a config. v9.0 missions with no `.mission-config.yaml` keep working — a back-compatible shape is auto-synthesized. Known limitations: non-Claude lanes are manual-tick in v9.1 (CR-4); watchdog S3 JSONL staleness detector is Claude-only (WR-3). Both deferred to v9.2 (`docs/v9/v9-2-ROADMAP.md`).
 
 ## v9.2 — Tmux headless fleet (SHIPPED 2026-05-18)
