@@ -10,6 +10,20 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-24 — Post-Phase-5 cleanup: deferred items + preflight fix
+
+**Six commits wrapping up Phase 5 and addressing backlog items:**
+
+- **E1 (`1265ff8`):** CI/test gate-parity — CI ruff pinned to `ruff==0.15.14` (matching pre-commit hook, was unpinned) + vulture dead-code CI step added. Local hooks now run lint + dead-code + forked commands identical to CI.
+- **E2 (`5ca9525`) + E3 (`c856f94`):** Board state — `board_state.assemble_lane_rows` derives `state="blocked"` when a lane has `claim_state="blocked"` task (precedence: blocked > claimed > done > open). `board.js` `resolvePill` shows BLOCKED pill alongside pending permission. Staleness modal (`stale_modal.js`) wired: clicking STALE pill opens details. Both engines e2e tested. E3: afterEach reset to leave shared `narrative_cache` clean.
+- **E4 (`bd03072`):** Real bug fix — lane-detail inject Send-debounce never actually held; `updateCount()` ran before `debounceTimer` assigned, so `!debounceTimer` guard re-enabled Send immediately. Fixed by arming timer before `updateCount()`. Fixes `test_lane_detail:130` (previously un-rooted WebKit timing artifact, now passes both chromium + webkit; genuinely exercises 6s debounce).
+- **E5 (`6ca2b1e`):** Narrator-on-Last (OQ1, previously deferred) — board's "Last" column now receives an advisory narrator phrase via separate single-phrase call (`prompt.build_last_messages` + `client.narrate_last`), not a two-phrase emission. "Now" prompt unchanged. `LaneRow.last` gained `phrase` slot (deterministic `desc` fallback when narrate fails). Scheduler narrates Now + Last concurrently. Empirical gemma-e2b quality pending dogfood run.
+- **E6 (`c3a2acb`):** Preflight fix — `lifecycle-scripts` smoke check used `mktemp -d` root (`/var/folders/...` ~50 bytes on macOS), pushing `.fleet/tmux.sock` over 100-byte guard → `PREFLIGHT: FAIL` on every Mac. Now uses short `/tmp/mega-pf.XXXXXX` root. Restored `PREFLIGHT: PASS`.
+
+**Dogfood run scaffolded:** `runs/2026-05-24T22-14Z--v10-prep` ("v10 refactor scoping") queued but not yet launched.
+
+---
+
 ## 2026-05-24 — Persistent sessions + observed dashboard auto-open (Phase 5)
 
 **Problem:** every `python -m megalodon_ui` launch unconditionally opened the dashboard in a new browser tab, so a dev session of restarts piled up dead tabs (an 11-tab incident triggered the `--no-browser` test-server fix earlier the same day). The naive "just stop reopening" was unsafe: sessions were in-memory and the bearer token regenerated each launch, so after a restart an already-open tab was **stale** — its `mui_session` cookie no longer validated and the bearer had been wiped from its URL. Skipping the reopen would have left the operator with a dead tab and no fresh one.
