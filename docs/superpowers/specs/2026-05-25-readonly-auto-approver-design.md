@@ -1,8 +1,18 @@
 # Read-only auto-approver — design
 
+> ⛔ **SUPERSEDED 2026-05-25 — DO NOT IMPLEMENT.** A GPT-5.5 contrarian review
+> returned `spec-should-be-redone`: parsing the watcher's lossy `command_preview`
+> is unsound (code-exec flags like `rg --pre`/`fd -x`/`git diff --ext-diff`;
+> `Do-you-want`-truncation; whitespace-collapse hiding separators; secret reads).
+> Replaced by the **governor hook** (a project `PreToolUse` hook adjudicating on the
+> *real* structured command), empirically validated the same day. See
+> `docs/v10-readiness-plan.md` (UPDATE 2026-05-25),
+> `verifications/2026-05-25-contrarian-readonly-auto-approver.md`, and the warp
+> implementation plan in `~/Documents/Projects/.plans/megalodon/`. Retained for history.
+
 **Date:** 2026-05-25
 **Plan reference:** `docs/v10-readiness-plan.md` §1b option (A)
-**Status:** approved (brainstorm), pending implementation plan
+**Status:** SUPERSEDED (see banner) — was: approved (brainstorm), pending implementation plan
 
 ## Problem
 

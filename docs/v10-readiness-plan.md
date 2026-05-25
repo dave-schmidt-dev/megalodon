@@ -7,6 +7,44 @@ operator babysitting every keystroke.
 
 ---
 
+## UPDATE 2026-05-25 — Architectural pivot: the "governor hook"
+
+A long design session (auto-approver → MCP gateway → PreToolUse hook) reached a
+new direction that supersedes the §1b auto-approver and reframes §9:
+
+- **§1b is now solved structurally by a project-committed `PreToolUse` hook** (the
+  "governor hook"), not by parsing permission-prompt previews. **Empirically
+  validated 2026-05-25** on the live `claude` build: a hook returning
+  `{"hookSpecificOutput":{"permissionDecision":"allow"}}` lets a tool run with **no
+  `--allowedTools` entry and `permission_mode:default`** (kills the stall), a
+  `"deny"` blocks it and feeds the model a reason, the hook receives the **real
+  structured command string** on stdin (not a lossy TUI render), and it is
+  configured per-project in `.claude/settings.json`. `deny` rules remain an
+  un-bypassable backstop.
+- **The §1b auto-approver (option A) is ABANDONED.** A GPT-5.5 contrarian review
+  returned `spec-should-be-redone`: parsing the watcher's lossy, whitespace-
+  collapsed, `Do-you-want`-truncated `command_preview` is unsound (e.g. `rg --pre`,
+  `fd -x`, `git diff --ext-diff` execute code; `ls Do you want ; rm x` hides the
+  suffix). The governor hook eliminates that whole class by operating on real input.
+  See `docs/superpowers/specs/2026-05-25-readonly-auto-approver-design.md` (marked
+  SUPERSEDED) and `verifications/2026-05-25-contrarian-readonly-auto-approver.md`.
+- **Keep the live INTERACTIVE tmux lanes — do NOT pivot to a noninteractive
+  orchestrator.** Verified against Anthropic's Help Center: effective **June 15,
+  2026**, `claude -p`/Agent-SDK ("programmatic") usage draws from a separate,
+  capped monthly credit (Pro $20 / Max5x $100 / Max20x $200, then API rates),
+  while **interactive `claude` REPL sessions keep using the flat subscription**.
+  The live-lane model is the subsidized bucket; a noninteractive rewrite would move
+  all claude work into the metered/capped bucket. The governor hook lets us keep
+  interactive billing AND run unattended.
+- **MCP is reserved for NEW capabilities, not governance.** A future MCP server
+  (megalodon protocol ops; the general A2A `call_agent` cross-CLI delegation tool)
+  is an additive layer — separate from the hook, separate plan.
+- **`permission_watcher.py` is slated for decommission** in favor of the governor
+  hook; the dashboard/narrator move from pane-scraping to reading the hook's
+  structured audit log. (Full implementation is the warp plan dated 2026-05-25.)
+
+---
+
 ## 1. The core reframe
 
 Most "regressions" were never bugs we re-introduced — the run was **never wired to
@@ -19,6 +57,11 @@ the others looked like "two steps back."
 ---
 
 ## 1b. TOP DESIGN RISK (operator flagged) — agents stall on exploration in the first 5 minutes
+
+> **SUPERSEDED 2026-05-25 — see the "governor hook" pivot above.** Option (A)
+> (the preview-parsing auto-approver) is abandoned; this stall is now solved by a
+> project `PreToolUse` hook that allow/denies on the real command. The analysis
+> below is retained for history.
 
 Observed live: within 5 minutes of launch, multiple lanes ran `find … *.py` /
 `find ui/static/` and **stalled on a permission prompt**. This is a *massive red
