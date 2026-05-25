@@ -374,6 +374,45 @@ async def test_failure_ceiling_stops_respawning(
 
 
 # ---------------------------------------------------------------------------
+# 5b. Foreign listener on the port must NOT cause a false-ready (BUG 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_false_ready_when_owned_child_exited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An orphan/foreign listener on the port must not flip readiness True.
+
+    When we own a child but it has exited (failed to bind because a stale
+    llama-server still holds the port), ``/health`` can still PASS against that
+    foreign listener. Readiness must NOT flip True in that case: the health pass
+    is answering a different (possibly stale-model) server. is_ready() must stay
+    False while the owned child is dead, even though healthy() returns True.
+    """
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00")
+    # Every spawned child has already exited (returncode set) — it never bound.
+    _install_spawn_recorder(monkeypatch, exit_immediately=True)
+    # The port is held by a foreign listener, so /health always passes.
+    monkeypatch.setattr(runtime_mod, "healthy", _fake_healthy(always=True))
+
+    rt = NarratorRuntime(model, port=8085, **FAST_KW)
+    await rt.start()
+    try:
+        # Give the supervisor several poll iterations to (incorrectly) flip ready.
+        for _ in range(20):
+            await asyncio.sleep(0)
+        # Owned child is dead but health passes against the foreign listener:
+        # readiness must stay False (no false-ready via a foreign listener).
+        assert rt._owns_child is True
+        assert rt._proc is not None and rt._proc.returncode is not None
+        assert rt.is_ready() is False
+    finally:
+        await rt.stop()
+
+
+# ---------------------------------------------------------------------------
 # 6. Counter resets on success (PM-3)
 # ---------------------------------------------------------------------------
 
@@ -382,20 +421,50 @@ async def test_failure_ceiling_stops_respawning(
 async def test_counter_resets_on_health_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A health pass between owned-child exits resets the respawn count (no premature ceiling)."""
+    """A health pass between owned-child exits resets the respawn count (no premature ceiling).
+
+    Models reality: the child that answers a passing /health is ALIVE. A health
+    FAILURE crashes the current child (returncode set), making the next poll a
+    respawn-worthy failure; the respawn produces a fresh, alive child. With
+    ceiling=3 and the sequence below the consecutive-respawn count never reaches
+    3 because each PASS (against an alive child) resets it (PM-3). Six crashes
+    occur — double the ceiling — yet the supervisor stays alive and reaches
+    readiness. (Readiness is gated on the owned child being alive, so the alive
+    child at PASS time is essential — see the foreign-listener test for BUG 2.)
+    """
     model = tmp_path / "model.gguf"
     model.write_bytes(b"\x00")
-    _install_spawn_recorder(monkeypatch, exit_immediately=True)
 
-    # Each child exits immediately, so every health-fail poll is a respawn-worthy
-    # failure. Sequence with ceiling=3: two fails, a PASS, two fails, a PASS, ...
-    # then PASS forever (tail=True). The consecutive-respawn count never reaches
-    # 3 because each PASS resets it (PM-3). If the counter did NOT reset, the
-    # cumulative third exit (at poll #4) would trip the ceiling and the
-    # supervisor would stop. We accumulate six exits — double the ceiling — yet
-    # the supervisor must stay alive and reach readiness.
+    # Spawn ALIVE children and remember the most recent one so the health gate
+    # can crash it on a False poll.
+    procs: list[FakeProcess] = []
+
+    async def fake_create(*args, **kwargs):
+        p = FakeProcess()  # alive: returncode is None
+        procs.append(p)
+        return p
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create)
+
+    class _CrashingHealthy:
+        """Scripted health gate that crashes the live child on a False result."""
+
+        def __init__(self, seq: list[bool], *, tail: bool) -> None:
+            self._seq = list(seq)
+            self._tail = tail
+            self.calls = 0
+
+        async def __call__(self, client, base_url, *, timeout_s=1.0):
+            self.calls += 1
+            result = self._seq.pop(0) if self._seq else self._tail
+            if not result and procs and procs[-1].returncode is None:
+                # Simulate the serving child crashing: next poll sees it dead.
+                procs[-1].returncode = 1
+                procs[-1]._wait_event.set()
+            return result
+
     seq = [False, False, True, False, False, True, False, False, True]
-    gate = _SequencedHealthy(seq, tail=True)
+    gate = _CrashingHealthy(seq, tail=True)
     monkeypatch.setattr(runtime_mod, "healthy", gate)
 
     rt = NarratorRuntime(model, port=8085, max_consecutive_failures=3, **FAST_KW)
@@ -403,8 +472,9 @@ async def test_counter_resets_on_health_pass(
     try:
         # Let the supervisor work through the whole scripted sequence.
         assert await _await_until(lambda: gate.calls >= len(seq))
-        # Six exits occurred — double the ceiling — yet the supervisor never
-        # tripped (resets kept the consecutive count below 3) and reached ready.
+        # Six crashes occurred — double the ceiling — yet the supervisor never
+        # tripped (resets kept the consecutive count below 3) and reached ready
+        # (the final PASS lands on an alive child).
         assert rt.supervisor_done() is False
         assert await _await_until(rt.is_ready)
     finally:

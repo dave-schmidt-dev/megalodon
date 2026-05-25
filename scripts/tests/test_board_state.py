@@ -953,3 +953,31 @@ class TestBuildLaneRows:
         assert rows["A"].state == "claimed"
         assert rows["A"].now is not None
         assert rows["A"].now["task_id"] == "P1-B"
+
+    @pytest.mark.asyncio
+    async def test_non_utf8_tasks_md_does_not_crash(self, tmp_path: Path) -> None:
+        """A TASKS.md with a non-UTF8 byte must not raise (BUG 1).
+
+        ``_capture_doc_order`` is called unguarded from ``build_lane_rows`` and
+        the exception propagates through the narrator tick → scheduler loop,
+        killing the narrator permanently. Reading with errors='replace' inside a
+        try/except must keep build_lane_rows returning rows.
+        """
+        mission_dir = tmp_path / "mission"
+        mission_dir.mkdir()
+        # Write a raw non-UTF8 byte (0xFF is invalid as a UTF-8 start byte).
+        (mission_dir / "TASKS.md").write_bytes(
+            b"## PHASE-PLAN\n- [ ] [A] `T-1` \xff bad byte\n"
+        )
+
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        sessions = {"A": _session(session_id=None, cwd=mission_dir)}
+        lane_cfgs = [_lane_cfg("AUDIT", "A", "Audit role", cli="claude")]
+
+        def adapter_resolver(cli: str) -> MagicMock:
+            return MagicMock()
+
+        rows = await build_lane_rows(
+            mission_dir, tasks_fe, sessions, adapter_resolver, lane_cfgs
+        )
+        assert "A" in rows

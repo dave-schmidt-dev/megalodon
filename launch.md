@@ -147,15 +147,15 @@ frontmatter (README.md §3; `lineage: v8` mandatory).
 
 ---
 
-## Step 5 — Start your heartbeat loop
+## Step 5 — Your heartbeat loop (already armed at spawn)
 
-After you have claimed P1 and begun work, run:
-
-```
-/loop 5m
-```
-
-This re-invokes you every 5 minutes. (Updated from 3m in v8.x: 3m caused excess CAS contention churn; 5m gives ~40% fewer simultaneous tick collisions while keeping RULE-6 15-min stale threshold sane at 3 ticks.) On each tick:
+Your recurring heartbeat is **already running**: the spawn bootstrap armed
+`/loop 5m` for you, so this prompt re-fires automatically every 5 minutes. Do
+**NOT** run `/loop` again — a second arm would nest loops. Do not treat any
+single tick as "the only iteration"; the loop continues until the mission
+completes or the operator stops it. (5m, updated from 3m in v8.x: 3m caused
+excess CAS contention churn; 5m gives ~40% fewer simultaneous tick collisions
+while keeping RULE-6 15-min stale threshold sane at 3 ticks.) On each tick:
 
 1. **Heartbeat**: update your row's `Last UTC` in STATUS.md (Rule 1). Even if you have nothing else to report. **(V9 A5)** Also update your terminal title so operator-side `tmux`/iTerm tab labels reflect lane/phase:
 

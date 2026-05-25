@@ -332,8 +332,25 @@ class NarratorRuntime:
                 ok = await healthy(
                     self.client, self.base_url, timeout_s=self._health_timeout_s
                 )
+
+                # When we own a child, a health pass is only trustworthy if that
+                # OWNED child is the one answering. If the owned child has exited
+                # (e.g. it failed to bind because a stale/orphan llama-server
+                # still holds the port), /health may pass against that FOREIGN
+                # listener — possibly a different/stale model. Gate readiness on
+                # the owned child being alive so a foreign listener can never
+                # produce a false-ready (BUG 2).
+                owned_child_exited = self._owns_child and (
+                    self._proc is None or self._proc.returncode is not None
+                )
+
                 if ok:
-                    self._ready = True
+                    # Readiness requires our owned child to be alive: a health
+                    # pass while the owned child has exited is answering a foreign
+                    # listener, so never report ready against it (BUG 2). The
+                    # respawn budget still clears on any health pass (PM-3) — a
+                    # served port means the supervisor is not in a respawn-storm.
+                    self._ready = not owned_child_exited
                     consecutive_respawns = 0  # PM-3: a success clears the budget
                     await asyncio.sleep(self._poll_interval_s)
                     continue

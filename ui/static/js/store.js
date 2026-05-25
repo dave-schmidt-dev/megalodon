@@ -235,13 +235,20 @@ export class Store {
     const utc = payload.utc ?? payload.id ?? "";
     const dedupeKey = `${eventType}|${utc}`;
     if (utc && this._appliedEvents.has(dedupeKey)) return;
-    if (utc) this._appliedEvents.add(dedupeKey);
 
     switch (eventType) {
       case SSE_STATUS_CHANGE: {
         const row = payload.row;
+        // BUG 1 guard: a status-change with no usable row (or no lane key on
+        // the row) must NOT push `undefined`/garbage into status.lanes. Doing
+        // so makes the NEXT event's findIndex dereference an undefined element
+        // and throw (TypeError: Cannot read properties of undefined). Skip the
+        // mutation entirely for malformed payloads.
+        const laneKey = (row && row.lane) ?? payload.lane;
+        if (!row || !laneKey) break;
         const lanes = (this.get("status.lanes") || []).slice();
-        const idx = lanes.findIndex((l) => l.lane === payload.lane);
+        // Harden findIndex against any pre-existing undefined/null elements.
+        const idx = lanes.findIndex((l) => l && l.lane === laneKey);
         if (idx >= 0) lanes[idx] = row; else lanes.push(row);
         this.set("status", { lanes, lastUtc: utc || this.get("status.lastUtc") || "" });
         break;
@@ -341,6 +348,11 @@ export class Store {
         // Unknown event: no-op (forward-compatible).
         break;
     }
+
+    // BUG 1: mark the event applied only AFTER the switch completes without
+    // throwing. If a handler threw, we never reach here, so a retry/replay of
+    // the same (type, utc) can still be processed once the payload is sane.
+    if (utc) this._appliedEvents.add(dedupeKey);
 
     if (utc) this.set("ui.lastEventId", String(utc));
   }

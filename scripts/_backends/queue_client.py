@@ -97,19 +97,28 @@ def _wait_or_drain(mission: Path, rid: str, timeout: float = 10.0) -> str:
     """Wait for rid to land; if no live applier, drive one in-process."""
     if _applier_alive(mission):
         return _qc.wait_until_applied(mission, rid, timeout_seconds=timeout)
-    # Fallback: drive a local applier to drain this one request.
+    # Fallback: drive a local applier to drain this one request. BUG 2 fix:
+    # acquire the singleton lock first so two processes can't drain
+    # concurrently (double-apply window). If we can't acquire it, another
+    # applier owns draining — skip the drain (non-fatal) and just poll.
     applier = Applier(mission)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        applier.drain_once()
-        applied = mission / "queue" / "applied" / f"{rid}.json"
-        rejected = mission / "queue" / "rejected" / f"{rid}.json"
-        if applied.exists():
-            return "applied"
-        if rejected.exists():
-            return "rejected"
-        time.sleep(0.05)
-    return "timeout"
+    acquired = applier.acquire_singleton()
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if acquired:
+                applier.drain_once()
+            applied = mission / "queue" / "applied" / f"{rid}.json"
+            rejected = mission / "queue" / "rejected" / f"{rid}.json"
+            if applied.exists():
+                return "applied"
+            if rejected.exists():
+                return "rejected"
+            time.sleep(0.05)
+        return "timeout"
+    finally:
+        if acquired:
+            applier.release_singleton()
 
 
 def _rejection_reason(mission: Path, rid: str) -> str:
@@ -300,18 +309,10 @@ def history_append(
         severity=severity,
         notes=notes,
     )
-    rid = _qc.history_append(
-        mission,
-        agent,
-        lane_short,
-        task_id,
-        finding_path,
-        severity,
-        utc=utc,
-    )
-    # We need the raw line that the applier writes to differ from what the
-    # M3 direct backend writes. Override via direct submit with our custom
-    # line so it matches M3 shape.
+    # Submit the single canonical (notes-inclusive) line. BUG 1 fix: a prior
+    # `_qc.history_append(...)` submit here enqueued a SECOND HISTORY_APPEND
+    # intent (without notes), so a single close produced two HISTORY.md rows.
+    # The submit below is the only intent we want.
     rid = _qc.submit(
         mission,
         agent,

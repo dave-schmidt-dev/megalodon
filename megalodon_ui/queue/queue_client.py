@@ -369,6 +369,22 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("claim-done")
     sp.add_argument("--task", required=True)
 
+    # Q1 intents — agent-reachable task/STATUS creation + event corrections.
+    sp = sub.add_parser("tasks-inject")
+    sp.add_argument("--task", required=True, help="new task_id (must be unique)")
+    sp.add_argument("--task-lane", required=True, help="lane code for the new task")
+    sp.add_argument("--description", required=True)
+    sp.add_argument("--bracket", default="[ ]")
+    sp.add_argument("--after-task", default=None, help="insert after this task_id")
+
+    sp = sub.add_parser("status-row-insert")
+    sp.add_argument("--state", default="idle")
+    sp.add_argument("--utc", default=None)
+    sp.add_argument("--notes", default="")
+
+    sp = sub.add_parser("event-correction")
+    sp.add_argument("--line", required=True, help="must contain 'CORRECTION by '")
+
     args = p.parse_args(argv)
     common = dict(mission_dir=args.mission_dir, agent=args.agent, lane=args.lane)
 
@@ -393,6 +409,28 @@ def main(argv: list[str] | None = None) -> int:
         rid = claim_dir_create(**common, task_id=args.task)
     elif args.cmd == "claim-done":
         rid = claim_dir_done(**common, task_id=args.task)
+    elif args.cmd == "tasks-inject":
+        rid = tasks_inject(
+            args.mission_dir,
+            args.agent,
+            args.lane,
+            task_id=args.task,
+            lane=args.task_lane,
+            description=args.description,
+            bracket=args.bracket,
+            after_task_id=args.after_task,
+        )
+    elif args.cmd == "status-row-insert":
+        rid = status_row_insert(
+            args.mission_dir,
+            args.agent,
+            args.lane,
+            initial_state=args.state,
+            initial_utc=args.utc,
+            initial_notes=args.notes,
+        )
+    elif args.cmd == "event-correction":
+        rid = mission_event_correction(**common, line=args.line)
     else:
         p.print_help()
         return 2

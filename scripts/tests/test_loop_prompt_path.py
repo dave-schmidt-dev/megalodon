@@ -13,6 +13,7 @@ placeholder and the bootstrap never fires.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from megalodon_ui.mission_config.default_v9_3_live_repl import synthesize
@@ -56,6 +57,28 @@ def test_loop_prompt_under_paste_ceiling(queue_mission: Path) -> None:
         assert n <= _PASTE_CEILING, (
             f"{lane.name}: prompt is {n} chars (> {_PASTE_CEILING}); send-keys "
             f"will buffer it as a paste and the bootstrap will not fire"
+        )
+
+
+def test_loop_prompt_is_recurring_heartbeat(queue_mission: Path) -> None:
+    """Bootstrap must arm a RECURRING fixed-interval loop, not a one-shot tick.
+
+    Root cause this guards (v10 dogfood): the prompt said "...and run one
+    iteration." with a bare ``/loop`` (no interval). Lanes read that as "do one
+    tick and stop" — one agent's transcript literally said "Since you asked for
+    one iteration, I did not arm the /loop 5m heartbeat." The fix is an explicit
+    interval (``/loop <N>m``) so the harness re-fires the tick on a cadence the
+    agent cannot decline, and dropping the "one iteration" stop-language.
+    """
+    config = synthesize(queue_mission)
+    for lane in config.lanes:
+        prompt = lane.initial_prompt or ""
+        assert "one iteration" not in prompt.lower(), (
+            f"{lane.name}: 'one iteration' makes the lane stop after one tick: {prompt!r}"
+        )
+        assert re.search(r"/loop\s+\d+m\b", prompt), (
+            f"{lane.name}: prompt must arm a fixed-interval recurring loop "
+            f"(e.g. '/loop 5m'), got: {prompt!r}"
         )
 
 

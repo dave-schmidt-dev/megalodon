@@ -28,6 +28,43 @@ def _drain_until(applier, predicate, timeout=5.0):
     return False
 
 
+# ---- BUG 2: fallback drain must respect the singleton lock ----
+
+
+def test_fallback_does_not_drain_when_singleton_held(queue_mission):
+    """BUG 2 regression: the in-process fallback in `_backends.queue_client.
+    _wait_or_drain` must NOT drain the queue while the applier singleton lock
+    is held by someone else (the live daemon owns draining)."""
+    from scripts._backends import queue_client as backend
+
+    # Hold the singleton as if another applier owned it, but with a STALE
+    # heartbeat so `_applier_alive` is False — this is the exact concurrency
+    # window the bug exposes: the fallback path runs, yet the lock is held.
+    holder = Applier(queue_mission)
+    assert holder.acquire_singleton() is True
+    hb = holder.lock_dir / "heartbeat.txt"
+    old = time.time() - 3600
+    os.utime(hb, (old, old))
+    assert backend._applier_alive(queue_mission) is False
+
+    # Submit a request, then ask the fallback to wait for it. The old code
+    # would unconditionally drain (double-apply window). The fix must skip
+    # draining while the singleton lock is held by someone else.
+    rid = queue_client.tasks_bracket(
+        queue_mission, "agent-aaaa", "AUDIT", "Q-FIXTURE-1", "[ ]"
+    )
+    try:
+        status = backend._wait_or_drain(queue_mission, rid, timeout=0.5)
+    finally:
+        holder.release_singleton()
+
+    # Request must remain unapplied (still pending) — the fallback refused to
+    # drain because the lock was held.
+    assert status != "applied"
+    assert (queue_mission / "queue" / "pending" / f"{rid}.json").exists()
+    assert not (queue_mission / "queue" / "applied" / f"{rid}.json").exists()
+
+
 # ---- core happy paths (original 6 intents) ----
 
 

@@ -48,7 +48,14 @@ from .schema import (
 # This is the only instruction delivered *before* the first read of launch.md,
 # so it must itself prevent that orienting probe (launch.md's own no-explore
 # rule can't help until after the file it forbids exploring for has been read).
-_LOOP_PROMPT_TEMPLATE = "/loop Read ./launch-{name}.md and run one iteration."
+#
+# The explicit ``5m`` interval is load-bearing: a bare ``/loop`` (no interval)
+# plus the old "run one iteration" wording made lanes do ONE tick and stop — one
+# dogfood transcript read it as "the operator wants a single iteration" and
+# refused to arm a recurring heartbeat. ``/loop 5m`` makes the harness re-fire
+# the tick every 5 minutes regardless of the agent's interpretation; "run one
+# tick" scopes each fire to a single protocol tick. Keep an explicit interval.
+_LOOP_PROMPT_TEMPLATE = "/loop 5m Read ./launch-{name}.md and run one tick."
 
 
 def _initial_prompt(name: str) -> str:

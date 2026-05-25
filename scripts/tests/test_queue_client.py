@@ -286,6 +286,85 @@ def test_wait_until_applied_detects_rejected(queue_mission):
     )
 
 
+# ---- BUG 1: history_append must not double-submit ----
+
+
+def test_backend_history_append_single_pending_intent(mission_dir):
+    """BUG 1 regression: backend.history_append must enqueue exactly ONE
+    HISTORY_APPEND intent (not two), so a single close yields a single row."""
+    from scripts._backends import queue_client as backend
+
+    result = backend.history_append(
+        mission_dir,
+        agent="agent-abcd",
+        lane_short="A",
+        task_id="TEST-1",
+        finding_path="findings/f.md",
+        severity="DELTA",
+        notes="single row",
+        utc="2026-05-16T22:30:00Z",
+    )
+    assert result["ok"] is True, result
+
+    # Exactly one HISTORY data row landed (ignore header / format / separator
+    # lines that don't begin with an ISO-8601 UTC timestamp).
+    text = (mission_dir / "HISTORY.md").read_text(encoding="utf-8")
+    data_rows = [
+        ln
+        for ln in text.splitlines()
+        if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \|", ln)
+    ]
+    assert len(data_rows) == 1, data_rows
+    assert "single row" in data_rows[0]
+
+
+# ---- BUG 3: tasks-inject CLI subcommand wiring ----
+
+
+def test_main_tasks_inject_enqueues_and_applies(queue_mission):
+    """BUG 3 regression: queue_client.main(['tasks-inject', ...]) must enqueue
+    a TASKS_INJECT intent that the applier applies to TASKS.md."""
+    from megalodon_ui.queue.applier import Applier
+
+    rc = queue_client.main(
+        [
+            "--mission-dir",
+            str(queue_mission),
+            "--agent",
+            "agent-abcd",
+            "--lane",
+            "META",
+            "tasks-inject",
+            "--task",
+            "INJECTED-1",
+            "--task-lane",
+            "C",
+            "--description",
+            "newly injected task",
+        ]
+    )
+    assert rc == 0
+
+    pend = list((queue_mission / "queue" / "pending").glob("*.json"))
+    assert len(pend) == 1, pend
+    req = json.loads(pend[0].read_text())
+    assert req["intent"] == "TASKS_INJECT"
+    assert req["payload"]["task_id"] == "INJECTED-1"
+    assert req["payload"]["lane"] == "C"
+
+    applier = Applier(queue_mission)
+    rid = req["request_id"]
+    deadline = __import__("time").time() + 5.0
+    while __import__("time").time() < deadline:
+        applier.drain_once()
+        if (queue_mission / "queue" / "applied" / f"{rid}.json").exists():
+            break
+        __import__("time").sleep(0.05)
+    tasks = (queue_mission / "TASKS.md").read_text(encoding="utf-8")
+    assert "INJECTED-1" in tasks
+    assert "newly injected task" in tasks
+
+
 def test_main_callable_status_forwards(tmp_path, monkeypatch):
     """queue_client.main(argv) is importable and forwards to status_update."""
     import megalodon_ui.queue.queue_client as qc

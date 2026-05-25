@@ -12,7 +12,7 @@ lanes:
   cadence_seconds: 300
   tick_offset_seconds: 0
   live_repl: true
-  initial_prompt: /loop Read ./launch-AUDIT.md and run one iteration.
+  initial_prompt: /loop 5m Read ./launch-AUDIT.md and run one tick.
 - name: ARCHITECT
   short: B
   role: "ARCHITECT — design specs, ADRs, integration shapes"
@@ -20,7 +20,7 @@ lanes:
   cadence_seconds: 300
   tick_offset_seconds: 0
   live_repl: true
-  initial_prompt: /loop Read ./launch-ARCHITECT.md and run one iteration.
+  initial_prompt: /loop 5m Read ./launch-ARCHITECT.md and run one tick.
 - name: BACKEND
   short: C
   role: "BACKEND — implement server/primitives/adapters in megalodon_ui/"
@@ -28,7 +28,7 @@ lanes:
   cadence_seconds: 300
   tick_offset_seconds: 0
   live_repl: true
-  initial_prompt: /loop Read ./launch-BACKEND.md and run one iteration.
+  initial_prompt: /loop 5m Read ./launch-BACKEND.md and run one tick.
 - name: FRONTEND
   short: D
   role: "FRONTEND — implement UI in ui/static/, wire dashboard forms"
@@ -36,7 +36,7 @@ lanes:
   cadence_seconds: 300
   tick_offset_seconds: 0
   live_repl: true
-  initial_prompt: /loop Read ./launch-FRONTEND.md and run one iteration.
+  initial_prompt: /loop 5m Read ./launch-FRONTEND.md and run one tick.
 - name: TEST
   short: E
   role: "TEST — write/run pytest + playwright suites, eliminate skipped/xfail"
@@ -44,7 +44,7 @@ lanes:
   cadence_seconds: 300
   tick_offset_seconds: 0
   live_repl: true
-  initial_prompt: /loop Read ./launch-TEST.md and run one iteration.
+  initial_prompt: /loop 5m Read ./launch-TEST.md and run one tick.
 - name: META
   short: F
   role: "META — observe agent behavior, track tick activity, mid/final reports"
@@ -52,7 +52,7 @@ lanes:
   cadence_seconds: 300
   tick_offset_seconds: 0
   live_repl: true
-  initial_prompt: /loop Read ./launch-META.md and run one iteration.
+  initial_prompt: /loop 5m Read ./launch-META.md and run one tick.
 phases: [INIT, PHASE-PLAN, PHASE-CHALLENGE, PHASE-BUILD, PHASE-VERIFY, PHASE-RUN, PHASE-HEAL, PHASE-OPERATOR-ACCEPTANCE, DRAINING, COMPLETE]
 task_id_patterns:
   patterns:

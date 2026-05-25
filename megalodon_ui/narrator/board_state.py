@@ -382,9 +382,16 @@ def _capture_doc_order(mission_dir: Path) -> dict[str, int]:
     path = mission_dir / "TASKS.md"
     if not path.is_file():
         return {}
+    # Defensive read (mirrors digest.parse_session): a non-UTF8 byte or a
+    # transient OSError must NOT crash the narrator tick → scheduler loop, which
+    # would take the narrator permanently dark. Degrade to "no doc order".
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
     order: dict[str, int] = {}
     idx = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         # Look for backtick-wrapped task IDs: `TASK-ID`
         stripped = line.strip()
         if stripped.startswith("-") and "`" in stripped:

@@ -26,6 +26,17 @@ let es = null;
 let reconnectDelay = RECONNECT_INITIAL_MS;
 let heartbeatTimer = null;
 let connecting = false;
+// BUG 3: single in-flight reconnect handle. Tracking the pending setTimeout
+// lets reconnect()/connect() cancel a scheduled reconnect so a visibilitychange
+// (or watchdog) and a queued backoff can't both fire connect() concurrently.
+let reconnectTimer = null;
+
+function clearReconnectTimer() {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
 
 function setConnectionStatus(status) {
   store.set("ui.connectionStatus", status);
@@ -90,6 +101,11 @@ async function handleLagging(payload) {
   // BACKEND Δ6: payload has { reason, resync_urls: string[], since_utc }
   const urls = payload.resync_urls || [];
   setConnectionStatus("lagging");
+  // BUG 2: track whether ANY resync fetch actually succeeded. If every resync
+  // failed (network error / non-2xx), the local state is still stale, so we
+  // must NOT flip back to "connected" — that would mask the problem and stop
+  // the watchdog/backoff from recovering. Leave the status at "lagging".
+  let anySucceeded = false;
   for (const url of urls) {
     try {
       const res = await fetch(url, { credentials: "same-origin" });
@@ -106,11 +122,16 @@ async function handleLagging(payload) {
       else if (sliceName === "phase") {
         store.set("mission.phase", slice.current);
       }
+      anySucceeded = true;
     } catch (err) {
       console.error(`[sse] resync ${url} failed:`, err);
     }
   }
-  setConnectionStatus("connected");
+  // Only declare recovery if at least one slice resynced (or there was nothing
+  // to resync). If we had URLs and every one failed, stay "lagging".
+  if (anySucceeded || urls.length === 0) {
+    setConnectionStatus("connected");
+  }
 }
 
 function attachEventHandlers(source) {
@@ -135,6 +156,9 @@ function attachEventHandlers(source) {
 }
 
 function reconnect() {
+  // Cancel any pending scheduled reconnect so we don't end up with two
+  // concurrent connect() runs (BUG 3).
+  clearReconnectTimer();
   if (es) {
     try { es.close(); } catch { /* ignore */ }
     es = null;
@@ -144,14 +168,22 @@ function reconnect() {
 }
 
 async function connect() {
+  // BUG 3: a single guard for the whole connect lifecycle. `connecting` is now
+  // held until the EventSource resolves (onopen) or fails (onerror/catch) —
+  // NOT released synchronously while `es` is still in CONNECTING state. That
+  // close the window where onerror→scheduleReconnect and
+  // visibilitychange→reconnect could both spawn a second EventSource.
   if (connecting) return;
   connecting = true;
+  // Any pending backoff is now superseded by this attempt.
+  clearReconnectTimer();
   setConnectionStatus("connecting");
   try {
     await hydrateInitialState();
     es = new EventSource(API_EVENTS);
     attachEventHandlers(es);
     es.onopen = () => {
+      connecting = false;
       reconnectDelay = RECONNECT_INITIAL_MS;
       setConnectionStatus("connected");
       armHeartbeatWatchdog();
@@ -159,6 +191,7 @@ async function connect() {
     es.onerror = () => {
       // EventSource auto-reconnects, but only if the server didn't return 4xx.
       // To be safe (proxy weirdness), close and back-off ourselves.
+      connecting = false;
       setConnectionStatus("disconnected");
       clearHeartbeatTimer();
       try { es.close(); } catch { /* ignore */ }
@@ -166,16 +199,23 @@ async function connect() {
       scheduleReconnect();
     };
   } catch (err) {
+    // hydrate / EventSource construction failed before handlers were wired:
+    // release the guard here and back off.
     console.error("[sse] connect failed:", err);
-    scheduleReconnect();
-  } finally {
     connecting = false;
+    scheduleReconnect();
   }
 }
 
 function scheduleReconnect() {
+  // Single in-flight timer: clear any prior one so overlapping triggers
+  // (onerror + watchdog) collapse to one pending reconnect (BUG 3).
+  clearReconnectTimer();
   const delay = Math.min(reconnectDelay, RECONNECT_MAX_MS);
-  setTimeout(connect, delay);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
   reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
 }
 
