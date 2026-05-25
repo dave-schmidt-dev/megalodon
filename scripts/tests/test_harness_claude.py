@@ -267,6 +267,151 @@ def test_build_argv_stream_json_when_supported():
 
 
 # ---------------------------------------------------------------------------
+# Governor --settings wiring (Task 2.2 — ADDITIVE; allowlist untouched)
+# ---------------------------------------------------------------------------
+
+_GOV = Path("/repo/.claude/governor-settings.json")
+
+
+def test_build_argv_live_repl_carries_settings_keeps_allowlist():
+    """live_repl + governor_settings → --settings present, --allowedTools intact."""
+    argv, _ = ADAPTER.build_argv(
+        "x",
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+        live_repl=True,
+        governor_settings=_GOV,
+    )
+    assert "--settings" in argv
+    assert argv[argv.index("--settings") + 1] == str(_GOV)
+    # Allowlist STILL present (additive change must not remove it).
+    assert "--allowedTools" in argv
+    allowed = argv[argv.index("--allowedTools") + 1]
+    assert "Read" in allowed and "Bash(scripts/poll.py:*)" in allowed
+
+
+def test_build_argv_print_carries_settings():
+    """non-live --print branch + governor_settings → --settings present."""
+    argv, _ = ADAPTER.build_argv(
+        "hello",
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+        governor_settings=_GOV,
+    )
+    assert "--settings" in argv
+    assert argv[argv.index("--settings") + 1] == str(_GOV)
+
+
+def test_build_argv_omits_settings_when_none():
+    """governor_settings=None (default) → argv unchanged from today."""
+    argv_repl, _ = ADAPTER.build_argv(
+        "x", model="claude-opus-4-7", cwd=Path("/tmp"), live_repl=True
+    )
+    argv_print, _ = ADAPTER.build_argv(
+        "hello", model="claude-opus-4-7", cwd=Path("/tmp")
+    )
+    assert "--settings" not in argv_repl
+    assert "--settings" not in argv_print
+    # Back-compat: the historical text-default argv is byte-identical.
+    assert argv_print == ["claude", "--print", "--model", "claude-opus-4-7", "hello"]
+
+
+def test_build_argv_settings_positioned_after_model_before_prompt():
+    """--settings must come after --model <id> and before any trailing prompt."""
+    # non-live --print: trailing positional prompt must be LAST.
+    argv, _ = ADAPTER.build_argv(
+        "the-prompt",
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+        governor_settings=_GOV,
+    )
+    assert argv[-1] == "the-prompt"
+    i_model = argv.index("--model")
+    i_settings = argv.index("--settings")
+    assert i_settings > i_model  # after --model
+    assert i_settings < len(argv) - 1  # before the trailing prompt
+    # live_repl: --settings after --model (no trailing positional prompt here).
+    argv_repl, _ = ADAPTER.build_argv(
+        "x",
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+        live_repl=True,
+        governor_settings=_GOV,
+    )
+    assert argv_repl.index("--settings") > argv_repl.index("--model")
+
+
+def test_build_followup_argv_carries_settings_with_resume():
+    """build_followup_argv + governor_settings → --settings present; --resume works."""
+    argv, _ = ADAPTER.build_followup_argv(
+        "follow up",
+        prior_session_id="sess-123",
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+        governor_settings=_GOV,
+    )
+    assert "--settings" in argv
+    assert argv[argv.index("--settings") + 1] == str(_GOV)
+    assert "--resume" in argv
+    assert argv[argv.index("--resume") + 1] == "sess-123"
+    assert argv[-1] == "follow up"  # prompt still last
+    assert argv.index("--settings") > argv.index("--model")
+    assert argv.index("--settings") < len(argv) - 1
+
+
+def test_build_followup_argv_settings_positioned_after_model_before_resume():
+    """--settings must sit after --model <id> and before --resume / the prompt.
+
+    Mirrors the build_argv positioning guard so a malformed followup argv can't
+    ship (the /followup respawn path is otherwise only covered at the helper
+    level via governor_kwargs).
+    """
+    argv, _ = ADAPTER.build_followup_argv(
+        "the-prompt",
+        prior_session_id="sess-123",
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+        governor_settings=_GOV,
+    )
+    i_model = argv.index("--model")
+    i_settings = argv.index("--settings")
+    i_resume = argv.index("--resume")
+    assert i_settings == i_model + 2  # immediately after --model <id>
+    assert i_settings < i_resume  # before --resume
+    assert argv[-1] == "the-prompt"  # before the trailing prompt
+    # No --resume case: --settings still after --model, before the prompt.
+    argv2, _ = ADAPTER.build_followup_argv(
+        "p2",
+        prior_session_id=None,
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+        governor_settings=_GOV,
+    )
+    assert argv2.index("--settings") == argv2.index("--model") + 2
+    assert "--resume" not in argv2
+    assert argv2[-1] == "p2"
+
+
+def test_build_followup_argv_omits_settings_when_none():
+    argv, _ = ADAPTER.build_followup_argv(
+        "follow up",
+        prior_session_id="sess-123",
+        model="claude-opus-4-7",
+        cwd=Path("/tmp"),
+    )
+    assert "--settings" not in argv
+    assert argv == [
+        "claude",
+        "--print",
+        "--model",
+        "claude-opus-4-7",
+        "--resume",
+        "sess-123",
+        "follow up",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # 5. parse_stream_line — plain text
 # ---------------------------------------------------------------------------
 

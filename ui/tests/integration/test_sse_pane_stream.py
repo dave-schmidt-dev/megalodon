@@ -57,6 +57,9 @@ def _make_config(shorts: list[str]) -> MissionConfig:
             "mission": {"id": "test-mission", "utc_started": "2026-01-01T00:00:00Z"},
             "lanes": lanes,
             "phases": ["INIT"],
+            # SSE pane-stream test: mock adapter + tmp mission dir (no scripts/
+            # symlink). Governor preflight out of scope here, so disable it (Task 2.2).
+            "governor_enabled": False,
         }
     )
 

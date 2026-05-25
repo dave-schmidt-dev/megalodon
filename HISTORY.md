@@ -10,6 +10,28 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-25 (PM) — Governor Phase 2 CODE COMPLETE (settings + wiring + canary + reattach)
+
+**What:** Phase 2 wiring is built (additive; the old screen-scraping watcher is untouched and still live — decommission is P3, gated below). All claude lanes now spawn under the `PreToolUse` governor hook.
+- **Settings + shim (2.1):** committed `.claude/governor-settings.json` (PreToolUse hook + `permissions.deny` floor; hook command `"$CLAUDE_PROJECT_DIR"/scripts/governor_hook.py` resolves via the run-dir `scripts/` symlink) + `scripts/governor_hook.py`. **The shim is decoupled from the heavy package `__init__`** so it runs under bare system `python3` (stdlib only) — caught in review: importing `megalodon_ui` pulled `yaml` (venv-only), which would have stalled every lane on tool-call #1 under system python. A `python3 -S` test guards it.
+- **Wiring + kill-switch + preflight (2.2):** `--settings` injected into all three claude argv paths (live-REPL build_argv + non-live + `/followup` respawn) through ONE `governor_kwargs` gate (so a future edit can't make one path silently drop it for a claude lane); `governor_enabled` mission flag (default True) is the kill-switch; `preflight_governor` fails the whole spawn LOUDLY if the hook is unreachable. The `--allowedTools` allowlist is KEPT as a fallback (its removal is gated on the REPL validation below, per §3.3 "pending 8.1").
+- **Canary self-test (2.3):** a policy sentinel (`governor-canary` deny) + a fleet-side `governor_canary_selftest` that pipes the sentinel through the real shim at spawn and aborts loudly if it isn't denied (PM-2: silent non-enforcement → loud failure) + an agent-side launch.md canary step for the REPL-divergence case.
+- **Reattach governance (2.5):** a server restart REATTACHES running lanes (preserving in-flight work) — so a pre-governor lane keeps its old regime. Reattach now marks such a lane **`ungoverned`** via a per-lane governed-marker keyed off SPAWN IDENTITY (not the rebuilt argv, which lies — flagged in review), fingerprinted by settings-content sha256, fail-toward-ungoverned. No auto-kill; an operator respawn re-governs. (Distinct from the P3.2 deny-loop `governor-blocked` status.)
+
+**Tests/gates:** full non-isolated suite **1327 passed**, 34 skipped, 3 pre-existing xfails; ruff + vulture clean. New: `test_governor_settings_valid`, `test_governor_wiring`, `test_governor_canary`, `test_governor_reattach`, `test_governor_hook_e2e` (isolated). The real-`claude` e2e (run once, Haiku) is **3-pass/2-xfail**: canary-deny, safe-allow, and **floor-deny-beats-hook-allow** (§3.3 precedence) all verified end-to-end through real claude; the 2 xfails are honest model-level refusals of the overt `sudo`/`~/.ssh` prompts (the hook never sees the call) — covered by the operator REPL runbook.
+
+**Bug/remediation notes (review-caught, regression-relevant):**
+- Shim-under-system-python stall (above) — fixed by import decoupling + `-S` test.
+- Generator round-trip footgun: the `launch-*.md` "regenerate" hint pointed at a CLI path that produced different headers than the committed (generate_all) files; fixed so `python3 scripts/gen_lane_launches.py` round-trips cleanly (zero diff).
+- Reattach stored a governed argv on an ungoverned live process (would have falsely reported governance) — fixed by keying `governed` off the marker, not argv.
+
+**⛔ OPERATOR GATE — required before Phase 3 (watcher decommission):**
+1. Complete `verifications/2026-05-25-governor-repl-validation.md` — a live INTERACTIVE `claude` REPL session proving a hook `deny` blocks (all prior hook validation was `-p`; this closes risk 8.1) and a benign bounded command runs with NO prompt. Record PASS.
+2. Task 2.6 — enable the governor on ONE lane in a live run, watch ≥1 phase (no stalls, denies/allows correct, audit + canary fire), then decide fleet-wide (SR-3).
+P3/P4 (delete `permission_watcher.py`, endpoints, banner) MUST NOT start until both are recorded PASS — the governor must be proven live before the old safety net is removed (§6/§9). The allowlist removal is likewise deferred until the REPL gate confirms hook-`allow` suffices in a REPL.
+
+---
+
 ## 2026-05-25 (PM) — Governor Phase 1 IMPLEMENTED (policy engine + hook entrypoint)
 
 **What:** Phase 1 of the governor-hook plan is built and committed — the pure security core,

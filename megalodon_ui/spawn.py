@@ -18,6 +18,17 @@ from megalodon_ui._v92_constants import (
     SSE_MAX_SUBSCRIBERS_PER_LANE,
     SSE_PER_SUBSCRIBER_QUEUE_MAXSIZE,
 )
+from megalodon_ui.governor.wiring import (
+    argv_is_governed,
+    governor_canary_selftest,
+    governor_enabled,
+    governor_kwargs,
+    governor_settings_path,
+    preflight_governor,
+    read_governed_marker_is_valid,
+    remove_governed_marker,
+    write_governed_marker,
+)
 from megalodon_ui.harnesses.base import HarnessAdapter
 from megalodon_ui.mission_config.schema import MissionConfig
 
@@ -223,6 +234,12 @@ class LaneSession:
     stream_log: Path
     session_id: str | None = None
     running: bool = False
+    # Governance PROVENANCE of the LIVE process (Task 2.5). True only when the
+    # current process was spawned/respawned UNDER the governor (verified via the
+    # per-lane .fleet/<short>.governed marker on reattach, NOT the rebuilt argv,
+    # which lies). False == ``ungoverned`` — surfaced distinctly so an operator
+    # can respawn. Distinct from the P3.2 deny-loop ``governor-blocked`` status.
+    governed: bool = False
     exited_rc: int | None = None
     pane_dead_checked_at: float = 0.0
     # P4 SSE fan-out state. `subscribers_lock` serializes list mutation AND
@@ -302,6 +319,24 @@ class FleetSpawner:
         # ---- 0. Pre-create protocol directories (v9.3) --------------------
         self._ensure_protocol_dirs()
 
+        # ---- 0b. Governor preflight (Task 2.2) ----------------------------
+        # When the governor is enabled, verify it is wirable ONCE up front so a
+        # broken hook fails the whole spawn loudly here, rather than degrading
+        # to a silent per-lane `claude` failure. When disabled (kill-switch),
+        # skip preflight entirely — a disabled governor must not block spawn.
+        _governor_on = governor_enabled(self.mission_config)
+        _gov_settings: Path | None = None
+        if _governor_on:
+            preflight_governor(self.mission_dir)
+            # Canary self-test (Task 2.3): preflight proves the hook is REACHABLE;
+            # this proves it actually DENIES. Pipe the sentinel probe through the
+            # run-dir shim exactly as claude will and require a canary deny. A
+            # non-enforcing governor (allow / error / malformed) raises
+            # GovernorCanaryError here and aborts the whole spawn LOUDLY before
+            # any lane starts — converting silent non-enforcement into a loud stop.
+            governor_canary_selftest(self.mission_dir)
+            _gov_settings = governor_settings_path()
+
         # ---- 1. Orphan purge + 2. reattach --------------------------------
         existing = await tmux.list_sessions(self.socket)
         configured_names = {f"lane-{lane.short}" for lane in self.mission_config.lanes}
@@ -331,14 +366,33 @@ class FleetSpawner:
                         if lane_cfg.live_repl
                         else None
                     )
+                    # Governor --settings (Task 2.2): single-source gate. Reuses
+                    # the precomputed settings path (preflight already ran in
+                    # step 0b); helper applies the enabled + claude-cli check.
+                    _gov_kw = governor_kwargs(
+                        self.mission_config, lane_cfg, settings_path=_gov_settings
+                    )
                     argv, env = adapter.build_argv(
                         prompt,
                         model=lane_cfg.harness.model,
                         cwd=self.mission_dir,
                         **({"live_repl": True} if lane_cfg.live_repl else {}),
                         **({"extra_allowed_tools": _extra} if _extra else {}),
+                        **_gov_kw,
                     )
                     stream_log = self.mission_dir / ".fleet" / f"{short}.stream.log"
+                    # Governance PROVENANCE (Task 2.5): the LIVE process is the
+                    # OLD one — its regime is whatever it was BORN with, which the
+                    # rebuilt `argv` (now carrying --settings via Task 2.2) does
+                    # NOT prove. Derive `governed` from the per-lane spawn-time
+                    # marker, verifying its fingerprint against the CURRENT
+                    # governor settings. Absent/stale/mismatched ⇒ ungoverned
+                    # (fail toward ungoverned). We deliberately IGNORE the argv
+                    # here; it is kept as the would-be-governed template for a
+                    # future operator respawn, but it must not decide governance.
+                    reattach_governed = read_governed_marker_is_valid(
+                        self.mission_dir, short
+                    )
                     ls = LaneSession(
                         lane=short,
                         name=session_name,
@@ -347,7 +401,15 @@ class FleetSpawner:
                         env=env,
                         stream_log=stream_log,
                         running=True,
+                        governed=reattach_governed,
                     )
+                    if not reattach_governed:
+                        _log.warning(
+                            "reattached lane %s is UNGOVERNED (no valid spawn-time "
+                            "governor marker) — its live process predates the "
+                            "current governor; respawn to bring it under governance",
+                            short,
+                        )
                     self.sessions[short] = ls
                     reattached.add(short)
                     _log.info("reattached existing session %s", session_name)
@@ -398,14 +460,25 @@ class FleetSpawner:
                 if lane_cfg.live_repl
                 else None
             )
+            # Governor --settings (Task 2.2): single-source gate. Reuses the
+            # precomputed settings path (preflight already ran in step 0b).
+            _gov_kw = governor_kwargs(
+                self.mission_config, lane_cfg, settings_path=_gov_settings
+            )
             argv, env = adapter.build_argv(
                 prompt,
                 model=lane_cfg.harness.model,
                 cwd=self.mission_dir,
                 **({"live_repl": True} if lane_cfg.live_repl else {}),
                 **({"extra_allowed_tools": _extra} if _extra else {}),
+                **_gov_kw,
             )
             session_name = f"lane-{short}"
+            # Governance PROVENANCE (Task 2.5): a FRESH spawn's process is born
+            # exactly with `argv`, so `_gov_kw` is authoritative — when it carries
+            # the governor settings the lane is genuinely governed. The marker is
+            # WRITTEN/REMOVED in _spawn_one (only after new-session rc=0), so it
+            # always reflects a live process.
             ls = LaneSession(
                 lane=short,
                 name=session_name,
@@ -413,6 +486,7 @@ class FleetSpawner:
                 argv=argv,
                 env=env,
                 stream_log=self.mission_dir / ".fleet" / f"{short}.stream.log",
+                governed=bool(_gov_kw),
             )
             if lane_cfg.live_repl and lane_cfg.initial_prompt:
                 ls.initial_prompt = lane_cfg.initial_prompt
@@ -563,6 +637,17 @@ class FleetSpawner:
 
         session.argv = list(argv)
         session.env = dict(env)
+        # Governance PROVENANCE (Task 2.5): a respawn REPLACES the live process
+        # with exactly `argv`, so — unlike reattach — the argv genuinely
+        # describes the new process and `argv_is_governed` is trustworthy here.
+        # An operator respawn of an ungoverned lane therefore re-governs it
+        # (marker rewritten, governed=True); a respawn without --settings clears
+        # the marker so the marker always tracks the live process.
+        session.governed = argv_is_governed(argv)
+        if session.governed:
+            write_governed_marker(self.mission_dir, lane)
+        else:
+            remove_governed_marker(self.mission_dir, lane)
 
     async def _start_tail_task(self, session: LaneSession) -> None:
         """Launch the per-lane tail coroutine. Override-point for unit tests."""
@@ -659,6 +744,14 @@ class FleetSpawner:
         # this lane's session as one to kill (the tmux session is already real).
         session.running = True
         spawned.append(session)
+        # Governance PROVENANCE marker (Task 2.5): the process is now live and
+        # was born with `session.argv`, so `session.governed` is authoritative.
+        # Write the fingerprinted marker when governed, else remove any stale one
+        # — so a later reattach reads the truth of THIS process, never the argv.
+        if session.governed:
+            write_governed_marker(self.mission_dir, session.lane)
+        else:
+            remove_governed_marker(self.mission_dir, session.lane)
         await tmux.pipe_pane(self.socket, session.name, session.stream_log)
         # PM-6 AFTER-poll: diff against this lane's BEFORE; single new entry =
         # session id; 0 or 2+ degrades to no-resume.

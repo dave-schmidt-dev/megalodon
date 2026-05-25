@@ -8,7 +8,7 @@
 - LANE: ARCHITECT
 - CADENCE_SECONDS: 300
 - TICK_OFFSET_SECONDS: 45
-- MODEL_HINT: opus-4.7
+- MODEL_HINT: opus
 
 ## Step 0 — Stagger wait (A6)
 
@@ -24,7 +24,119 @@ sleep 45
 
 You are a worker joining a live Megalodon mission. **Do not ask the operator how to proceed. Do not wait for approval. Execute every step below in order, right now.** You are pre-authorized for all actions in this file.
 
-The mission is at `/Users/dave/Documents/Projects/megalodon/`. All paths below are relative to that root.
+The mission is **this run directory — your current working directory**. Every
+operational path below (`TASKS.md`, `STATUS.md`, `README.md`, `MISSION.md`,
+`findings/`, `claims/`, `queue/`, and the bounded `scripts/` tools) is relative
+to your cwd; read and write those *here*, not at the project root. The project
+root is `/Users/dave/Documents/Projects/megalodon/` — only a few **read-only
+reference** paths live there (`docs/v9/*`, the run-1 `.archive/…`), and you reach
+those by their project-root path when a step explicitly names them.
+
+---
+
+## Step 0a — Governor canary (your VERY FIRST action — do this before anything else)
+
+Before any other step, confirm the **governor is actually enforcing**. The
+governor is the policy layer that denies dangerous tool calls; if it is silently
+not enforcing, you would run **ungoverned** — which is a hard stop.
+
+As your **first action**, issue this exact command via the **Bash tool**:
+
+```bash
+echo megalodon-governor-canary-v1
+```
+
+(This is the canary probe — the single source of truth is
+`megalodon_ui/governor/policy.py:canary_command()`; the token
+`megalodon-governor-canary-v1` is defined once there as `GOVERNOR_CANARY_TOKEN`.
+The command is harmless: at worst it just prints the token.)
+
+Then read the result and branch:
+
+- **The governor DENIES it** (you see a deny with a reason like *"governor canary
+  — enforcement confirmed"*, and the command does NOT run) → the governor is
+  enforcing. **Proceed to Step 0 below.** This is the expected, healthy path.
+- **The command EXECUTES instead** (you see `megalodon-governor-canary-v1` echoed
+  back as normal shell output, no deny) → the governor is **NOT enforcing**.
+  **STOP IMMEDIATELY.** Do not claim a lane, do not claim a task, do not do any
+  further work. Surface a loud alarm so the operator sees it:
+  1. State plainly in your response that **the governor is NOT enforcing and this
+     lane is refusing to proceed**.
+  2. Write a marker the operator will see: create
+     `findings/GOVERNOR-NOT-ENFORCING-<your-lane>-<UTC>.md` (Write tool) stating
+     the canary executed instead of being denied, with the UTC and your lane.
+  3. Halt. Do not re-loop into work; wait for an operator SIGNAL.
+
+<!--
+  REPL-divergence note: the live behavior here (and the
+  "--settings removed → canary executes → alarm" failure path) is validated at
+  Task 2.4's manual REPL gate — it needs a live claude REPL and is NOT
+  unit-testable. The fleet-side equivalent of this check runs at spawn
+  (wiring.governor_canary_selftest, step 0b) and aborts the whole spawn if the
+  governor is not enforcing.
+-->
+
+---
+
+## Step 0 — Orientation: do NOT explore with raw shell
+
+You are joining an established mission. **Everything you need to bootstrap is in
+this file** — you do not need to look around first. Under the hardened tool
+surface, ad-hoc shell exploration **gates to a permission prompt** that blocks
+you indefinitely when the operator is AFK. So:
+
+- **NEVER** run `ls`, `cd`, `cat`, `tail`, `head`, `find`, `stat`, `echo`, or any
+  compound command (`&&`, `||`, `;`, pipes) to orient yourself. These are not on
+  your allowlist and each one stalls you on an approval prompt. **`find` is the
+  most common stall — do not use it.**
+- **To FIND or LIST files** (e.g. "all `*.py`", "everything under `ui/static/`")
+  use the **Glob tool** with a pattern like `**/*.py` or `ui/static/**` — NEVER
+  shell `find`/`ls`. Glob is native, pre-authorized, and prompt-free.
+- **To SEARCH file contents** use the **Grep tool** (native, prompt-free) — NEVER
+  shell `grep`/`rg`/`find -exec grep`.
+- **To read a file** (including `queue/.applier.lock/heartbeat.txt`, `.mission-events`,
+  any `.md`) use the **Read tool**, never shell `cat`/`tail`/`head`.
+- Your P1 task may be a "survey" — survey with **Glob + Grep + Read only**. If you
+  catch yourself typing `find`, stop and use `Glob` instead.
+- **To act on shared state** use only the bounded scripts below. They are
+  pre-authorized and run prompt-free.
+- **Do NOT inspect the allowlist** (`.claude/settings.json`, `--allowedTools`)
+  to work out what you may run. The bounded tools listed below are your complete
+  authorized set. If a command would prompt, it is not yours to run — reach for
+  the Read tool or a bounded `scripts/` tool instead. (Trying to `cat` the
+  settings to "check first" itself gates on a prompt.)
+
+You do not need to verify any of this exists — it does. The mission directory
+layout is fixed:
+
+```
+README.md  MISSION.md  TASKS.md  STATUS.md  HISTORY.md   ← docs (use Read tool)
+.mission-events  .mission-config.yaml                    ← run state (use Read tool)
+findings/  claims/  signals/  queue/  .fleet/            ← work dirs
+```
+
+Your bounded tools (all under `scripts/`, all pre-authorized — invoke directly,
+never wrap in a compound command):
+
+| Tool | Purpose |
+|------|---------|
+| `scripts/queue_submit.py` | submit a queue intent (status / claim-done / history / event …) |
+| `scripts/claim.sh` | create the initial P1 claim-dir mutex |
+| `scripts/atomic_close.py` | RULE-10 four-step atomic close (queue-routed) |
+| `scripts/poll.py` | multi-source state polling (replaces compound `cat \| tail && ls …`) |
+| `scripts/run_tests.sh` | full pytest suite (carries the `test` extra) |
+| `scripts/run_e2e.sh` | Playwright E2E |
+
+**Invoke each bounded tool EXACTLY as written — bare, nothing appended.** The
+allowlist matches the literal command (e.g. `Bash(scripts/claim.sh:*)`), so a
+*bare* call auto-approves but **any added shell turns it into a prompting
+compound**: no `; echo "exit=$?"` to read the exit code, no `&& …`, no `| head`,
+no wrapping in `cd … && …`. The tool result already shows the script's output
+**and** its exit status — read them there. (`scripts/claim.sh P1-A <id>` ✅ runs
+prompt-free; `scripts/claim.sh P1-A <id>; echo $?` ✗ gates on the `;`.)
+
+If a step below seems to need information you don't have, re-read this file and
+the docs (with the Read tool) — do **not** reach for shell.
 
 ---
 
@@ -45,70 +157,79 @@ After reading, confirm in your own working notes (not to operator) that you unde
 
 ---
 
-## Step 2 — Generate your agent ID and cache it
+## Step 2 — Your agent ID is pre-baked
 
-Preferred (V9 A4 — deterministic, reproducible across crash/compact):
+Your agent ID is baked into this launch file at spawn time:
 
-```bash
-python3 -c "from scripts._agent_id import deterministic_agent_id; \
-print(deterministic_agent_id('<mission-id>', '<LANE>', '<launch-utc>'))"
+```
+{{AGENT_ID}}
 ```
 
-Where `<mission-id>` is the mission directory basename, `<LANE>` is your lane
-(AUDIT/ARCHITECT/BACKEND/FRONTEND/TEST/META), and `<launch-utc>` is the UTC
-timestamp the orchestrator stamped at fleet launch (in your lane-bound
-launch file header, or fall back to `date -u +%Y-%m-%dT%H:%M:%SZ` at first
-tick and cache it).
-
-Legacy fallback (pre-A4):
-
-```bash
-python3 -c "import secrets; print('agent-'+secrets.token_hex(2))"
-```
-
-Output looks like `agent-9f3a`. **This is your agent ID for the entire mission.** Write it in your own scratch notes. Reuse it every tick. Never regenerate it. A4 determinism means a re-launch with the same mission+lane+launch_utc will reproduce the same ID — useful for crash recovery.
+**Do not run any command to compute it.** This is your agent ID for the entire
+mission — write it in your scratch notes, reuse it every tick, never regenerate
+it. It persists in this file across crash/recompact, so re-reading recovers the
+same ID. (If you ever see a literal `{{AGENT_ID}}` here — an unbaked launch file,
+which should not happen via the server spawn path — recover your prior ID from
+your existing STATUS.md heartbeat row, per Step 7. Never invent a new one.)
 
 ---
 
-## Step 3 — Claim a lane in STATUS.md
+## Step 3 — Claim a lane in STATUS.md (queue-routed)
 
-Open `STATUS.md`. Find the **first row with `Agent = unclaimed`** in this lane order: AUDIT, ARCHITECT, BACKEND, FRONTEND, TEST, META.
+Find the first row with `Agent = unclaimed` in lane order (AUDIT, ARCHITECT,
+BACKEND, FRONTEND, TEST, META). Claim it through the queue applier — never a
+direct Edit (RULE-15; a direct Edit races the applier and corrupts STATUS.md):
 
-Edit that single row in place:
-- Replace `unclaimed` with your agent ID from step 2.
-- Set `State` to `initialized`.
-- Set `Last UTC` to current UTC: run `date -u +%Y-%m-%dT%H:%MZ` and use that exact string.
-- Set `Notes` to: `bootstrap; v8; will claim P1-<X> next tick` (replace `<X>` with your lane letter: A/B/C/D/E/F).
+```bash
+scripts/queue_submit.py --mission-dir . --agent {{AGENT_ID}} --lane <LANE> \
+  status --state initialized --notes "bootstrap; v8; will claim P1-<X> next tick"
+```
 
-Use the Edit tool with `old_string` matching the full row line so you do not accidentally race. If your Edit fails with "modified since read", re-read STATUS.md and retry up to 3 times. If you find that another worker claimed the row you wanted between your read and your edit, just claim the next unclaimed row.
-
-**Race resolution:** if two workers somehow end up on the same row, earlier UTC wins on the next tick; the loser re-claims the next unclaimed row.
+The applier stamps `Last UTC` server-side. If the applier heartbeat is stale (read
+`queue/.applier.lock/heartbeat.txt` with the Read tool; >30s old), set
+`BLOCKED-APPLIER-DOWN` and halt mutations until the operator restarts it. If two
+workers race the same row, earlier UTC wins next tick; the loser re-submits for the
+next unclaimed row.
 
 ---
 
 ## Step 4 — Claim your P1 task and start working
 
-Your P1 task is `P1-<your-lane-letter>` (e.g., AUDIT = `P1-A`, BACKEND = `P1-C`). It is listed in `TASKS.md` under "PHASE 1 — PLAN".
+Your P1 task is `P1-<your-lane-letter>` (AUDIT = `P1-A`, BACKEND = `P1-C`, …),
+listed in `TASKS.md` under "PHASE 1 — PLAN".
+
+Claim paths — two distinct mechanisms, do not confuse them (CV-5):
+- `scripts/claim.sh P1-<X> {{AGENT_ID}}` — the **initial pre-queue P1 directory
+  mutex**: atomically creates `claims/P1-<X>/` + `owner.txt`. This is the ONLY
+  sanctioned way to *create* a claim dir.
+- `scripts/queue_submit.py … claim-done --task P1-<X>` — the **queue-routed
+  lifecycle marker** the applier applies on RULE-10 close (also reachable via
+  `scripts/atomic_close.py`). The applier owns lifecycle markers; `claim.sh` owns
+  the initial create. They never both create the same dir.
 
 Claim it now:
 
 ```bash
-mkdir claims/P1-<X>
+scripts/claim.sh P1-<X> {{AGENT_ID}}
 ```
 
-Then read your P1 task description in TASKS.md and **begin doing the work immediately.** Write your finding to `findings/<your-agent-id>-<lane-letter>-P1-<topic>-<UTC>.md` with YAML frontmatter (see README.md §3 finding format; `lineage: v8` is mandatory).
+Exit 0 = claimed (or you already own it); exit 3 = another agent holds it (claim
+the next unclaimed P1 instead). Then read your task in TASKS.md and **begin work
+immediately.** Write your finding to
+`findings/<your-agent-id>-<lane-letter>-P1-<topic>-<UTC>.md` with YAML
+frontmatter (README.md §3; `lineage: v8` mandatory).
 
 ---
 
-## Step 5 — Start your heartbeat loop
+## Step 5 — Your heartbeat loop (already armed at spawn)
 
-After you have claimed P1 and begun work, run:
-
-```
-/loop 5m
-```
-
-This re-invokes you every 5 minutes. (Updated from 3m in v8.x: 3m caused excess CAS contention churn; 5m gives ~40% fewer simultaneous tick collisions while keeping RULE-6 15-min stale threshold sane at 3 ticks.) On each tick:
+Your recurring heartbeat is **already running**: the spawn bootstrap armed
+`/loop 5m` for you, so this prompt re-fires automatically every 5 minutes. Do
+**NOT** run `/loop` again — a second arm would nest loops. Do not treat any
+single tick as "the only iteration"; the loop continues until the mission
+completes or the operator stops it. (5m, updated from 3m in v8.x: 3m caused
+excess CAS contention churn; 5m gives ~40% fewer simultaneous tick collisions
+while keeping RULE-6 15-min stale threshold sane at 3 ticks.) On each tick:
 
 1. **Heartbeat**: update your row's `Last UTC` in STATUS.md (Rule 1). Even if you have nothing else to report. **(V9 A5)** Also update your terminal title so operator-side `tmux`/iTerm tab labels reflect lane/phase:
 
@@ -128,11 +249,13 @@ This re-invokes you every 5 minutes. (Updated from 3m in v8.x: 3m caused excess 
    - Update STATUS.md to `idle` (or next task)
    Then run the Rule 10 self-check before declaring the tick done.
 
-### §5.A Fleet ledger (V9 A9)
+### §5.A Fleet ledger (V9 A9) — operator-run, not agent-run
 
-Workers SHOULD call `scripts._fleet_tick.record_tick(mission_dir, lane=LANE, agent=AGENT, ...)` once per /loop tick. Captures tasks completed, CAS retries, REPAIR injections received, SIGNAL ACK latency. Operator runs `scripts/aggregate_fleet_perf.py --mission-dir <m>` post-mission to merge with token data from `scripts/parse_session_tokens.py`.
-
-Optional but useful — feeds A3 fleet matrix decisions for next mission.
+Fleet-tick telemetry is collected by the **operator** post-mission
+(`scripts/aggregate_fleet_perf.py --mission-dir <m>` + token data from
+`scripts/parse_session_tokens.py`). Workers do **not** call any telemetry
+function during /loop ticks — it required `python` and is dropped from the agent
+path (2026-05-22 tool-surface policy).
 
 ---
 
@@ -142,8 +265,12 @@ Optional but useful — feeds A3 fleet matrix decisions for next mission.
 - **YAML frontmatter on every finding.** Required fields: `lineage: v8`, `finding-type:`, `severity:`, `lane:`, `task-id:`, `agent:`, `utc:`. Missing frontmatter = invalid finding.
 - **V9 RULE 15 — queue-routed mutations.** Shared-state mutations (STATUS.md, TASKS.md, HISTORY.md, .mission-events, claims/) MUST flow through the queue applier:
   - Use `scripts/atomic_close.py` (4-step RULE-10 close — already queue-routed via M1 backend swap).
-  - Or `python -m megalodon_ui.queue.queue_client` for direct intent submission.
-  - **Operator MUST start the applier daemon BEFORE workers via `./scripts/start_applier.sh <mission-dir> &`**. Workers can verify with `cat <mission>/queue/.applier.lock/heartbeat.txt` (UTC stamp within last 5s).
+  - Or `scripts/queue_submit.py --mission-dir <m> --agent <id> --lane <LANE> <intent> …`
+    for direct intent submission (status/claim/done/history/event/claim-dir/claim-done).
+    NEVER `python -m megalodon_ui.queue.queue_client` — that is an unbounded `python -m`.
+  - **Operator MUST start the applier daemon BEFORE workers via `./scripts/start_applier.sh <mission-dir> &`**.
+    Workers verify applier liveness by **reading** `queue/.applier.lock/heartbeat.txt`
+    with the Read tool (UTC stamp within last 5s). Use Read, never shell `cat`.
   - If the heartbeat is stale (>30s), set your STATUS row to `BLOCKED-APPLIER-DOWN` and halt mutations until the operator restarts the applier.
   - Pre-v9 free-form Edit-tool writes are NO LONGER permitted. Use the queue.
 - **CAS pattern on STATUS.md / TASKS.md writes.** (Legacy v8 — superseded by RULE 15 under v9. Retain for back-compat scripts that bypass the queue.)
@@ -261,6 +388,13 @@ remain acceptable and preferred over compound bash.
 For Playwright E2E runs, workers MUST use `./scripts/run_e2e.sh [args]`.
 NEVER use `cd /abs/path && uv run npx playwright test ...` compound (same prompt-block risk).
 
+### RULE 14b — Test runs via run_tests.sh
+
+For the full pytest suite (TEST lane, and any lane verifying its own changes),
+workers MUST use `scripts/run_tests.sh [pytest args]`. It runs
+`uv run --extra test pytest` (the test extra carries freezegun et al.). NEVER run
+bare `pytest` (missing test-extra deps) or `uv run …` directly (not allowlisted).
+
 ### RULE 16 — Optional watchdog daemon (V9 A1)
 
 Operator MAY start the watchdog daemon via `./scripts/start_watchdog.sh <mission-dir> &`
@@ -272,12 +406,12 @@ SIGNAL the lane, or dismiss. Per-lane dedup suppresses repeat alerts until the
 lane recovers or transitions to a new failure type. PID-file discovery uses
 `~/.megalodon-pids/<lane>.pid`; lanes without a PID file are skipped silently.
 
-### Python+fcntl reservation (refinement)
+### Interpreter reservation — REMOVED (2026-05-22 tool-surface policy)
 
-Python heredocs with fcntl remain acceptable ONLY for cross-lane CAS writes where
-parallel writers race the same row — primarily STATUS heartbeats during contended
-phase-flip windows and `.mission-events` appends during flip-win races.
-Lane-prefixed REPAIRs have zero race risk → Edit tool suffices; no heredoc needed.
+There is no python carve-out. All shared-state mutations flow through
+`scripts/queue_submit.py` or `scripts/atomic_close.py` (queue-routed, serialized
+by the applier). The queue removes the CAS-race rationale that previously
+justified `python3`+`fcntl` heredocs. `python` is never allowlisted.
 
 ### V9 A8 — SIGNAL grammar cross-reference
 

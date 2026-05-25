@@ -34,6 +34,11 @@ def fix_three_lane():
     with tempfile.TemporaryDirectory(dir="/tmp", prefix="meg_") as td:
         dst = Path(td) / "m"
         shutil.copytree(FIXTURES / "fix-medium", dst)
+        # Mirror new_run.sh: symlink scripts/ into the run dir so the governor
+        # preflight (Task 2.2, default-on) resolves the hook during lifespan
+        # startup. This exercises the real startup→spawn→preflight path.
+        repo_root = Path(__file__).resolve().parents[3]
+        (dst / "scripts").symlink_to(repo_root / "scripts")
         yield dst
 
 

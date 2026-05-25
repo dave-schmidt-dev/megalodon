@@ -45,7 +45,16 @@ from io import TextIOBase
 from pathlib import Path
 from typing import Any
 
-from megalodon_ui.governor.policy import Decision, decide
+try:
+    # Package-style import: works under `python -m megalodon_ui.governor.hook`
+    # and for tests that import via the package.
+    from megalodon_ui.governor.policy import Decision, decide
+except ModuleNotFoundError:  # pragma: no cover - exercised by the bare-interpreter shim
+    # Standalone import: the shim (scripts/governor_hook.py) puts this module's
+    # OWN directory (megalodon_ui/governor/) on sys.path[0] and imports `hook`
+    # as a top-level module, so the heavy `megalodon_ui/__init__` (which drags
+    # in yaml) is never executed. `policy` is then a sibling top-level module.
+    from policy import Decision, decide  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -45,6 +45,10 @@ def _make_config(lane_shorts: list[str]) -> MissionConfig:
             "mission": {"id": "test-err", "utc_started": "2026-01-01T00:00:00Z"},
             "lanes": lanes,
             "phases": ["INIT"],
+            # Orchestration test with a stub mission dir (no scripts/ symlink) and
+            # mock adapters; the governor preflight is out of scope, so disable it
+            # (Task 2.2 — governor wiring covered by test_governor_wiring.py).
+            "governor_enabled": False,
         }
     )
 

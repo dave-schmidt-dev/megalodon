@@ -62,6 +62,36 @@ def _deny(reason: str, category: str) -> Decision:
 
 
 # ---------------------------------------------------------------------------
+# Governor canary sentinel (Task 2.3) — the single source of truth
+# ---------------------------------------------------------------------------
+
+# A unique, recognizable marker. When a Bash command contains this exact token,
+# :func:`decide` denies it EARLY (before any allow logic), so the sentinel is
+# always denied regardless of how benign the surrounding command looks. The
+# token is chosen to be SAFE-WHEN-UNBLOCKED: if the governor is NOT enforcing
+# and the command runs, `echo megalodon-governor-canary-v1` merely prints the
+# token — it neither mutates state nor escapes scope. That makes it a sound
+# probe for the agent-side runtime canary (launch.md Step 0) and the fleet-side
+# self-test (wiring.governor_canary_selftest). ONE constant, referenced by the
+# policy / self-test / launch prose / tests — never duplicated as a literal.
+GOVERNOR_CANARY_TOKEN = "megalodon-governor-canary-v1"
+
+# The stable machine-readable bucket the canary deny carries.
+GOVERNOR_CANARY_CATEGORY = "governor-canary"
+
+
+def canary_command() -> str:
+    """The exact Bash command the agent / self-test issues to probe enforcement.
+
+    Returns ``echo <token>``: harmless if it ever DOES run (it just prints the
+    token), but denied by :func:`decide` when the governor is enforcing. The
+    single source of truth for the probe string — launch prose, the fleet-side
+    self-test, and the tests all call this rather than hardcoding the command.
+    """
+    return f"echo {GOVERNOR_CANARY_TOKEN}"
+
+
+# ---------------------------------------------------------------------------
 # Constants — tool families
 # ---------------------------------------------------------------------------
 
@@ -904,6 +934,16 @@ def _decide_bash(tool_input: dict, *, project_dir: Path) -> Decision:
     if not isinstance(command, str) or not command.strip():
         # Nothing to run — allow (empty command is inert).
         return _allow("empty bash command", "bash-empty")
+
+    # Governor canary sentinel (Task 2.3) — checked FIRST, before any allow
+    # logic, so the sentinel is denied no matter how benign the surrounding
+    # command looks (e.g. embedded inside a larger pipeline). A deny here proves
+    # the governor is actually enforcing; the fleet-side self-test and the
+    # agent-side runtime canary both rely on this exact verdict.
+    if GOVERNOR_CANARY_TOKEN in command:
+        return _deny(
+            "governor canary — enforcement confirmed", GOVERNOR_CANARY_CATEGORY
+        )
 
     # Apply bash LINE-CONTINUATION semantics FIRST: a backslash immediately
     # followed by a newline is spliced out (the token continues on the next

@@ -26,6 +26,20 @@ from megalodon_ui.mission_config.schema import MissionConfig
 from megalodon_ui.spawn import FleetSpawner
 
 SOCKET = Path("/tmp/test-approval-rules.sock")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _link_scripts(run_dir: Path) -> None:
+    """Mirror new_run.sh: symlink scripts/ into the run dir so the governor
+    preflight (Task 2.2, default-on) resolves the hook and spawn proceeds.
+
+    These tests run the real ClaudeAdapter with the default governor (enabled),
+    so each spawn argv ALSO carries --settings — harmless to the --allowedTools
+    assertions here, and bonus coverage that the allowlist and --settings coexist.
+    """
+    link = run_dir / "scripts"
+    if not link.exists():
+        link.symlink_to(REPO_ROOT / "scripts")
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +134,7 @@ async def test_rules_merged_bounded_kept_unbounded_filtered(tmp_path: Path):
     ]
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir(parents=True, exist_ok=True)
+    _link_scripts(tmp_path)
     (fleet_dir / "approval-rules.json").write_text(json.dumps(rules), encoding="utf-8")
 
     config = _make_live_repl_config("A")
@@ -178,6 +193,7 @@ async def test_no_rules_file_uses_static_allowlist_only(tmp_path: Path):
     """When no approval-rules.json exists, spawn behaves exactly as before."""
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir(parents=True, exist_ok=True)
+    _link_scripts(tmp_path)
     # Explicitly ensure the file is absent.
     rules_file = fleet_dir / "approval-rules.json"
     rules_file.unlink(missing_ok=True)
@@ -240,6 +256,7 @@ async def test_corrupt_rules_file_warns_and_uses_static_allowlist(
     """Invalid JSON in approval-rules.json triggers WARNING and falls back gracefully."""
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir(parents=True, exist_ok=True)
+    _link_scripts(tmp_path)
     (fleet_dir / "approval-rules.json").write_text(
         "this is not valid json {{{", encoding="utf-8"
     )
@@ -311,6 +328,7 @@ async def test_empty_rules_list_behaves_like_no_file(tmp_path: Path):
     """A file with an empty JSON list [] produces the static allowlist only."""
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir(parents=True, exist_ok=True)
+    _link_scripts(tmp_path)
     (fleet_dir / "approval-rules.json").write_text("[]", encoding="utf-8")
 
     config = _make_live_repl_config("D")

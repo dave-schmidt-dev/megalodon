@@ -71,6 +71,19 @@ class LaneRow:
     goal: str
     tokens: int | None
     narrator_ok: bool
+    # Governance PROVENANCE of the lane's live process (Task 2.5). True only when
+    # the running process was spawned/respawned UNDER the governor (per the
+    # spawner's spawn-time marker). False == ``ungoverned`` — a reattached
+    # pre-governor process that must be respawned to come under governance. This
+    # is provenance, NOT the P3.2 deny-loop ``governor-blocked`` alarm.
+    # TODO(P4): render an ``ungoverned`` board indicator. Left as a data-only
+    # field for now — board.js's pill is driven by blocked/stale/state precedence
+    # and Phase 4 reworks the permission banner; adding a pill here now would
+    # collide with that rework. The field is exposed so P4 can render it.
+    # Defaults False (fail toward ungoverned): an absent/non-running lane was NOT
+    # spawned under the governor, so it must not claim governance — consistent
+    # with ``LaneSession.governed``'s own False default.
+    governed: bool = False
     digest_text: str | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -78,7 +91,7 @@ class LaneRow:
 
         Returns:
             Dict with keys: lane, lane_name, state, last, now, goal, tokens,
-            narrator_ok.
+            narrator_ok, governed.
         """
         return {
             "lane": self.lane,
@@ -89,6 +102,7 @@ class LaneRow:
             "goal": self.goal,
             "tokens": self.tokens,
             "narrator_ok": self.narrator_ok,
+            "governed": self.governed,
         }
 
 
@@ -245,6 +259,7 @@ def assemble_lane_rows(
     digests: dict[str, SessionDigest | None],
     doc_order: dict[str, int],
     status_rows: list[dict[str, Any]] | None = None,
+    governed_by_lane: dict[str, bool] | None = None,
 ) -> dict[str, LaneRow]:
     """Assemble one ``LaneRow`` per lane — pure, no I/O.
 
@@ -273,6 +288,12 @@ def assemble_lane_rows(
 
     # STATUS.md fallback index (empty when no status_rows supplied).
     status_index = _index_status_rows(status_rows)
+
+    # Governance provenance per lane (Task 2.5). Absent ⇒ default False (fail
+    # toward ungoverned): a lane with no supplied provenance has no positive
+    # proof it was spawned under the governor. The async wrapper supplies real
+    # per-lane values from the live sessions.
+    governed_map = governed_by_lane or {}
 
     for cfg in lane_cfgs:
         short = cfg.short
@@ -355,6 +376,7 @@ def assemble_lane_rows(
             goal=goal,
             tokens=tokens,
             narrator_ok=False,
+            governed=governed_map.get(short, False),
             digest_text=None,  # set by build_lane_rows after this call
         )
 
@@ -629,8 +651,25 @@ async def build_lane_rows(
             )
             digests[short] = None
 
+    # Governance provenance per lane (Task 2.5): surface each live session's
+    # `governed` flag so an ungoverned (pre-governor) reattached lane is visibly
+    # distinct in the board data. Lanes with no live process / no positive proof
+    # of governance default to False (fail toward ungoverned — never affirm
+    # governance we cannot back). Read defensively — a fake/partial session
+    # object in tests may lack the attribute.
+    governed_by_lane = {
+        cfg.short: bool(getattr(sessions.get(cfg.short), "governed", False))
+        for cfg in lane_cfgs
+        if getattr(cfg, "short", None)
+    }
+
     rows = assemble_lane_rows(
-        tasks_fe, lane_cfgs, digests, doc_order, status_rows=status_rows
+        tasks_fe,
+        lane_cfgs,
+        digests,
+        doc_order,
+        status_rows=status_rows,
+        governed_by_lane=governed_by_lane,
     )
 
     # Attach digest_text to rows that have a digest (internal, for the scheduler).

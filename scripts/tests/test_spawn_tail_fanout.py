@@ -44,6 +44,9 @@ def _make_config(shorts: list[str]) -> MissionConfig:
             "mission": {"id": "test-mission", "utc_started": "2026-01-01T00:00:00Z"},
             "lanes": lanes,
             "phases": ["INIT"],
+            # Tail-fanout test: stub MISSION_DIR has no scripts/ symlink and the
+            # adapter is mocked, so disable the governor preflight (Task 2.2).
+            "governor_enabled": False,
         }
     )
 

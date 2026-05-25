@@ -713,3 +713,36 @@ def test_decision_shape(project_dir):
     assert hasattr(d, "reason")
     assert hasattr(d, "category")
     assert d.permission in ("allow", "deny")
+
+
+# ---------------------------------------------------------------------------
+# Governor canary sentinel (Task 2.3)
+# ---------------------------------------------------------------------------
+
+
+def test_canary_command_is_denied_as_canary(project_dir):
+    """The exact canary probe is denied EARLY with the governor-canary category."""
+    d = _bash(policy.canary_command(), project_dir)
+    _assert_deny(d, policy.GOVERNOR_CANARY_CATEGORY)
+    assert "canary" in d.reason.lower()
+
+
+def test_canary_token_embedded_in_larger_command_still_denied(project_dir):
+    """The sentinel is denied no matter how benign the surrounding command — the
+    early check runs before any allow logic."""
+    d = _bash(f"ls && cat README.md # {policy.GOVERNOR_CANARY_TOKEN}", project_dir)
+    _assert_deny(d, policy.GOVERNOR_CANARY_CATEGORY)
+
+
+def test_normal_echo_is_not_a_canary_false_positive(project_dir):
+    """A benign `echo hello` must NOT be denied as a canary (no false positives)."""
+    d = _bash("echo hello", project_dir)
+    assert d.category != policy.GOVERNOR_CANARY_CATEGORY
+    _assert_allow(d)
+
+
+def test_canary_command_helper_is_safe_when_unblocked():
+    """canary_command() is a bare `echo <token>` — harmless if it ever runs."""
+    cmd = policy.canary_command()
+    assert cmd == f"echo {policy.GOVERNOR_CANARY_TOKEN}"
+    assert "&&" not in cmd and "|" not in cmd and ";" not in cmd

@@ -12,6 +12,50 @@ those by their project-root path when a step explicitly names them.
 
 ---
 
+## Step 0a — Governor canary (your VERY FIRST action — do this before anything else)
+
+Before any other step, confirm the **governor is actually enforcing**. The
+governor is the policy layer that denies dangerous tool calls; if it is silently
+not enforcing, you would run **ungoverned** — which is a hard stop.
+
+As your **first action**, issue this exact command via the **Bash tool**:
+
+```bash
+echo megalodon-governor-canary-v1
+```
+
+(This is the canary probe — the single source of truth is
+`megalodon_ui/governor/policy.py:canary_command()`; the token
+`megalodon-governor-canary-v1` is defined once there as `GOVERNOR_CANARY_TOKEN`.
+The command is harmless: at worst it just prints the token.)
+
+Then read the result and branch:
+
+- **The governor DENIES it** (you see a deny with a reason like *"governor canary
+  — enforcement confirmed"*, and the command does NOT run) → the governor is
+  enforcing. **Proceed to Step 0 below.** This is the expected, healthy path.
+- **The command EXECUTES instead** (you see `megalodon-governor-canary-v1` echoed
+  back as normal shell output, no deny) → the governor is **NOT enforcing**.
+  **STOP IMMEDIATELY.** Do not claim a lane, do not claim a task, do not do any
+  further work. Surface a loud alarm so the operator sees it:
+  1. State plainly in your response that **the governor is NOT enforcing and this
+     lane is refusing to proceed**.
+  2. Write a marker the operator will see: create
+     `findings/GOVERNOR-NOT-ENFORCING-<your-lane>-<UTC>.md` (Write tool) stating
+     the canary executed instead of being denied, with the UTC and your lane.
+  3. Halt. Do not re-loop into work; wait for an operator SIGNAL.
+
+<!--
+  REPL-divergence note: the live behavior here (and the
+  "--settings removed → canary executes → alarm" failure path) is validated at
+  Task 2.4's manual REPL gate — it needs a live claude REPL and is NOT
+  unit-testable. The fleet-side equivalent of this check runs at spawn
+  (wiring.governor_canary_selftest, step 0b) and aborts the whole spawn if the
+  governor is not enforcing.
+-->
+
+---
+
 ## Step 0 — Orientation: do NOT explore with raw shell
 
 You are joining an established mission. **Everything you need to bootstrap is in

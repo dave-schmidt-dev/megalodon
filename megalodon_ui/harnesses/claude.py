@@ -113,7 +113,18 @@ class ClaudeAdapter:
         extra_env: dict[str, str] | None = None,
         live_repl: bool = False,
         extra_allowed_tools: list[str] | None = None,
+        governor_settings: pathlib.Path | None = None,
     ) -> tuple[list[str], dict[str, str]]:
+        # Governor (Task 2.2): when a settings path is supplied, attach
+        # --settings <governor-settings.json> right after --model <id> (before
+        # any positional prompt / before --allowedTools). ADDITIVE — the
+        # --allowedTools allowlist below is left exactly as-is (a hook `allow`
+        # still suppresses prompts for non-allowlisted tools; the allowlist is
+        # the documented broad fallback). When None, argv is unchanged from
+        # before, so callers that don't pass it (e.g. preview.py) are unaffected.
+        def _settings_args() -> list[str]:
+            return ["--settings", str(governor_settings)] if governor_settings else []
+
         if live_repl:
             # --allowedTools policy (2026-05-22 tool-surface hardening):
             #
@@ -171,8 +182,13 @@ class ClaudeAdapter:
                 ]
                 if safe_extra:
                     allowed = allowed + " " + " ".join(safe_extra)
-            return ["claude", "--model", model, "--allowedTools", allowed], {}
-        argv = ["claude", "--print", "--model", model]
+            return (
+                ["claude", "--model", model]
+                + _settings_args()
+                + ["--allowedTools", allowed],
+                {},
+            )
+        argv = ["claude", "--print", "--model", model] + _settings_args()
         if output_format == "stream-json":
             argv += ["--output-format", "stream-json"]
         argv.append(prompt_or_launch_path)
@@ -191,8 +207,13 @@ class ClaudeAdapter:
         cwd: pathlib.Path,
         output_format: str = "text",
         extra_env: dict[str, str] | None = None,
+        governor_settings: pathlib.Path | None = None,
     ) -> tuple[list[str], dict[str, str]]:
         argv = ["claude", "--print", "--model", model]
+        # Governor (Task 2.2): --settings right after --model, before --resume /
+        # the trailing positional prompt. ADDITIVE; None leaves argv unchanged.
+        if governor_settings:
+            argv += ["--settings", str(governor_settings)]
         if prior_session_id:
             argv += ["--resume", prior_session_id]
         if output_format == "stream-json":

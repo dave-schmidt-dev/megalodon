@@ -90,6 +90,13 @@ class MissionConfig(BaseModel):
         Annotated[str, StringConstraints(min_length=1, max_length=80)]
     ] = Field(default_factory=lambda: ["PHASE-PLAN", "OPERATOR-ACCEPTANCE"])
 
+    # Governor kill-switch (Task 2.2). When True (default), claude spawn paths
+    # attach --settings <.claude/governor-settings.json> (PreToolUse governor
+    # hook + permissions.deny floor) and run a fail-loud preflight. Set False to
+    # disable the governor entirely — spawn then omits --settings and skips
+    # preflight (a disabled governor must not block spawn on a missing hook).
+    governor_enabled: bool = True
+
     @field_validator("lanes")
     @classmethod
     def lane_names_unique(cls, v):

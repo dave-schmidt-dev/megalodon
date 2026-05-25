@@ -1692,11 +1692,18 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
         adapter = spawner.adapter_resolver(lane_cfg.harness.cli)
         session = spawner.get(lane)
+        # Governor --settings (Task 2.2): single-source gate. No preflight here —
+        # the fleet is already running — so the path is re-derived (settings_path
+        # left None). Helper applies the enabled + claude-cli check in one place.
+        from megalodon_ui.governor.wiring import governor_kwargs
+
+        _gov_kw = governor_kwargs(ctx.mission_config, lane_cfg)
         argv, env = adapter.build_followup_argv(
             prompt,
             prior_session_id=session.session_id,
             model=model,
             cwd=spawner.mission_dir,
+            **_gov_kw,
         )
 
         await spawner.respawn(lane, argv, env)

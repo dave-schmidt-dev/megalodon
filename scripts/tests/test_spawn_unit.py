@@ -42,6 +42,11 @@ def _make_config(lane_shorts: list[str] | None = None) -> MissionConfig:
             },
             "lanes": lanes,
             "phases": ["INIT"],
+            # Orchestration tests use a stub MISSION_DIR with no scripts/ symlink
+            # and mock adapters; the governor preflight is out of scope here, so
+            # disable it (Task 2.2). Governor wiring is covered by
+            # test_governor_wiring.py + test_harness_claude.py.
+            "governor_enabled": False,
         }
     )
 
