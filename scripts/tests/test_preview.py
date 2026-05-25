@@ -143,7 +143,7 @@ def test_no_plan_launches_callers() -> None:
             except OSError:
                 continue
             if "plan_launches" in text:
-                if py_file == Path(__file__):
+                if py_file == Path(__file__).resolve():
                     continue
                 offending.append(str(py_file))
 
