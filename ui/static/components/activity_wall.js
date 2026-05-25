@@ -7,7 +7,7 @@
 //
 // Event shape (from T2.3 impl):
 //   { type, lane, ts, summary, payload }
-//   type: "finding" | "signal" | "history" | "queue" | "inject" | "restart-loop" | "approval"
+//   type: "finding" | "signal" | "history" | "queue" | "inject" | "restart-loop" | "governor"
 //   lane: "A" | null
 //   ts: ISO-8601Z
 //   summary: string
@@ -72,7 +72,7 @@ const CHIP_DEFS = [
   { label: 'History',   type: 'history' },
   { label: 'Queue',     type: 'queue' },
   { label: 'Inject',    type: 'inject' },
-  { label: 'Approvals', type: 'approval' },
+  { label: 'Governor',  type: 'governor' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ function _typeChipStyle(type) {
     queue:          'background: #2a2a1a; color: var(--sev-minor, #d6c34c); border: 1px solid #3a3a1a;',
     inject:         'background: #2a1a2a; color: #c586c0; border: 1px solid #3a1a3a;',
     'restart-loop': 'background: #2a1a1a; color: var(--sev-blocking, #d04848); border: 1px solid #3a1a1a;',
-    approval:       'background: #1a1a2a; color: #9cdcfe; border: 1px solid #1a1a3a;',
+    governor:       'background: #3a1a1a; color: var(--sev-blocking, #d04848); border: 1px solid #5a2020;',
   };
   return styles[type] || 'background: var(--surface-2, #1c1f24); color: var(--text-muted, #9aa0a8); border: 1px solid var(--border, #2a2e35);';
 }

@@ -224,10 +224,10 @@ test.describe('stale modal: no leaked modal after navigation', () => {
         {
           lane: 'A',
           silent_seconds: 1234,
-          pending_approval: false,
           last_activity_source: 'status-md',
         },
       ],
+      governor_blocked: [],
       checked_at_utc: new Date().toISOString(),
     };
     await page.route('**/api/v1/lanes/stale', async (route) => {

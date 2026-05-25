@@ -16,18 +16,12 @@
 //     - queue    (queue-applier.log): no in-process applier in GRID_SMOKE_ENV
 //     - restart-loop: fix-small fixture has no initial_prompt; would 409
 //
-// Case B: Permission prompt → Approve → approval event in wall
-//   The fake-spawner lifespan (v9.4 T2.9 server change) now starts a
-//   PermissionWatcher alongside the ActivityWall so the permission-prompt
-//   path can be tested end-to-end.
-//   Seeding mechanism: write Claude-REPL-style PROMPT_MARKER text to
-//   .fleet/A.stream.log via Node fs. The watcher (poll=1 s) detects it and
-//   surfaces the prompt; the FE polls /api/v1/permission_prompts every 2 s.
-//   Clicking "Approve" calls the respond endpoint which calls
-//   watcher.clear_lane(lane, action="approve") — the on_change callback
-//   emits an "approval" event to the activity wall. The fake-spawner short-
-//   circuit (also added in T2.9) skips the tmux send_keys call so the
-//   endpoint returns 202 cleanly.
+// Case B: Governor audit-log event → governor event in wall
+//   The backend ActivityWall (Task 3.2) tails today's
+//   .fleet/governor-log-<UTC-date>.jsonl and emits one SSE event of
+//   type:"governor" per JSON line. Seeding mechanism (mirrors Case A): write
+//   a JSON line to that log via Node fs; the tailer (250 ms poll) picks it up
+//   and the FE renders a [data-event-type="governor"] row.
 //
 // Case C: Stale badge end-to-end
 //   POST _test/stale_override for lane A → reload → badge "1 stale" visible →
@@ -40,8 +34,7 @@
 //   .aw-row                             — individual row
 //   [data-event-type]                   — row type attribute
 //   .aw-row__summary                    — row summary text (title= file stem)
-//   [data-testid="permission-panel"]    — permission banner
-//   [data-testid="permission-approve-A"] — per-lane Approve button
+//   [data-event-type="governor"]        — governor audit-log row
 //   [data-testid="stale-badge"]         — stale count badge
 
 import { test, expect } from '@playwright/test';
@@ -240,71 +233,63 @@ test.describe('v94 phase2 smoke: Case A — activity wall multi-source', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Case B: Permission prompt → Approve → approval event in wall
+// Case B: Governor audit-log line → governor event in wall
 // ---------------------------------------------------------------------------
 
-test.describe('v94 phase2 smoke: Case B — permission prompt approval flow', () => {
+test.describe('v94 phase2 smoke: Case B — governor audit-log activity', () => {
 
-  test('B: write PROMPT_MARKER → banner appears → click Approve → approval event in wall within 4 s', async ({ page }, testInfo) => {
+  test('B: write a governor-log JSON line → type:"governor" event appears in the wall within 5 s', async ({ page }, testInfo) => {
     const fixtureRoot = fixtureRootForProject(testInfo);
 
     await authenticateAndGotoGrid(page, testInfo);
 
-    // ---- Seed a fake permission prompt in lane A's stream log ---------------
-    // The PermissionWatcher (now started in fake-spawner mode) polls every 1 s.
-    // Writing the PROMPT_MARKER text to .fleet/A.stream.log is sufficient to
-    // trigger prompt detection.
-    const streamLogPath = path.join(fixtureRoot, '.fleet', 'A.stream.log');
-    const promptBlock =
-      'Bash command\n' +
-      'echo "smoke-phase2-permission-test"\n' +
-      'Do you want to proceed?\n' +
-      '❯ 1. Yes\n' +
-      '  2. Yes, and always allow access\n' +
-      '  3. No\n';
-    appendFileSync(streamLogPath, promptBlock, 'utf-8');
+    // Give SSE a moment to connect (and the governor-log tailer to start)
+    // before writing the log line — mirrors Case A's 400 ms settle.
+    await page.waitForTimeout(400);
 
-    // ---- Wait for the permission banner to appear --------------------------
-    // Watcher poll = 1 s. FE polls /api/v1/permission_prompts every 2 s.
-    // Total worst-case ≈ 3 s; allow 8 s for CI headroom.
-    const banner = page.locator('[data-testid="permission-panel"]');
-    await expect(banner).not.toBeHidden({ timeout: 8_000 });
+    // ---- Seed a governor audit-log line ------------------------------------
+    // The backend ActivityWall tails .fleet/governor-log-<UTC today>.jsonl
+    // (250 ms poll) and emits one type:"governor" SSE event per JSON line.
+    // The log file does not exist in the fixture at startup, so the tailer
+    // reads it from the beginning once created — the line is not skipped.
+    const utcDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+    const fleetDir = path.join(fixtureRoot, '.fleet');
+    if (!existsSync(fleetDir)) mkdirSync(fleetDir, { recursive: true });
+    const govLogPath = path.join(fleetDir, `governor-log-${utcDate}.jsonl`);
 
-    // The per-lane Approve button for lane A must be visible.
-    const approveBtn = page.locator('[data-testid="permission-approve-A"]');
-    await expect(approveBtn).toBeVisible({ timeout: 3_000 });
+    // Unique reason so we can distinguish this line from any other governor
+    // events already in the ring buffer.
+    const probe = `phase2-governor-${Date.now()}`;
+    const govLine =
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        lane: 'A',
+        tool: 'Bash',
+        permission: 'deny',
+        category: 'bash-privilege',
+        reason: `privilege escalation: sudo (${probe})`,
+        input_sha256: 'abc123',
+      }) + '\n';
+    appendFileSync(govLogPath, govLine, 'utf-8');
 
-    // ---- Click "Approve" -------------------------------------------------
-    // Sets up passthrough interceptor so we can assert 202 from the real server.
-    let capturedStatus: number | null = null;
-    await page.route('**/permission_prompts/A/respond', async (route) => {
-      const resp = await route.fetch();
-      capturedStatus = resp.status();
-      await route.fulfill({ response: resp });
-    });
-
-    await approveBtn.click();
-
-    // Verify the respond endpoint returned 202.
-    await expect.poll(() => capturedStatus, { timeout: 5_000 }).toBe(202);
-
-    // ---- Assert "approval" event appears in the wall ----------------------
+    // ---- Assert a type:"governor" event appears in the wall ----------------
     const list = page.locator('[data-testid="aw-list"]');
     await expect.poll(
-      async () => list.locator('[data-event-type="approval"]').count(),
+      async () => list.locator('[data-event-type="governor"]').count(),
       {
-        timeout: 4_000,
-        message: 'approval event did not appear in the activity wall within 4 s',
+        timeout: 5_000,
+        message: 'governor event did not appear in the activity wall within 5 s',
       },
     ).toBeGreaterThan(0);
 
-    // Verify the approval row's summary contains "approve".
-    const approvalSummary = await list
-      .locator('[data-event-type="approval"]')
+    // The governor row's summary is "{permission} {category}" → "deny bash-privilege".
+    const govSummary = await list
+      .locator('[data-event-type="governor"]')
       .first()
       .locator('.aw-row__summary')
       .getAttribute('title');
-    expect(approvalSummary ?? '', 'approval row summary should contain the action name').toContain('approve');
+    expect(govSummary ?? '', 'governor row summary should contain the permission + category')
+      .toContain('deny');
   });
 
 });

@@ -3,41 +3,31 @@
 // Runs under chromium-board (MEGALODON_FAKE_SPAWNER=1, fix-small fixture,
 // 3 lanes A/B/C, port 8769; workers:1, fullyParallel:false).
 //
-// CV-8 precedence: BLOCKED (pending prompt) > STALE > RUNNING/IDLE (narrative).
-// A lane with a pending permission prompt ALWAYS shows BLOCKED, and the
-// narrative SSE handler must NOT overwrite a blocked lane's pill (no flicker).
+// CV-8 precedence: BLOCKED (governor deny-loop) > STALE > RUNNING/IDLE (narrative).
+// A governor-blocked lane ALWAYS shows BLOCKED, and the narrative SSE handler
+// must NOT overwrite a blocked lane's pill (no flicker).
+//
+// The board derives the BLOCKED set from the top-level `governor_blocked` list
+// in the GET /api/v1/lanes/stale response (Task 4.1). We STUB that endpoint via
+// page.route() with a mutable body so we can drive lane B in and out of the
+// blocked set deterministically (mirrors test_board_blocked_and_stale Test 3).
 //
 // Flow (lane B):
-//   1. Stub /api/v1/lanes/stale → empty (isolate from the fixture's ancient
-//      timestamps so STALE does not confound BLOCKED-vs-RUNNING).
+//   1. Stub /api/v1/lanes/stale → { stale_lanes: [], governor_blocked: [B] }.
 //   2. Seed lane B RUNNING via __fake__/narrative.
-//   3. Create a pending permission prompt for lane B by writing a Claude-REPL
-//      prompt block to .fleet/B.stream.log (same mechanism as the v94 smokes;
-//      the PermissionWatcher polls every 1 s, the banner polls every 2 s).
-//   4. Assert board-pill-B is BLOCKED (not RUNNING).
-//   5. Publish ANOTHER RUNNING narrative frame for lane B and assert the pill
-//      STAYS BLOCKED — the SSE handler must not overwrite the active banner.
-//   6. Approve the prompt and assert the pill returns to RUNNING.
+//   3. Assert board-pill-B is BLOCKED (not RUNNING) — the governor_blocked set wins.
+//   4. Publish ANOTHER RUNNING narrative frame for lane B and assert the pill
+//      STAYS BLOCKED — the SSE handler must not overwrite the blocked lane.
+//   5. Flip the stub to governor_blocked: [] and reload (re-triggers the
+//      mount-time /lanes/stale poll); assert the pill returns to RUNNING.
 
 import { test, expect, Page } from '@playwright/test';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import * as path from 'node:path';
 
-import { fixtureRootForProject, readUiToken } from './_helpers';
+import { readUiToken } from './_helpers';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-async function stubNoStaleLanes(page: Page): Promise<void> {
-  await page.route('**/api/v1/lanes/stale', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ stale_lanes: [], checked_at_utc: new Date().toISOString() }),
-    });
-  });
-}
 
 async function authenticateAndGotoBoard(page: Page, token: string): Promise<void> {
   await page.goto(`/#t=${token}`);
@@ -65,26 +55,6 @@ async function seedNarrative(page: Page, lanes: Record<string, unknown>): Promis
   expect(resp.status(), 'POST /api/v1/__fake__/narrative').toBe(200);
 }
 
-/**
- * Write a Claude-REPL permission-prompt block to <lane>.stream.log (TRUNCATE).
- * The PermissionWatcher (poll=1 s) detects "Do you want to proceed?" and
- * surfaces a prompt for the lane. Truncating (not appending) keeps this the
- * only prompt block in the log so no stale block from an earlier spec lingers.
- */
-function writePromptBlock(fixtureRoot: string, lane: string, cmd: string): void {
-  const fleetDir = path.join(fixtureRoot, '.fleet');
-  if (!existsSync(fleetDir)) mkdirSync(fleetDir, { recursive: true });
-  const streamLogPath = path.join(fleetDir, `${lane}.stream.log`);
-  const block =
-    'Bash command\n' +
-    cmd + '\n' +
-    'Do you want to proceed?\n' +
-    '❯ 1. Yes\n' +
-    '  2. Yes, and always allow access\n' +
-    '  3. No\n';
-  writeFileSync(streamLogPath, block, 'utf-8');
-}
-
 const RUNNING_B = {
   lane: 'B',
   lane_name: 'agent-b',
@@ -96,64 +66,70 @@ const RUNNING_B = {
   narrator_ok: true,
 };
 
+/** A single governor_blocked record for lane B (≥5 denies/60s deny-loop). */
+const GOVERNOR_BLOCKED_B = {
+  lane: 'B',
+  deny_count: 6,
+  window_seconds: 60,
+  last_category: 'bash-interpreter',
+  last_reason: 'deny-loop: repeated interpreter invocation',
+};
+
 // ---------------------------------------------------------------------------
-// CV-8: BLOCKED > RUNNING, SSE does not overwrite, approve → RUNNING
+// CV-8: BLOCKED > RUNNING, SSE does not overwrite, unblock → RUNNING
 // ---------------------------------------------------------------------------
 
-test.describe('board precedence (CV-8): pending prompt forces BLOCKED', () => {
+test.describe('board precedence (CV-8): governor_blocked forces BLOCKED', () => {
 
-  test('RUNNING + pending prompt → BLOCKED; SSE keeps BLOCKED; approve → RUNNING', async ({ page }, testInfo) => {
+  test('RUNNING + governor_blocked → BLOCKED; SSE keeps BLOCKED; unblock → RUNNING', async ({ page }, testInfo) => {
     const token = readUiToken(testInfo);
-    const fixtureRoot = fixtureRootForProject(testInfo);
 
-    await stubNoStaleLanes(page);
+    // ---- Step 1: stub /lanes/stale with a mutable governor_blocked body -----
+    // Lane B is in the governor deny-loop set; no stale lanes (isolate STALE
+    // from the fixture's ancient timestamps). We mutate `blockB` and reload to
+    // exercise the unblock transition at Step 5.
+    let blockB = true;
+    await page.route('**/api/v1/lanes/stale', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          stale_lanes: [],
+          governor_blocked: blockB ? [GOVERNOR_BLOCKED_B] : [],
+          checked_at_utc: new Date().toISOString(),
+        }),
+      });
+    });
+
     await authenticateAndGotoBoard(page, token);
 
     // ---- Step 2: seed lane B RUNNING via narrative -------------------------
     await seedNarrative(page, { B: RUNNING_B });
-    await expect(page.locator('[data-testid="board-pill-B"]'))
-      .toHaveText('RUNNING', { timeout: 8_000 });
 
-    // ---- Step 3: create a pending permission prompt for lane B -------------
-    const cmd = 'curl -s http://127.0.0.1:8769/precedence-probe';
-    writePromptBlock(fixtureRoot, 'B', cmd);
-
-    // Wait until the banner surfaces lane B's prompt (watcher 1 s + FE poll 2 s).
-    const banner = page.locator('[data-testid="permission-panel"]');
-    await expect(banner).not.toBeHidden({ timeout: 10_000 });
-    await expect(page.locator('[data-testid="permission-prompt-B"]'))
-      .toContainText('curl', { timeout: 10_000 });
-
-    // ---- Step 4: pill must flip to BLOCKED, not RUNNING --------------------
+    // ---- Step 3: pill must be BLOCKED, not RUNNING -------------------------
+    // governor_blocked (from the stubbed /lanes/stale) wins over the RUNNING
+    // narrative state.
     await expect(page.locator('[data-testid="board-pill-B"]'))
       .toHaveText('BLOCKED', { timeout: 8_000 });
 
-    // ---- Step 5: a new RUNNING narrative frame must NOT overwrite BLOCKED ---
+    // ---- Step 4: a new RUNNING narrative frame must NOT overwrite BLOCKED ---
     await seedNarrative(page, { B: RUNNING_B });
-    // Give the SSE frame + a banner poll cycle time to land, then assert the
-    // pill is STILL BLOCKED (no flicker to RUNNING).
-    await page.waitForTimeout(2_500);
+    // Give the SSE frame time to land, then assert the pill is STILL BLOCKED
+    // (no flicker to RUNNING — the precedence guard never overwrites BLOCKED).
+    await page.waitForTimeout(2_000);
     await expect(page.locator('[data-testid="board-pill-B"]')).toHaveText('BLOCKED');
 
-    // ---- Step 6: approve the prompt → pill returns to RUNNING --------------
-    // Truncate the stream log first so the watcher does not re-detect the block
-    // on its next poll and re-surface the prompt after we clear it.
-    writeFileSync(path.join(fixtureRoot, '.fleet', 'B.stream.log'), '', 'utf-8');
+    // ---- Step 5: unblock → pill returns to RUNNING -------------------------
+    // Flip the stub to an empty governor_blocked set and reload so the board's
+    // mount-time /lanes/stale poll picks up the new (empty) blocked set. The
+    // RUNNING_B narrative persists in the shared narrative_cache, so the board
+    // re-paints lane B as RUNNING once it is no longer in the blocked set.
+    blockB = false;
+    await page.reload();
+    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+    // Re-seed RUNNING after reload to guarantee an SSE frame lands post-mount.
+    await seedNarrative(page, { B: RUNNING_B });
 
-    let respondStatus: number | null = null;
-    await page.route('**/permission_prompts/B/respond', async (route) => {
-      const resp = await route.fetch();
-      respondStatus = resp.status();
-      await route.fulfill({ response: resp });
-    });
-
-    await page.locator('[data-testid="permission-approve-B"]').click();
-    await expect.poll(() => respondStatus, { timeout: 8_000 }).toBe(202);
-
-    // Banner clears (no pending prompts) and the pill falls back to the
-    // narrative RUNNING state once blockedLanes no longer contains B.
-    await expect(page.locator('[data-testid="permission-prompt-B"]'))
-      .toHaveCount(0, { timeout: 10_000 });
     await expect(page.locator('[data-testid="board-pill-B"]'))
       .toHaveText('RUNNING', { timeout: 10_000 });
   });

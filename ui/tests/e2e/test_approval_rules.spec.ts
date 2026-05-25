@@ -5,15 +5,14 @@
 // Case 1: Page renders — navigate to /approval-rules, empty state visible when no rules.
 // Case 2: Add manual rule — type pattern + click Add → POST fired → row appears.
 // Case 3: Remove rule — click Remove → DELETE fired → row gone.
-// Case 4: Approve&remember flow — trigger fake permission prompt (write PROMPT_MARKER
-//         to .fleet/A.stream.log), click Approve&remember → modal opens with extracted
-//         pattern → click Confirm → rule appears on /approval-rules within 1 s.
+//
+// The /approval-rules CRUD page is still live (it now feeds the governor's
+// allow-list). The former "Case 4" (approve&remember via permission prompt)
+// was removed with the permission-prompt flow it depended on.
 
 import { test, expect } from '@playwright/test';
-import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
-import * as path from 'node:path';
 
-import { fixtureRootForProject, readUiToken } from './_helpers';
+import { readUiToken } from './_helpers';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -169,85 +168,4 @@ test('approval-rules: remove rule fires DELETE and row disappears', async ({ pag
 
   // Empty state should appear (no other rules).
   await expect(page.locator('[data-testid="approval-rules-empty"]')).toBeVisible({ timeout: 3_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Case 4: Approve&remember flow
-// ---------------------------------------------------------------------------
-
-test('approval-rules: Approve&remember modal → confirm → rule saved on /approval-rules', async ({ page }, testInfo) => {
-  const fixtureRoot = fixtureRootForProject(testInfo);
-
-  await authenticateAndGotoGrid(page, testInfo);
-  await clearAllRules(page);
-
-  // ---- Seed a fake permission prompt in lane A's stream log ----
-  // Same mechanism as test_v94_phase2_smoke.spec.ts Case B.
-  const streamLogPath = path.join(fixtureRoot, '.fleet', 'A.stream.log');
-  const fleetDir = path.join(fixtureRoot, '.fleet');
-  if (!existsSync(fleetDir)) mkdirSync(fleetDir, { recursive: true });
-
-  // Use a simple, extract-able command so we can predict the pattern.
-  // Avoid shell glob chars to prevent issues in the prompt block.
-  const approvalCommand = 'find . -name README.md';
-
-  const promptBlock =
-    'Bash command\n' +
-    approvalCommand + '\n' +
-    'Do you want to proceed?\n' +
-    '❯ 1. Yes\n' +
-    '  2. Yes, and always allow access\n' +
-    '  3. No\n';
-  appendFileSync(streamLogPath, promptBlock, 'utf-8');
-
-  // ---- Wait for the permission banner to appear (watcher poll=1s, FE polls 2s) ----
-  const banner = page.locator('[data-testid="permission-panel"]');
-  await expect(banner).not.toBeHidden({ timeout: 10_000 });
-
-  const approveRememberBtn = page.locator('[data-testid="permission-approve-remember-A"]');
-  await expect(approveRememberBtn).toBeVisible({ timeout: 5_000 });
-
-  // ---- Track the two POST requests ----
-  let ruleSaved = false;
-  let respondOk = false;
-
-  await page.route('**/api/v1/approval-rules', async (route) => {
-    if (route.request().method() === 'POST') {
-      const resp = await route.fetch();
-      if (resp.status() === 200 || resp.status() === 201) ruleSaved = true;
-      await route.fulfill({ response: resp });
-    } else {
-      await route.continue();
-    }
-  });
-
-  await page.route('**/permission_prompts/A/respond', async (route) => {
-    const resp = await route.fetch();
-    if (resp.status() === 202) respondOk = true;
-    await route.fulfill({ response: resp });
-  });
-
-  // ---- Click "Approve & remember" ----
-  await approveRememberBtn.click();
-
-  // ---- Modal must appear with a pattern in the message ----
-  const modal = page.locator('[data-testid="confirm-modal"]');
-  await expect(modal).toBeVisible({ timeout: 5_000 });
-  await expect(modal).toContainText('Approve & remember?');
-  // The modal message should contain the extracted pattern (Bash(find:*))
-  const modalMsg = page.locator('[data-testid="confirm-modal-message"]');
-  await expect(modalMsg).toContainText('Bash(find:*)', { timeout: 3_000 });
-
-  // ---- Click the confirm button ----
-  await page.locator('[data-testid="confirm-modal-confirm"]').click();
-
-  // ---- Both POSTs must have fired ----
-  await expect.poll(() => ruleSaved, { timeout: 8_000 }).toBe(true);
-  await expect.poll(() => respondOk, { timeout: 8_000 }).toBe(true);
-
-  // ---- Navigate to /approval-rules and verify the rule appears ----
-  await navigateToApprovalRules(page);
-  await expect(
-    page.locator('[data-pattern="Bash(find:*)"]'),
-  ).toBeVisible({ timeout: 5_000 });
 });

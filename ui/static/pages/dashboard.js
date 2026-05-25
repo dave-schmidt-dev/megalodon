@@ -601,130 +601,6 @@ function renderStalePanel(container) {
   container.appendChild(confirmBtn);
 }
 
-// ---- v9.3 permission-prompt panel ----------------------------------------
-//
-// Surfaces Claude REPL approval prompts from every lane's pipe-pane stream.
-// The BE permission_watcher tails each lane's stream log; the FE polls
-// /api/v1/permission_prompts every 2s and renders pending prompts here with
-// Approve/Deny buttons that POST to .../permission_prompts/{lane}/respond.
-//
-// Hidden when no prompts are pending.
-
-async function fetchPermissionPrompts() {
-  try {
-    const resp = await fetch("/api/v1/permission_prompts", { credentials: "include" });
-    if (!resp.ok) return [];
-    const json = await resp.json();
-    return Array.isArray(json.prompts) ? json.prompts : [];
-  } catch (_) {
-    return [];
-  }
-}
-
-async function respondToPrompt(laneShort, action) {
-  try {
-    const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") || "";
-    const resp = await fetch(
-      `/api/v1/permission_prompts/${encodeURIComponent(laneShort)}/respond`,
-      {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          ...(csrf ? { "X-CSRF-Token": csrf } : {}),
-        },
-        body: JSON.stringify({ action }),
-      }
-    );
-    return resp.ok;
-  } catch (_) {
-    return false;
-  }
-}
-
-async function renderPermissionPanel(container) {
-  const prompts = await fetchPermissionPrompts();
-  clearNode(container);
-  if (prompts.length === 0) {
-    container.hidden = true;
-    return;
-  }
-  container.hidden = false;
-  const headerRow = el(
-    "div",
-    { class: "row", style: "gap: var(--sp-2); align-items: center; justify-content: space-between; flex-wrap: wrap;" },
-    el("h2", { class: "card__title", style: "color: var(--color-warning, #f59e0b); margin: 0;" },
-      `⚠  ${prompts.length} agent${prompts.length === 1 ? "" : "s"} awaiting approval`),
-    el("button", {
-      type: "button",
-      class: "button button--primary",
-      "data-testid": "permission-approve-all",
-      title: "Approves all pending permission prompts simultaneously. Use when multiple agents are waiting and all commands are safe.",
-      onclick: async () => {
-        const lanes = prompts.map((p) => p.lane);
-        await Promise.all(lanes.map((lane) => respondToPrompt(lane, "approve")));
-        await renderPermissionPanel(container);
-      },
-    }, `Approve all (${prompts.length})`),
-  );
-  container.appendChild(headerRow);
-  const list = el("ul", { class: "stack-1", style: "list-style: none; padding: 0; margin: 0;" });
-  for (const p of prompts) {
-    const lane = String(p.lane);
-    const cmd = String(p.command || "<unknown>");
-    const since = String(p.detected_at || "");
-    list.appendChild(el(
-      "li",
-      {
-        class: "stack-1",
-        "data-testid": `permission-prompt-${lane}`,
-        style: "padding: var(--sp-2); border: 1px solid var(--color-border, #444); border-radius: 4px;",
-      },
-      el("div", { class: "row", style: "gap: var(--sp-2); align-items: center; flex-wrap: wrap;" },
-        el("span", { class: `lane-chip ${p.lane_name || lane}` }, String(p.lane_name || lane)),
-        el("span", { class: "mono", style: "font-size: 0.85em; color: var(--color-text-muted, #888);" }, since),
-      ),
-      el("pre", {
-        class: "mono",
-        style: "white-space: pre-wrap; word-break: break-word; margin: var(--sp-1) 0; font-size: 0.9em; color: var(--color-text, #ddd);",
-      }, cmd),
-      el("div", { class: "row", style: "gap: var(--sp-2); flex-wrap: wrap;" },
-        el("button", {
-          type: "button",
-          class: "button button--primary",
-          "data-testid": `permission-approve-${lane}`,
-          title: "Approves this tool-use prompt. The agent's pending action will proceed.",
-          onclick: async () => {
-            const ok = await respondToPrompt(lane, "approve");
-            if (ok) await renderPermissionPanel(container);
-          },
-        }, "Approve"),
-        el("button", {
-          type: "button",
-          class: "button",
-          "data-testid": `permission-approve-remember-${lane}`,
-          title: "Approves and remembers this pattern for the session. Future prompts matching the same tool pattern won't require re-approval.",
-          onclick: async () => {
-            const ok = await respondToPrompt(lane, "approve_remember");
-            if (ok) await renderPermissionPanel(container);
-          },
-        }, "Approve & remember"),
-        el("button", {
-          type: "button",
-          class: "button button--warning",
-          "data-testid": `permission-deny-${lane}`,
-          title: "Denies this tool-use prompt. The agent will receive an error and may retry or skip the action.",
-          onclick: async () => {
-            const ok = await respondToPrompt(lane, "deny");
-            if (ok) await renderPermissionPanel(container);
-          },
-        }, "Deny"),
-      ),
-    ));
-  }
-  container.appendChild(list);
-}
-
 // ---- v9.3 active-claims panel --------------------------------------------
 //
 // Surfaces claims.list from /api/v1/state. The BE populates this from the
@@ -937,13 +813,6 @@ export async function render(root) {
     hidden: true,
   });
 
-  // v9.3 permission-prompt panel — top of page, hidden when no prompts pending.
-  const permissionPanel = el("section", {
-    class: "card stack-1",
-    "data-testid": "permission-panel",
-    hidden: true,
-  });
-
   // v9.3 active-claims panel — shows in-progress task claims even when STATUS.md is stale.
   const claimsPanel = el("section", {
     class: "card stack-1",
@@ -952,7 +821,6 @@ export async function render(root) {
   });
 
   const page = el("div", { class: "dashboard stack-3" },
-    permissionPanel,
     laneGrid,
     claimsPanel,
     tasksCard,
@@ -970,7 +838,6 @@ export async function render(root) {
   };
 
   // Initial paint.
-  renderPermissionPanel(permissionPanel);
   renderLaneGrid(laneGrid, expanded, onToggle, laneOrder, configByLane);
   renderClaimsPanel(claimsPanel);
   renderTasksSummary(tasksSummaryBody);
@@ -1016,13 +883,9 @@ export async function render(root) {
     renderLaneGrid(laneGrid, expanded, onToggle, laneOrder, configByLane);
   }));
 
-  // v9.3: poll permission prompts every 2s.
-  const permTimer = setInterval(() => renderPermissionPanel(permissionPanel), 2_000);
-
   return () => {
     clearInterval(sparkTimer);
     clearInterval(activityTimer);
-    clearInterval(permTimer);
     for (const u of unsubs) {
       try { u(); } catch (_) { /* ignore */ }
     }

@@ -12,24 +12,25 @@
 //   1. Narrative — initial GET /api/v1/narrative for instant first paint, then
 //      an EventSource("/api/v1/narrative-stream") that pushes the SAME uniform
 //      frame shape `{ lanes: { <short>: <per-lane payload>, ... } }`.
-//   2. Stale — GET /api/v1/lanes/stale on a 30s poll → STALE pill treatment.
-//   3. Permission prompts — driven by the permission-banner component's own 2s
-//      poll via its onPromptsChange callback (single source of truth; board.js
-//      does NOT open a second prompts poll). The set of prompt.lane values is
-//      the BLOCKED-lane set.
+//   2. Stale — GET /api/v1/lanes/stale on a 30s poll. The response carries a
+//      `stale_lanes` array (→ STALE pill treatment) AND a top-level
+//      `governor_blocked` array of lanes the governor is deny-looping
+//      (≥5 denies/60s, excluded from stale_lanes server-side) → BLOCKED pill.
+//      This single poll is the source of both the stale set and the BLOCKED set.
 //
 // Pill precedence (CV-8), single explicit rule:
-//   BLOCKED (pending prompt) > STALE (>threshold silent) > RUNNING/IDLE.
-// A lane with a pending permission prompt ALWAYS shows BLOCKED; the narrative
+//   BLOCKED (governor deny-loop) > STALE (>threshold silent) > RUNNING/IDLE.
+// A governor-blocked lane ALWAYS shows BLOCKED (§8.7 mitigation: a
+// governor-stalled lane must not be mis-read as merely stale); the narrative
 // SSE handler must NOT overwrite a blocked lane's pill. STALE overlays
-// RUNNING/IDLE only when no prompt is pending.
+// RUNNING/IDLE only when the lane is not governor-blocked.
 //
 // Narrator-offline: a status dot turns "offline" when a payload carries
 // narrator_ok=false or when the stream closes.
 //
 // Cleanup (grid teardown contract): close the EventSource, stop the stale
-// timer, call banner.cleanup(), dispose any open terminal drawer (Task 3.3
-// seam), and remove any body-appended modal. No leaked EventSources/timers.
+// timer, dispose any open terminal drawer (Task 3.3 seam), and remove any
+// body-appended modal. No leaked EventSources/timers.
 //
 // Page contract: `async render(root, params) -> cleanup` (same as grid.js).
 //
@@ -37,7 +38,6 @@
 
 import { loadConfig } from "../js/config.js";
 import { mountPage } from "../js/app.js";
-import { createPermissionBanner } from "../components/permission_banner.js";
 import { createTerminalPane } from "../components/terminal_pane.js";
 import { createActivityWall } from "../components/activity_wall.js";
 import { StaleModal } from "../components/stale_modal.js";
@@ -117,17 +117,29 @@ async function fetchNarrative() {
 }
 
 /**
- * Fetch the stale lanes from the server (mirrors grid.js fetchStaleLanes()).
- * @returns {Promise<Array<{lane: string, silent_seconds: number|null, pending_approval: boolean, last_activity_source: string}>>}
+ * @typedef {Object} StaleResponse
+ * @property {Array<{lane: string, silent_seconds: number|null, last_activity_source: string}>} stale_lanes
+ *   lanes silent ≥ threshold (governor-blocked lanes are excluded server-side).
+ * @property {Array<{lane: string, deny_count: number, window_seconds: number, last_category: string, last_reason: string}>} governor_blocked
+ *   lanes the governor is deny-looping (≥5 denies/60s) → BLOCKED pill.
+ */
+
+/**
+ * Fetch the /api/v1/lanes/stale response (stale_lanes + governor_blocked).
+ * Returns a normalized shape so callers can read both arrays without re-checking.
+ * @returns {Promise<StaleResponse>}
  */
 async function fetchStaleLanes() {
   try {
     const resp = await fetch("/api/v1/lanes/stale", { credentials: "include" });
-    if (!resp.ok) return [];
+    if (!resp.ok) return { stale_lanes: [], governor_blocked: [] };
     const json = await resp.json();
-    return Array.isArray(json.stale_lanes) ? json.stale_lanes : [];
+    return {
+      stale_lanes: Array.isArray(json.stale_lanes) ? json.stale_lanes : [],
+      governor_blocked: Array.isArray(json.governor_blocked) ? json.governor_blocked : [],
+    };
   } catch (_) {
-    return [];
+    return { stale_lanes: [], governor_blocked: [] };
   }
 }
 
@@ -142,7 +154,8 @@ async function fetchStaleLanes() {
  * @returns {{ label: string, kind: "blocked"|"stale"|"running"|"idle" }}
  */
 function resolvePill({ blocked, stale, state }) {
-  // CR-4: a blocked task (state === "blocked") OR a pending permission prompt
+  // CR-4: a blocked task (state === "blocked") OR a lane the governor is
+  // deny-looping (governor-blocked, from /lanes/stale's governor_blocked list)
   // both surface as BLOCKED. Precedence: BLOCKED > STALE > RUNNING/IDLE.
   if (blocked || String(state || "").toLowerCase() === "blocked") {
     return { label: "BLOCKED", kind: "blocked" };
@@ -411,22 +424,21 @@ export async function render(root, _params) {
 
   // Liveness guard: app.js may supersede this mount (clear root, bump mount
   // seq) while an awaited fetch is suspended. `alive` lets resolved awaits and
-  // queued callbacks bail out instead of writing into a foreign page. Mirrors
-  // the `active` pattern in permission_banner.js. cleanup() flips it false.
+  // queued callbacks bail out instead of writing into a foreign page.
+  // cleanup() flips it false.
   let alive = true;
 
-  // --- shared precedence state (declared before the banner so the
-  //     onPromptsChange closure's dependencies are visible). ---
+  // --- shared precedence state ---
   /** @type {Record<string, LaneRowRefs>} */
   const rowRefs = {};
-  /** @type {Set<string>} lanes with a pending permission prompt → BLOCKED */
+  /** @type {Set<string>} lanes in a governor deny-loop (governor_blocked from /lanes/stale) → BLOCKED */
   let blockedLanes = new Set();
   /** @type {Set<string>} lanes flagged stale by /api/v1/lanes/stale */
   let staleLanes = new Set();
   /**
    * Full stale-lane records from the last /api/v1/lanes/stale response.
    * Keyed by lane short code for O(1) lookup when opening the modal.
-   * @type {Record<string, {lane: string, silent_seconds: number|null, pending_approval: boolean, last_activity_source: string}>}
+   * @type {Record<string, {lane: string, silent_seconds: number|null, last_activity_source: string}>}
    */
   let staleData = {};
 
@@ -618,16 +630,6 @@ export async function render(root, _params) {
     activityToggleBtn,
   );
 
-  // --- permission banner (Task 3.1) — single prompts poll, drives BLOCKED ---
-  const banner = createPermissionBanner({
-    onPromptsChange: (prompts) => {
-      const next = new Set(prompts.map((p) => String(p.lane)));
-      blockedLanes = next;
-      // Re-evaluate every row's pill (cheap; lane count is small).
-      for (const short of Object.keys(rowRefs)) reevaluatePill(short);
-    },
-  });
-
   // --- terminal drawer seam (Task 3.3) ---
   // Single-drawer invariant: only one terminal drawer may be open at a time.
   // State lives here in render() so it is scoped to this page instance and
@@ -760,7 +762,6 @@ export async function render(root, _params) {
       "data-testid": "board-page",
     },
     missionHeader,
-    banner.element,
     rowsContainer,
   );
   root.appendChild(page);
@@ -837,15 +838,17 @@ export async function render(root, _params) {
     }
   };
 
-  // --- start the banner poll (drives blockedLanes via onPromptsChange) ---
-  banner.start();
-
   // --- stale lanes: initial fetch + poll every 30s ---
+  // This single poll drives BOTH the STALE set (stale_lanes) and the BLOCKED
+  // set (governor_blocked — lanes the governor is deny-looping). Re-evaluating
+  // pills here applies the BLOCKED > STALE > RUNNING/IDLE precedence.
   async function pollStale() {
     if (!alive) return;
-    const list = await fetchStaleLanes();
+    const { stale_lanes: list, governor_blocked: governorBlocked } = await fetchStaleLanes();
     if (!alive) return; // await may resolve after cleanup
     staleLanes = new Set(list.map((s) => String(s.lane)));
+    // Governor deny-loop lanes drive the BLOCKED pill.
+    blockedLanes = new Set(governorBlocked.map((g) => String(g.lane)));
     // Rebuild the staleData map for the modal.
     staleData = Object.fromEntries(list.map((s) => [String(s.lane), s]));
     for (const short of Object.keys(rowRefs)) reevaluatePill(short);
@@ -863,9 +866,7 @@ export async function render(root, _params) {
     try { es.close(); } catch (_) { /* ignore */ }
     // 2. Stop the stale poll timer.
     clearInterval(staleTimer);
-    // 3. Tear down the permission banner (stops its 2s poll).
-    try { banner.cleanup(); } catch (_) { /* ignore */ }
-    // 4. Dispose any open terminal drawer (Task 3.3 seam).
+    // 3. Dispose any open terminal drawer (Task 3.3 seam).
     if (disposeTerminalDrawer) {
       try { disposeTerminalDrawer(); } catch (_) { /* ignore */ }
       disposeTerminalDrawer = null;
@@ -890,6 +891,6 @@ export async function render(root, _params) {
     // every page render (mountPage); a page cleanup that clears root can wipe a
     // *newer* page when app.js discards a stale render's cleanup — the WebKit
     // back-navigation blank-board bug. Cleanup releases only this page's own
-    // resources (timers, EventSources, banner, drawers, body-level modals).
+    // resources (timers, EventSources, drawers, body-level modals).
   };
 }

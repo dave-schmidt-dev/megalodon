@@ -9,7 +9,7 @@
 //   import { StaleModal } from "../components/stale_modal.js";
 //   const modal = new StaleModal({ navigate, getCsrfToken, showToast, onRefresh });
 //   document.body.appendChild(modal.element);
-//   modal.open(staleLanes);  // [{lane, silent_seconds, pending_approval, last_activity_source}]
+//   modal.open(staleLanes);  // [{lane, silent_seconds, last_activity_source}]
 //   modal.close();
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,6 @@ function formatDuration(seconds) {
  * @typedef {{
  *   lane: string,
  *   silent_seconds: number|null,
- *   pending_approval: boolean,
  *   last_activity_source: string,
  * }} StaleLane
  */

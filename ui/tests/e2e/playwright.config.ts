@@ -190,7 +190,7 @@ const MUTATIONS_PATTERN = /test_orchestrator_actions\.spec\.ts$/;
 // The v9.4 phase-1 smoke spec runs against chromium-grid-smoke (fake spawner enabled).
 // The stale-badge spec (T2.8) runs under chromium-board because it needs MEGALODON_FAKE_SPAWNER=1
 // (uses _test/stale_override endpoint) — chromium-board includes MEGALODON_FAKE_SPAWNER.
-const BOARD_SPEC_PATTERN = /test_(board_[a-z0-9_]+|lane_detail|activity_wall|stale_badge|v94_phase2_smoke|v94_phase3_smoke|findings_page|signals_page|mission_page|tasks_page|approval_rules)\.spec\.ts$/;
+const BOARD_SPEC_PATTERN = /test_(board_[a-z0-9_]+|lane_detail|activity_wall|stale_badge|v94_phase2_smoke|findings_page|signals_page|mission_page|tasks_page|approval_rules)\.spec\.ts$/;
 const GRID_SMOKE_SPEC_PATTERN = /test_v94_phase1_smoke\.spec\.ts$/;
 // The restart-reconnect spec (Task D6 / PW-3) manages its OWN server process
 // (Node child_process), so it runs under the dedicated `chromium-restart`
