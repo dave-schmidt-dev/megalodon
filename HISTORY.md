@@ -10,6 +10,46 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-25 (PM) — Governor Phase 1 IMPLEMENTED (policy engine + hook entrypoint)
+
+**What:** Phase 1 of the governor-hook plan is built and committed — the pure security core,
+no wiring yet (additive; nothing existing changed). Two new modules under `megalodon_ui/governor/`:
+- **`policy.py`** — `decide(tool_name, tool_input, *, project_dir, lane) -> Decision(permission,
+  reason, category)`. Pure, no I/O except reading `.fleet/approval-rules.json` for operator
+  allow-overrides. Allow-by-default + deny-dangerous: Bash `shlex` segmentation (per-segment, so
+  `ls|head`/`grep -E`/`find . 2>/dev/null` pass) + head & flag code-exec denylists + command/process-
+  substitution deny + parse-fail fail-closed + canonicalized secret/scope check (native Read/Grep/Glob
+  AND read-style Bash, one helper) + Write/redirect anti-tamper + Task/Agent deny + WebFetch host
+  allowlist + non-overridable floor (root-destructive/privilege/secret-read). Any internal exception → deny.
+- **`hook.py`** — thin `PreToolUse` `command` hook: stdin JSON → `decide` → stdout decision JSON →
+  append secret-sanitized audit line to `.fleet/governor-log-<UTC>.jsonl` (input hashed, never raw;
+  reason redacted per-category + runtime defensive net). Import-light, crash-safe/fail-closed. Scope/lane
+  from `$CLAUDE_PROJECT_DIR`+cwd (no env reliance). schema verified against Claude Code hooks docs.
+
+**Tests/gates:** 182 passing (`scripts/tests/test_governor_policy.py` 162 + `test_governor_hook.py` 20),
+ruff (0.15.14) clean, vulture clean.
+
+**Review caught + closed 4 CRITICAL bypasses** (subagent-driven implementer→spec-review→quality-review→
+final-review; this is why the two-stage review exists — the test matrix was green at each before review
+found the unlisted vector):
+- segmentation head-hiding via subshell/brace-group/keyword-prefix (`(rm -rf /etc)`, `time python3 -c …`);
+- allow-override leaking across compound segments (`Bash(ls:*)` flipping a chained `curl` deny);
+- backslash-newline line-continuation splice defeating even the `rm -rf /`/`sudo` floors;
+- repr-escaped segment leaking a raw input fragment into the durable audit log (chmod/rm with a `\n` target).
+Each fixed at the root (segmenter/override-scope/pre-tokenize normalize/head-only reasons) with regressions.
+
+**Bug/remediation note (regression-relevant):** the audit log MUST NOT persist raw input — `Decision.reason`
+can reconstruct a secret path. Fixed by storing per-category sanitized reasons + a defensive net that
+redacts any reason containing a verbatim/`repr()`/`json` form of a `tool_input` value or a `~` fragment;
+deny reasons for kept categories now name the offending head only, never the full segment.
+
+**Next:** Phase 2 — generate `governor-settings.json`, wire `--settings` into all claude argv paths
+(live-REPL + follow-up/respawn), hook-path preflight, canary self-test, kill-switch. **P3+ decommission
+of `permission_watcher.py` not started.** Plan signature-prose drift (§3.1 says `*, lane, cwd`; implemented
+`*, project_dir, lane`) to reconcile in the P5 docs pass.
+
+---
+
 ## 2026-05-25 (PM) — Architectural pivot: governor hook (design + warp plan; not yet implemented)
 
 **Why:** §1b's read-only auto-approver was killed by a GPT-5.5 contrarian review
