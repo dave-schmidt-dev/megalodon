@@ -234,6 +234,75 @@ test.describe('board narrative: Last column phrase-or-desc (OQ1)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test 1c: a long unbroken Now phrase is clipped, never widening the page.
+// Regression for the board horizontal-scrollbar bug: a long unbroken token in a
+// Now phrase (e.g. a finding path) pinned the flex value cell at full width
+// (min-width:auto) and ballooned a grid item (min-width:auto) past the viewport.
+// Fix: minmax(0,1fr) on the body grid + min-width:0 on the .truncate value cells.
+// ---------------------------------------------------------------------------
+
+test.describe('board narrative: long Now phrase does not overflow the page', () => {
+
+  test.afterEach(async ({ page }, testInfo) => {
+    try {
+      const token = readUiToken(testInfo);
+      await authenticateAndGotoBoard(page, token);
+      await seedNarrative(page, {
+        A: payload({ lane: 'A', lane_name: 'agent-a', state: 'open' }),
+        B: payload({ lane: 'B', lane_name: 'agent-b', state: 'open' }),
+        C: payload({ lane: 'C', lane_name: 'agent-c', state: 'open' }),
+      });
+    } catch {
+      /* best-effort reset */
+    }
+  });
+
+  test('long unbroken Now phrase is truncated; no horizontal scroll', async ({ page }, testInfo) => {
+    const token = readUiToken(testInfo);
+    await stubNoStaleLanes(page);
+    await authenticateAndGotoBoard(page, token);
+
+    // A long unbroken token (mimics a finding path) — the worst case for flex
+    // truncation: min-width:auto would pin it full-width and overflow the page.
+    const longPhrase =
+      'P1-B-draft-filed-findings/agent-011f-B-P1-v10-refactor-scope-2026-05-25T01-42Z.md-' +
+      'a-very-long-unbroken-path-segment-that-must-be-clipped-not-widen-the-whole-layout-xxxxxxxxxxxxxxxxxxxx';
+
+    await seedNarrative(page, {
+      A: payload({
+        lane: 'A',
+        lane_name: 'agent-a',
+        state: 'claimed',
+        now: { task_id: 'P1-B', desc: longPhrase, phrase: longPhrase },
+        goal: 'A-GOAL',
+        tokens: 1,
+        narrator_ok: true,
+      }),
+    });
+
+    const rowA = page.locator('[data-testid="board-row-A"]');
+    await expect(rowA).toContainText('P1-B-draft-filed-findings', { timeout: 8_000 });
+
+    // 1) The page must not scroll horizontally (the user-visible bug).
+    const overflowPx = await page.evaluate(() => {
+      const de = document.documentElement;
+      return de.scrollWidth - de.clientWidth;
+    });
+    expect(overflowPx, 'document horizontal overflow (px)').toBeLessThanOrEqual(1);
+
+    // 2) The Now cell must actually be clipped — content wider than its box
+    //    (proves the ellipsis is doing the work, not just a wide viewport).
+    const clipped = await page.evaluate(() => {
+      const spans = document.querySelectorAll('[data-testid="board-row-A"] .truncate');
+      const nowEl = spans[1] as HTMLElement | undefined; // [Last, Now, Goal]
+      return nowEl ? nowEl.scrollWidth > nowEl.clientWidth : false;
+    });
+    expect(clipped, 'Now cell is clipped (ellipsis active)').toBe(true);
+  });
+
+});
+
+// ---------------------------------------------------------------------------
 // Test 2: narrator-status-dot offline iff any payload narrator_ok=false
 // ---------------------------------------------------------------------------
 

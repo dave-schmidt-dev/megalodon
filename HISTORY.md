@@ -10,6 +10,36 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-24 — Bugfix: summary board horizontal scrollbar (long Now phrase)
+
+**Symptom:** After the STATUS.md fallback populated the board's Now line with
+real lane notes, the dashboard developed a page-wide horizontal scrollbar. The
+ARCHITECT row (whose notes contain a long unbroken finding path) ballooned to
+~1780px on a 1280px viewport and visibly wrapped.
+
+**Root cause (two flexbox/grid `min-width:auto` traps):** (1) The `.truncate`
+value spans are flex items; their default `min-width:auto` pinned the long
+unbroken token at full width so `text-overflow:ellipsis` never engaged. (2) More
+fundamentally, `body { display:grid }` had no explicit column, so the grid item
+`#app-root` (a `<main>` *without* the `.app-main` class that carries
+`min-width:0`) defaulted to `min-width:auto` and sized to its content's
+min-content, overflowing the viewport track. Browser-measured: `#app-root`
+1780px vs viewport 1280px; span never clipped.
+
+**Fix:** `ui/static/css/base.css` — `body` grid gains
+`grid-template-columns: minmax(0, 1fr)` (constrains every grid row's item to the
+track + allows shrink below content). `ui/static/pages/board.js` — the Last/Now/
+Goal `.truncate` spans gain `min-width: 0` so ellipsis clips within the now-
+constrained width. Verified live (Playwright MCP): overflow 1780→1280px, Now
+cell ellipsisActive true; holds at 1100/1280/1440px viewports.
+
+**Regression test:** `ui/tests/e2e/test_board_narrative.spec.ts` — "long unbroken
+Now phrase is truncated; no horizontal scroll" (asserts `scrollWidth-clientWidth
+<= 1` and Now cell `scrollWidth > clientWidth`). Confirmed RED without the grid
+fix, GREEN with it. Full board_narrative spec: 4 passed.
+
+---
+
 ## 2026-05-24 — Bugfix: summary board shows all lanes IDLE during INIT/pre-PLAN
 
 **Symptom:** During the `v10-prep` dogfood launch, all six lanes were live (tmux

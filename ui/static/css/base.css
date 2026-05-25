@@ -135,6 +135,12 @@ img, svg {
 body {
   display: grid;
   grid-template-rows: 56px 40px 1fr auto;
+  /* minmax(0, 1fr) (not the implicit `auto`) lets grid items shrink below their
+   * content's min-content width. Without it a grid item defaults to
+   * min-width:auto and balloons past the viewport when a descendant has a long
+   * unbreakable token (e.g. a finding path in a board Now phrase), producing a
+   * page-wide horizontal scrollbar. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
     "header"
     "nav"

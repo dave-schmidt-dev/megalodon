@@ -254,9 +254,13 @@ function buildRow(lane, onToggleTerminal, onStalePillClick) {
 
   // 3-line Last / Now / Goal block.
   const labelStyle = "color: var(--text-muted); font-size: var(--fs-xs); width: 40px; flex: 0 0 auto;";
-  const lastEl = el("span", { class: "truncate", style: "flex: 1 1 auto; color: var(--text-muted);" }, "—");
-  const nowEl = el("span", { class: "truncate", style: "flex: 1 1 auto; color: var(--text);" }, "—");
-  const goalEl = el("span", { class: "truncate", style: "flex: 1 1 auto; color: var(--text-muted);" }, "—");
+  // min-width: 0 lets these flex items shrink below their content's intrinsic
+  // width so `.truncate` (overflow:hidden + ellipsis) can clip. Without it the
+  // flexbox default min-width:auto pins a long unbroken token (e.g. a finding
+  // path in a Now phrase) at full width, widening the row and the whole page.
+  const lastEl = el("span", { class: "truncate", style: "flex: 1 1 auto; min-width: 0; color: var(--text-muted);" }, "—");
+  const nowEl = el("span", { class: "truncate", style: "flex: 1 1 auto; min-width: 0; color: var(--text);" }, "—");
+  const goalEl = el("span", { class: "truncate", style: "flex: 1 1 auto; min-width: 0; color: var(--text-muted);" }, "—");
 
   const lastNowGoalBlock = el(
     "div",
