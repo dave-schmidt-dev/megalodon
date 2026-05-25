@@ -10,6 +10,52 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-25 (PM) — Task 3.3: approval-rules consumer moved to the governor (BREAKING) + allowlist removed
+
+**Breaking change — the consumer of `.fleet/approval-rules.json` changed:**
+- **Before:** operator-approved patterns were plumbed into Claude's `--allowedTools`
+  flag at spawn time (`spawn._load_approval_rule_patterns` → `claude.build_argv`),
+  filtered through `_is_unbounded_tool`/`_FORBIDDEN_HEAD_CMDS`.
+- **After:** the governor's `policy.decide` reads `approval-rules.json` directly and
+  applies matching `Bash(specifier)` patterns as an **audited allow-override** (flips a
+  non-floor deny → allow, category `allow-override`). Nothing approval-related is passed
+  on the `claude` argv anymore.
+
+**Removed (their enforcement intent now lives in `policy.py`):**
+- `claude.py`: the static `--allowedTools` allowlist string, the
+  `extra_allowed_tools` param, and the `_is_unbounded_tool` / `_FORBIDDEN_HEAD_CMDS` /
+  `_COMPOUND_OPERATORS` filter. The `live_repl` argv is now just
+  `claude --model <id> [--settings <path>]` (proven safe live — `governor-repl-validation`,
+  a benign `echo` ran with NO `--allowedTools` and no prompt; the hook `allow` is the gate).
+- `spawn.py`: `_load_approval_rule_patterns` + `_PATTERN_RE` and both `extra_allowed_tools`
+  call-site blocks. The `--settings` governor wiring (`governor_kwargs`) is retained.
+- `scripts/check_megalodon_workers.sh`: dropped the `GET /api/v1/permission_prompts`
+  polling (endpoint deleted in Task 3.1, now 404s); the report now surfaces a
+  `GOVERNOR-BLOCKED` section sourced from `GET /api/v1/lanes/stale`'s `governor_blocked`
+  list, and the stale carve-out reuses that list (wording: "pending approval" →
+  "governor-blocked").
+
+**Posture shift (explicit):**
+- The old `_is_unbounded_tool` filter *blocked* re-admitting unbounded heads
+  (curl/python/compound) via "approve & remember". Under the governor, an operator
+  approval-rule **can** override a non-floor deny (network/interpreter/installer) — but
+  every such command is inspected and **audited** by the governor on each invocation, and
+  the hard floor (`bash-root-destructive`, `bash-privilege`, `secret-read`) remains
+  **non-overridable**.
+- Operators lose nothing for bounded patterns (allowed by default regardless of rules);
+  the escape hatch is now finer-grained (per-segment, per-command) and audited, rather
+  than a coarse standing allowlist entry.
+
+**Migration safety net:** new `scripts/tests/test_approval_rules_migration_audit.py`
+(PM-3/SR-4) replays the actual archived v94-dogfood corpus
+(`.archive/2026-05-22T19-50Z--v94-ui-dogfood/.fleet/approval-rules.json`) through
+`policy.decide` and asserts each previously-approved pattern still ALLOWs (default-allow
+for bounded heads; `allow-override` for `pytest`/`uv`), that the override is load-bearing
+(those two DENY without the rules file), and that floor denies stay denied even with a
+matching permissive rule present.
+
+---
+
 ## 2026-05-25 (PM) — Governor P3 gate PASSED (REPL + live canary) + activity-visibility finding
 
 **Gate cleared (both recorded PASS):**

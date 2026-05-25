@@ -22,62 +22,6 @@ import pathlib
 
 from .base import Capabilities, Event, ModelSpec
 
-# Forbidden command heads (2026-05-22 tool-surface policy): interpreters, network
-# tools, installers, and destructive non-interpreters that policy never auto-
-# approves — even via an operator approval-rule. Prefix-matched against the head
-# of a Bash(<cmd> ...) pattern; scripts/ paths are bounded by location and exempt.
-_FORBIDDEN_HEAD_CMDS = (
-    "python",
-    "uv run",
-    "bash",
-    "sh",
-    "eval",
-    "curl",
-    "wget",
-    "ssh",
-    "scp",
-    "pip",
-    "npm",
-    "npx",
-    "find",
-    "rm",
-    "sudo",
-    "chmod",
-    "chown",
-    "dd",
-    "mv",
-    "tee",
-    "ln",
-)
-# Compound/background separators Claude Code's Bash matcher recognizes
-# (code.claude.com/docs/en/permissions): && || ; | |& & newline — plus command
-# substitution. Any presence marks the candidate pattern unbounded.
-_COMPOUND_OPERATORS = ("&&", "||", ";", "|", "&", "\n", "$(", "`")
-
-
-def _is_unbounded_tool(pattern: str) -> bool:
-    """True if a candidate --allowedTools pattern names an unbounded interpreter,
-    network tool, installer, destructive command, or shell escape. Filters
-    operator-supplied PM-8 patterns so 'approve & remember' cannot re-admit them.
-
-    A pattern whose Bash head is a ``scripts/`` path is bounded by location (the
-    sanctioned tool dir) — consistent with the threat model (the concern is python
-    re-admission and accidental broadening, not malicious scripts). Everything else
-    is prefix-matched against the forbidden heads; compound separators anywhere
-    also mark the pattern unbounded.
-    """
-    low = pattern.lower()
-    if any(op in low for op in _COMPOUND_OPERATORS):
-        return True
-    if "bash(" not in low:
-        return False  # native-tool patterns (Read/Edit/...) are always bounded
-    head = low.split("bash(", 1)[1].strip().lstrip("./").strip()
-    if ".." in head:
-        return True  # path traversal escapes any location bound (scripts/../python3)
-    if head.startswith("scripts/"):
-        return False  # path-scoped script — bounded by location
-    return any(head.startswith(cmd) for cmd in _FORBIDDEN_HEAD_CMDS)
-
 
 class ClaudeAdapter:
     """Concrete HarnessAdapter for the Claude Code CLI."""
@@ -112,82 +56,25 @@ class ClaudeAdapter:
         output_format: str = "text",
         extra_env: dict[str, str] | None = None,
         live_repl: bool = False,
-        extra_allowed_tools: list[str] | None = None,
         governor_settings: pathlib.Path | None = None,
     ) -> tuple[list[str], dict[str, str]]:
-        # Governor (Task 2.2): when a settings path is supplied, attach
-        # --settings <governor-settings.json> right after --model <id> (before
-        # any positional prompt / before --allowedTools). ADDITIVE — the
-        # --allowedTools allowlist below is left exactly as-is (a hook `allow`
-        # still suppresses prompts for non-allowlisted tools; the allowlist is
-        # the documented broad fallback). When None, argv is unchanged from
-        # before, so callers that don't pass it (e.g. preview.py) are unaffected.
+        # Governor (Task 2.2 / Task 3.3): when a settings path is supplied,
+        # attach --settings <governor-settings.json> right after --model <id>.
+        # The governor PreToolUse hook is now the SOLE permission gate — the old
+        # static --allowedTools allowlist (and its operator-pattern appending)
+        # were removed in Task 3.3, since the governor's policy.decide already
+        # default-allows bounded commands and applies operator approval-rules as
+        # audited allow-overrides. A hook `allow` decision auto-approves a tool
+        # without an operator prompt (proven live: governor-repl-validation,
+        # 2026-05-25). When governor_settings is None, argv is unchanged.
         def _settings_args() -> list[str]:
             return ["--settings", str(governor_settings)] if governor_settings else []
 
         if live_repl:
-            # --allowedTools policy (2026-05-22 tool-surface hardening):
-            #
-            # PRINCIPLE: never allowlist an unbounded interpreter. Every agent
-            # operation reaches a native tool or a dedicated, path-scoped script.
-            # Origin: v94-ui-dogfood approval-friction finding + operator
-            # constraint "i am not approving python".
-            #
-            # AUTO-APPROVED (no operator prompt):
-            #  * Native tools: Read/Edit/Write/Grep/Glob, ScheduleWakeup, Task*.
-            #    All file reads + ad-hoc inspection go through Read/Grep.
-            #  * Path-scoped scripts (the sanctioned shell mutation/inspection
-            #    paths — added here; they are NOT in the pre-policy allowlist):
-            #      poll.py (state inspection), atomic_close.py (RULE-10 close),
-            #      claim.sh (claims/ mutex), queue_submit.py (queue intents),
-            #      run_e2e.sh (Playwright), run_tests.sh (full pytest suite).
-            #  * Bounded non-interpreter utilities: sleep/date/printf (stagger
-            #    wait, UTC stamp, terminal title — no code-exec, no -exec escape).
-            #
-            # DELIBERATELY NOT LISTED (Claude auto-runs these read-only builtins
-            # without a prompt in every mode — code.claude.com/docs/en/permissions):
-            #  * cat/ls/grep/find/head/tail/wc/echo/pwd/which/diff/stat AND
-            #    read-only git (status/diff/log/show/rev-parse/ls-files). Listing
-            #    them is redundant, and an explicit `Bash(git diff*)` would BROADEN
-            #    to write-forms like `git diff --output=<file>` (CR-5). Write-form
-            #    git (branch/commit/push) and write-form builtins still prompt.
-            #
-            # PERMANENTLY OFF THE ALLOWLIST (surface to operator if ever needed):
-            #  * python / python3 / uv run / bare pytest (arbitrary code or
-            #    missing test-extra deps — tests run via run_tests.sh)
-            #  * bash -c / sh -c / eval / compound chains (&& | ; & newline)
-            #  * curl / wget / ssh / scp (queue now via queue_submit.py)
-            #  * find (-exec), rm/sudo/chmod/dd, installers
-            allowed = (
-                # Claude-native tools
-                "Read Edit Write Grep Glob "
-                "ScheduleWakeup TaskCreate TaskUpdate TaskGet TaskList TaskOutput "
-                # Path-scoped scripts — the sanctioned shell paths
-                "Bash(scripts/poll.py:*) Bash(scripts/atomic_close.py:*) "
-                "Bash(scripts/claim.sh:*) Bash(scripts/queue_submit.py:*) "
-                "Bash(scripts/run_e2e.sh:*) Bash(./scripts/run_e2e.sh:*) "
-                "Bash(scripts/run_tests.sh:*) "
-                # Bounded non-interpreter utilities (read-only git + cat/ls/grep
-                # are NOT listed — Claude auto-runs read-only builtins regardless)
-                "Bash(sleep:*) Bash(date:*) Bash(printf:*)"
-            )
-            # PM-8: append operator-approved patterns from .fleet/approval-rules.json,
-            # but FILTER unbounded patterns first (2026-05-22 tool-surface policy).
-            # An operator "approve & remember" must never silently re-admit
-            # python/uv-run/curl/compound shells via approval-rules.json — the
-            # exact loop that broadened the surface during the v94 dogfood.
-            if extra_allowed_tools:
-                safe_extra = [
-                    p for p in extra_allowed_tools if not _is_unbounded_tool(p)
-                ]
-                if safe_extra:
-                    allowed = allowed + " " + " ".join(safe_extra)
-            return (
-                ["claude", "--model", model]
-                + _settings_args()
-                + ["--allowedTools", allowed],
-                {},
-            )
+            # No --allowedTools and no positional prompt: live_repl lanes get
+            # their initial prompt via tmux send-keys, and the governor hook is
+            # the gate (see module note above).
+            return (["claude", "--model", model] + _settings_args(), {})
         argv = ["claude", "--print", "--model", model] + _settings_args()
         if output_format == "stream-json":
             argv += ["--output-format", "stream-json"]

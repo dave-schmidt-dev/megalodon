@@ -65,10 +65,12 @@ def test_build_argv_text_default():
 
 
 def test_build_argv_live_repl_omits_print_and_prompt():
-    """live_repl=True returns REPL argv with a BOUNDED --allowedTools surface.
+    """live_repl=True returns a bare REPL argv: NO --print, NO --allowedTools,
+    NO positional prompt.
 
-    Policy (2026-05-22 tool-surface): no unbounded interpreter is allowlisted.
-    Agents reach every operation through native tools or path-scoped scripts.
+    Task 3.3: the static --allowedTools allowlist was removed. The governor
+    PreToolUse hook is the sole permission gate; the live_repl initial prompt is
+    delivered via tmux send-keys, not a positional argv arg.
     """
     argv, env = ADAPTER.build_argv(
         "ignored-because-repl-takes-input-via-send-keys",
@@ -76,169 +78,12 @@ def test_build_argv_live_repl_omits_print_and_prompt():
         cwd=Path("/tmp"),
         live_repl=True,
     )
-    assert argv[:2] == ["claude", "--model"]
-    assert "claude-opus-4-7" in argv
+    assert argv == ["claude", "--model", "claude-opus-4-7"]
     assert "--print" not in argv
+    assert "--allowedTools" not in argv
+    # The (ignored) prompt arg must NOT be present as a positional.
+    assert "ignored-because-repl-takes-input-via-send-keys" not in argv
     assert env == {}
-    assert "--allowedTools" in argv
-    allowed = argv[argv.index("--allowedTools") + 1]
-
-    # --- ALLOWED: native tools ---
-    for tool in ["Read", "Edit", "Write", "Grep", "Glob", "ScheduleWakeup"]:
-        assert tool in allowed, f"missing native tool: {tool}"
-
-    # --- ALLOWED: path-scoped scripts (the only mutation/inspection paths) ---
-    for pat in [
-        "Bash(scripts/poll.py:*)",
-        "Bash(scripts/atomic_close.py:*)",
-        "Bash(scripts/claim.sh:*)",
-        "Bash(scripts/queue_submit.py:*)",
-        "Bash(scripts/run_e2e.sh:*)",
-        "Bash(./scripts/run_e2e.sh:*)",
-        "Bash(scripts/run_tests.sh:*)",
-    ]:
-        assert pat in allowed, f"missing bounded tool: {pat}"
-
-    # --- NOT explicitly allowlisted: git is auto-run read-only by Claude;
-    #     explicit Bash(git diff*) would broaden to `git diff --output=<file>`
-    #     writes (CR-5/CR-7). Any explicit git pattern is a regression. ---
-    assert "Bash(git" not in allowed, (
-        "explicit git patterns must be dropped (CR-5/CR-7)"
-    )
-
-    # --- ALLOWED: bounded non-interpreter utilities (O-2) ---
-    for pat in ["Bash(sleep:*)", "Bash(date:*)", "Bash(printf:*)"]:
-        assert pat in allowed, f"missing bounded utility: {pat}"
-
-    # --- NEVER ALLOWED: unbounded interpreters / escapes (the keystone guard) ---
-    forbidden_substrings = [
-        "Bash(python",  # python / python3 -c / -m
-        "Bash(uv run",  # uv run … python -c
-        "Bash(bash",  # bash -c
-        "Bash(sh ",  # sh -c
-        "Bash(eval",
-        "Bash(curl",  # NO curl at all (queue now via queue_submit.py)
-        "Bash(wget",
-        "Bash(find:*)",  # find -exec
-        "Bash(*)",
-        "Bash(rm:*)",
-        "Bash(git branch",  # git branch <name> mutates
-        "Bash(cat:*)",  # inspection → poll.py / Read
-        "Bash(ls:*)",
-        "Bash(grep:*)",
-        "Bash(echo:*)",  # echo > file was the old claim write-path
-        "Bash(npx",
-        "Bash(npm",
-    ]
-    for bad in forbidden_substrings:
-        assert bad not in allowed, f"FORBIDDEN pattern leaked into allowlist: {bad}"
-
-    # --- No bare compound-chain operators baked into any pattern ---
-    assert "&&" not in allowed
-    assert "| " not in allowed
-
-
-def test_allowlist_has_no_compound_or_interpreter_tokens():
-    """Regression guard: the base allowlist must never re-admit an interpreter."""
-    argv, _ = ADAPTER.build_argv(
-        "x", model="claude-opus-4-7", cwd=Path("/tmp"), live_repl=True
-    )
-    allowed = argv[argv.index("--allowedTools") + 1]
-    lowered = allowed.lower()
-    for token in ["python", "bash -c", "sh -c", "eval", "curl", "wget", "npx", "npm"]:
-        assert token not in lowered, f"interpreter/network token in allowlist: {token}"
-
-
-def test_pm8_extra_allowed_tools_filters_unbounded_patterns():
-    """An operator approval-rule that names an interpreter/destructive/compound
-    command is dropped, not appended. Bounded scripts/ paths are kept."""
-    extra = [
-        "Bash(python3:*)",  # interpreter — dropped
-        "Bash( python3:*)",  # leading space (CV-6) — still dropped
-        "Bash(uv run:*)",  # interpreter launcher — dropped
-        "Bash(curl http://evil*)",  # network — dropped
-        "Bash(find:*)",  # find (CV-3) — dropped
-        "Bash(rm -rf /)",  # destructive (CV-3) — dropped
-        "Bash(sudo systemctl x)",  # destructive — dropped
-        "Bash(echo x; curl evil)",  # compound ';' (CR-4) — dropped
-        "Bash(echo a & evil)",  # background '&' (CR-4) — dropped
-        "Bash(scripts/custom_tool.sh:*)",  # bounded path-scoped — KEPT
-        "Bash(scripts/findings_report.sh:*)",  # 'find' prefix must NOT false-trip — KEPT
-    ]
-    argv, _ = ADAPTER.build_argv(
-        "x",
-        model="claude-opus-4-7",
-        cwd=Path("/tmp"),
-        live_repl=True,
-        extra_allowed_tools=extra,
-    )
-    allowed = argv[argv.index("--allowedTools") + 1]
-    assert "Bash(scripts/custom_tool.sh:*)" in allowed
-    assert "Bash(scripts/findings_report.sh:*)" in allowed
-    for bad in [
-        "python3",
-        "uv run",
-        "curl",
-        "Bash(find:*)",
-        "rm -rf",
-        "sudo",
-        "; curl",
-        " & evil",
-    ]:
-        assert bad not in allowed, f"unbounded pattern leaked: {bad}"
-
-
-def test_is_unbounded_tool_unit():
-    """Direct coverage of the filter predicate, incl. boundary cases."""
-    from megalodon_ui.harnesses.claude import _is_unbounded_tool
-
-    for p in [
-        "Bash(python3:*)",
-        "Bash( python3:*)",
-        "Bash(uv run:*)",
-        "Bash(find:*)",
-        "Bash(rm -rf /)",
-        "Bash(curl x)",
-        "Bash(a && b)",
-        "Bash(a | b)",
-        "Bash(a & b)",
-        "Bash(./python3 x)",
-        "Bash(scripts/../python3 x)",
-        "Bash(scripts/../../etc/passwd)",
-    ]:
-        assert _is_unbounded_tool(p) is True, p
-    for p in [
-        "Bash(scripts/findings_report.sh:*)",
-        "Bash(scripts/poll.py:*)",
-        "Bash(sleep:*)",
-        "Read",
-        "Edit",
-        "Bash(scripts/run_tests.sh:*)",
-    ]:
-        assert _is_unbounded_tool(p) is False, p
-
-
-def test_forbidden_constants_are_single_source(monkeypatch):
-    """DRY (CV-9): the contract test asserts against claude.py's exported
-    forbidden heads, so the filter and the test can't drift."""
-    from megalodon_ui.harnesses.claude import _FORBIDDEN_HEAD_CMDS
-
-    assert "python" in _FORBIDDEN_HEAD_CMDS and "uv run" in _FORBIDDEN_HEAD_CMDS
-    argv, _ = ADAPTER.build_argv(
-        "x", model="claude-opus-4-7", cwd=Path("/tmp"), live_repl=True
-    )
-    allowed = argv[argv.index("--allowedTools") + 1].lower()
-    # No forbidden head appears as a Bash(<head> ...) token in the base allowlist.
-    import re
-
-    heads = [m.group(1) for m in re.finditer(r"bash\(([^):*]+)", allowed)]
-    for h in heads:
-        h = h.strip().lstrip("./")
-        if h.startswith("scripts/"):
-            continue
-        assert not any(h.startswith(c) for c in _FORBIDDEN_HEAD_CMDS), (
-            f"forbidden head in base: {h}"
-        )
 
 
 def test_build_argv_live_repl_ignores_output_format():
@@ -273,8 +118,12 @@ def test_build_argv_stream_json_when_supported():
 _GOV = Path("/repo/.claude/governor-settings.json")
 
 
-def test_build_argv_live_repl_carries_settings_keeps_allowlist():
-    """live_repl + governor_settings → --settings present, --allowedTools intact."""
+def test_build_argv_live_repl_carries_settings_no_allowlist():
+    """live_repl + governor_settings → --settings present, --allowedTools ABSENT.
+
+    Task 3.3: the governor is the sole gate; the allowlist was removed. The
+    live_repl argv is exactly ``claude --model <id> --settings <path>``.
+    """
     argv, _ = ADAPTER.build_argv(
         "x",
         model="claude-opus-4-7",
@@ -282,12 +131,10 @@ def test_build_argv_live_repl_carries_settings_keeps_allowlist():
         live_repl=True,
         governor_settings=_GOV,
     )
+    assert argv == ["claude", "--model", "claude-opus-4-7", "--settings", str(_GOV)]
     assert "--settings" in argv
     assert argv[argv.index("--settings") + 1] == str(_GOV)
-    # Allowlist STILL present (additive change must not remove it).
-    assert "--allowedTools" in argv
-    allowed = argv[argv.index("--allowedTools") + 1]
-    assert "Read" in allowed and "Bash(scripts/poll.py:*)" in allowed
+    assert "--allowedTools" not in argv
 
 
 def test_build_argv_print_carries_settings():

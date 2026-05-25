@@ -19,10 +19,10 @@ Discipline (enforced by design):
     ``json``). No third-party deps — this module is imported by a
     latency-sensitive hook in a later task.
 
-The interpreter/destructive head posture replicates (does not import) the intent
-of ``megalodon_ui/harnesses/claude.py``'s ``_FORBIDDEN_HEAD_CMDS`` /
-``_is_unbounded_tool`` so this module can become the single source of truth when
-that logic is moved out of ``claude.py`` later.
+The interpreter/destructive head posture replicates the intent of the
+now-removed ``_FORBIDDEN_HEAD_CMDS`` / ``_is_unbounded_tool`` (deleted from
+``megalodon_ui/harnesses/claude.py`` in Task 3.3): this module is now the single
+source of truth for that logic.
 """
 
 from __future__ import annotations

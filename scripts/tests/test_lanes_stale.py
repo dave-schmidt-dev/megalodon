@@ -1,16 +1,18 @@
 """v9.4 Task 2.6 — GET /api/v1/lanes/stale endpoint tests.
 
 Tests:
-1. silent + pending      — no recent activity AND pending approval → NOT stale.
-2. silent + not-pending  — no recent activity, not pending → stale=True.
-3. recent-status         — STATUS.md last_utc=5min ago → NOT stale.
-4. old-status-but-recent-stream — STATUS.md=20min ago, stream mtime=5min ago → NOT stale.
-5. cache                 — two hits within 5s share checked_at_utc; after 6s fresh.
-6. auth gate             — no cookie → 401.
+1. silent → stale=True (no recent activity).
+2. recent-status         — STATUS.md last_utc=5min ago → NOT stale.
+3. old-status-but-recent-stream — STATUS.md=20min ago, stream mtime=5min ago → NOT stale.
+4. cache                 — two hits within 5s share checked_at_utc; after 6s fresh.
+5. auth gate             — no cookie → 401.
+6. governor-blocked deny-loop — ≥5 denies in window → governor_blocked, NOT stale.
+7. governor-blocked negatives — <5 denies / denies outside window → not blocked.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -27,7 +29,13 @@ from megalodon_ui.auth import write_token_atomic
 from megalodon_ui.mission_config.schema import (
     MissionConfig,
 )
-from megalodon_ui.server import make_app, _stale_cache
+from megalodon_ui.server import (
+    make_app,
+    _stale_cache,
+    _compute_governor_blocked,
+    _GOVERNOR_BLOCK_DENY_COUNT,
+    _GOVERNOR_BLOCK_WINDOW_SECONDS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -96,30 +104,17 @@ def _make_mission(tmp_path: Path, status_rows: dict[str, str]) -> Path:
     return tmp_path
 
 
-# ---------------------------------------------------------------------------
-# Fake PermissionWatcher
-# ---------------------------------------------------------------------------
+def _governor_log_lines(entries: list[dict]) -> str:
+    """Serialize governor-log JSONL entries (one JSON object per line)."""
+    return "".join(json.dumps(e) + "\n" for e in entries)
 
 
-class _FakeWatcher:
-    """Minimal stand-in for PermissionWatcher used in tests."""
-
-    def __init__(self, pending_lanes: set[str]) -> None:
-        self._pending_lanes = pending_lanes
-
-    def pending(self):
-        from megalodon_ui.permission_watcher import PromptInfo
-
-        return [
-            PromptInfo(
-                lane_short=lane,
-                lane_name=f"LANE{lane}",
-                command_preview="test",
-                detected_at_utc="2026-01-01T00:00:00Z",
-                fingerprint="abc",
-            )
-            for lane in self._pending_lanes
-        ]
+def _write_governor_log(mission_dir: Path, entries: list[dict]) -> Path:
+    """Write today's .fleet/governor-log-<UTC date>.jsonl and return the path."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    path = mission_dir / ".fleet" / f"governor-log-{today}.jsonl"
+    path.write_text(_governor_log_lines(entries))
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +126,6 @@ async def _make_client(
     tmp_path: Path,
     mission_dir: Path,
     monkeypatch,
-    *,
-    pending_lanes: set[str] | None = None,
 ) -> AsyncGenerator[tuple[AsyncClient, Path], None]:
     """Yield (authenticated AsyncClient, mission_dir) for the stale endpoint."""
     monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
@@ -151,11 +144,6 @@ async def _make_client(
     _stale_cache.pop(id(app), None)
 
     async with app.router.lifespan_context(app):
-        if pending_lanes is not None:
-            app.state.permission_watcher = _FakeWatcher(pending_lanes)
-        else:
-            app.state.permission_watcher = _FakeWatcher(set())
-
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -166,53 +154,18 @@ async def _make_client(
 
 
 # ---------------------------------------------------------------------------
-# Test 1: silent + pending → NOT stale
+# Test 1: silent → stale
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_silent_and_pending_not_stale(tmp_path, monkeypatch):
-    """Lane has no recent activity but has an active permission prompt → NOT stale."""
-    now = _now_utc()
-    old_ts = _utc_iso(now - timedelta(minutes=20))
-    mission_dir = _make_mission(tmp_path, {"A": old_ts, "B": old_ts})
-
-    async for client, _ in _make_client(
-        tmp_path, mission_dir, monkeypatch, pending_lanes={"A"}
-    ):
-        resp = await client.get("/api/v1/lanes/stale")
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-
-        stale_shorts = {entry["lane"] for entry in data["stale_lanes"]}
-        # A is pending — must NOT appear in stale_lanes.
-        assert "A" not in stale_shorts, (
-            f"A should not be stale (pending approval): {data}"
-        )
-        # B has no pending prompt and is 20min silent — SHOULD be stale.
-        assert "B" in stale_shorts, f"B should be stale: {data}"
-
-        # Check pending_approval field for any A entry that slipped through.
-        for entry in data["stale_lanes"]:
-            if entry["lane"] == "A":
-                assert entry["pending_approval"] is True
-
-
-# ---------------------------------------------------------------------------
-# Test 2: silent + not-pending → stale
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_silent_not_pending_is_stale(tmp_path, monkeypatch):
-    """Lane with 20-min-old timestamp, no stream log, no applier entry, NOT pending."""
+async def test_silent_is_stale(tmp_path, monkeypatch):
+    """Lane with 20-min-old timestamp, no stream log, no applier entry → stale."""
     now = _now_utc()
     old_ts = _utc_iso(now - timedelta(minutes=20))
     mission_dir = _make_mission(tmp_path, {"A": old_ts})
 
-    async for client, _ in _make_client(
-        tmp_path, mission_dir, monkeypatch, pending_lanes=set()
-    ):
+    async for client, _ in _make_client(tmp_path, mission_dir, monkeypatch):
         resp = await client.get("/api/v1/lanes/stale")
         assert resp.status_code == 200, resp.text
         data = resp.json()
@@ -221,13 +174,13 @@ async def test_silent_not_pending_is_stale(tmp_path, monkeypatch):
         assert "A" in stale_shorts, f"A should be stale: {data}"
 
         a_entry = next(e for e in data["stale_lanes"] if e["lane"] == "A")
-        assert a_entry["pending_approval"] is False
+        assert "pending_approval" not in a_entry, "pending_approval key dropped"
         assert a_entry["silent_seconds"] >= 1200.0  # 20 min = 1200 s
         assert a_entry["last_activity_source"] == "status-md"
 
 
 # ---------------------------------------------------------------------------
-# Test 3: recent status → NOT stale
+# Test 2: recent status → NOT stale
 # ---------------------------------------------------------------------------
 
 
@@ -238,9 +191,7 @@ async def test_recent_status_not_stale(tmp_path, monkeypatch):
     recent_ts = _utc_iso(now - timedelta(minutes=5))
     mission_dir = _make_mission(tmp_path, {"A": recent_ts})
 
-    async for client, _ in _make_client(
-        tmp_path, mission_dir, monkeypatch, pending_lanes=set()
-    ):
+    async for client, _ in _make_client(tmp_path, mission_dir, monkeypatch):
         resp = await client.get("/api/v1/lanes/stale")
         assert resp.status_code == 200, resp.text
         data = resp.json()
@@ -250,7 +201,7 @@ async def test_recent_status_not_stale(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 4: old status but recent stream log → NOT stale
+# Test 3: old status but recent stream log → NOT stale
 # ---------------------------------------------------------------------------
 
 
@@ -268,9 +219,7 @@ async def test_old_status_recent_stream_not_stale(tmp_path, monkeypatch):
     five_min_ago = time.time() - 5 * 60
     os.utime(stream_log, (five_min_ago, five_min_ago))
 
-    async for client, _ in _make_client(
-        tmp_path, mission_dir, monkeypatch, pending_lanes=set()
-    ):
+    async for client, _ in _make_client(tmp_path, mission_dir, monkeypatch):
         resp = await client.get("/api/v1/lanes/stale")
         assert resp.status_code == 200, resp.text
         data = resp.json()
@@ -293,9 +242,7 @@ async def test_cache_within_ttl_same_checked_at(tmp_path, monkeypatch):
     old_ts = _utc_iso(now - timedelta(minutes=20))
     mission_dir = _make_mission(tmp_path, {"A": old_ts})
 
-    async for client, _ in _make_client(
-        tmp_path, mission_dir, monkeypatch, pending_lanes=set()
-    ):
+    async for client, _ in _make_client(tmp_path, mission_dir, monkeypatch):
         r1 = await client.get("/api/v1/lanes/stale")
         assert r1.status_code == 200
         checked_at_1 = r1.json()["checked_at_utc"]
@@ -318,9 +265,7 @@ async def test_cache_expires_after_ttl(tmp_path, monkeypatch):
     old_ts = _utc_iso(now - timedelta(minutes=20))
     mission_dir = _make_mission(tmp_path, {"A": old_ts})
 
-    async for client, _ in _make_client(
-        tmp_path, mission_dir, monkeypatch, pending_lanes=set()
-    ):
+    async for client, _ in _make_client(tmp_path, mission_dir, monkeypatch):
         r1 = await client.get("/api/v1/lanes/stale")
         assert r1.status_code == 200
         checked_at_1 = r1.json()["checked_at_utc"]
@@ -371,3 +316,113 @@ async def test_auth_gate_no_cookie(tmp_path, monkeypatch):
             assert resp.status_code == 401, (
                 f"Expected 401 without cookie, got {resp.status_code}: {resp.text}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Test 7: governor deny-loop → governor_blocked, NOT stale (plan §8.3/§8.7)
+# ---------------------------------------------------------------------------
+
+
+def _deny_entries(lane: str, count: int, *, age_seconds: float) -> list[dict]:
+    """Build *count* governor-log 'deny' entries for *lane*, *age_seconds* old."""
+    base = _now_utc() - timedelta(seconds=age_seconds)
+    return [
+        {
+            "ts": _utc_iso(base + timedelta(seconds=i)),
+            "lane": lane,
+            "tool": "Write",
+            "permission": "deny",
+            "category": "outside-mission",
+            "reason": f"deny #{i}",
+        }
+        for i in range(count)
+    ]
+
+
+def test_compute_governor_blocked_deny_loop(tmp_path):
+    """≥ DENY_COUNT denies within the window → lane is governor-blocked."""
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+    _write_governor_log(
+        mission_dir, _deny_entries("A", _GOVERNOR_BLOCK_DENY_COUNT, age_seconds=10.0)
+    )
+
+    blocked = _compute_governor_blocked(mission_dir)
+    assert "A" in blocked, f"A should be governor-blocked: {blocked}"
+    assert blocked["A"]["deny_count"] == _GOVERNOR_BLOCK_DENY_COUNT
+    assert blocked["A"]["window_seconds"] == _GOVERNOR_BLOCK_WINDOW_SECONDS
+    assert blocked["A"]["last_category"] == "outside-mission"
+
+
+def test_compute_governor_blocked_below_threshold(tmp_path):
+    """Fewer than DENY_COUNT denies → NOT governor-blocked."""
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+    _write_governor_log(
+        mission_dir,
+        _deny_entries("A", _GOVERNOR_BLOCK_DENY_COUNT - 1, age_seconds=10.0),
+    )
+    assert _compute_governor_blocked(mission_dir) == {}
+
+
+def test_compute_governor_blocked_outside_window(tmp_path):
+    """Enough denies but all older than the window → NOT governor-blocked."""
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+    # Age them well past the window.
+    _write_governor_log(
+        mission_dir,
+        _deny_entries(
+            "A",
+            _GOVERNOR_BLOCK_DENY_COUNT + 2,
+            age_seconds=_GOVERNOR_BLOCK_WINDOW_SECONDS + 120.0,
+        ),
+    )
+    assert _compute_governor_blocked(mission_dir) == {}
+
+
+def test_compute_governor_blocked_missing_file(tmp_path):
+    """No governor-log file → empty dict, never raises."""
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+    assert _compute_governor_blocked(mission_dir) == {}
+
+
+def test_compute_governor_blocked_allow_not_counted(tmp_path):
+    """Allow decisions never count toward the deny-loop."""
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+    entries = [
+        {
+            "ts": _utc_iso(_now_utc()),
+            "lane": "A",
+            "tool": "Read",
+            "permission": "allow",
+            "category": "read",
+            "reason": "ok",
+        }
+        for _ in range(_GOVERNOR_BLOCK_DENY_COUNT + 5)
+    ]
+    _write_governor_log(mission_dir, entries)
+    assert _compute_governor_blocked(mission_dir) == {}
+
+
+@pytest.mark.asyncio
+async def test_governor_blocked_excluded_from_stale(tmp_path, monkeypatch):
+    """A deny-looping, silent lane appears in governor_blocked, NOT in stale_lanes."""
+    now = _now_utc()
+    old_ts = _utc_iso(now - timedelta(minutes=20))  # silent → would be stale
+    mission_dir = _make_mission(tmp_path, {"A": old_ts})
+    _write_governor_log(
+        mission_dir, _deny_entries("A", _GOVERNOR_BLOCK_DENY_COUNT, age_seconds=10.0)
+    )
+
+    async for client, _ in _make_client(tmp_path, mission_dir, monkeypatch):
+        resp = await client.get("/api/v1/lanes/stale")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        stale_shorts = {e["lane"] for e in data["stale_lanes"]}
+        blocked_shorts = {e["lane"] for e in data["governor_blocked"]}
+
+        assert "A" in blocked_shorts, f"A should be governor_blocked: {data}"
+        assert "A" not in stale_shorts, (
+            f"A must NOT be reported as stale when governor-blocked: {data}"
+        )
+        a_block = next(e for e in data["governor_blocked"] if e["lane"] == "A")
+        assert a_block["deny_count"] == _GOVERNOR_BLOCK_DENY_COUNT

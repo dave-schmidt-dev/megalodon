@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,65 +59,6 @@ _AGENT_ID_PLACEHOLDER: str = "{{AGENT_ID}}"
 def _generate_agent_id() -> str:
     """Return a fresh per-lane agent identifier (``agent-XXXX`` hex form)."""
     return f"agent-{secrets.token_hex(2)}"
-
-
-# PM-8: approval-rules pattern format: Tool(specifier).  A bare word with no
-# parens is still valid (e.g. "Read"), but we warn on anything that looks
-# suspicious so the operator can catch typos early.
-_PATTERN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\(.*\))?$")
-
-
-def _load_approval_rule_patterns(mission_dir: Path) -> list[str]:
-    """Load operator-approved patterns from ``.fleet/approval-rules.json``.
-
-    Returns a list of pattern strings.  Returns [] — never raises — if the
-    file is absent, unreadable, or corrupt; a WARNING is logged in all error
-    cases so the operator knows something is wrong.
-
-    Pattern format sanity: we log a WARNING for entries that look malformed
-    (e.g. missing the expected ``Tool(...)`` shape or ``Tool`` bare word) but
-    still include them — ``--allowedTools`` silently no-ops on bad patterns,
-    which is the CLI's contract (T3.0 doc §4).
-    """
-    rules_file = mission_dir / ".fleet" / "approval-rules.json"
-    if not rules_file.exists():
-        return []
-    try:
-        raw = json.loads(rules_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        _log.warning(
-            "approval-rules: failed to load %s (%s) — proceeding with static allowlist only",
-            rules_file,
-            exc,
-        )
-        return []
-
-    # File is a raw JSON list of rule objects.
-    if not isinstance(raw, list):
-        _log.warning(
-            "approval-rules: unexpected format in %s (expected list, got %s) — "
-            "proceeding with static allowlist only",
-            rules_file,
-            type(raw).__name__,
-        )
-        return []
-
-    patterns: list[str] = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            continue
-        pattern = entry.get("pattern")
-        if not isinstance(pattern, str) or not pattern:
-            continue
-        if not _PATTERN_RE.match(pattern):
-            _log.warning(
-                "approval-rules: pattern %r looks malformed (expected Tool(specifier) "
-                "or bare Tool name) — including anyway, Claude CLI will silently no-op "
-                "if invalid",
-                pattern,
-            )
-        patterns.append(pattern)
-    return patterns
 
 
 def _bake_agent_id_in_launch_file(launch_file: Path, agent_id: str) -> bool:
@@ -357,18 +296,13 @@ class FleetSpawner:
                         if prompt_override is not None
                         else (lane_cfg.role or "")
                     )
-                    # PM-8: load operator-approved patterns and pass to build_argv
-                    # (ClaudeAdapter only; other adapters ignore unknown kwargs via
-                    # their own signatures — we only call it for live_repl lanes
-                    # since non-live_repl ignores extra_allowed_tools anyway).
-                    _extra = (
-                        _load_approval_rule_patterns(self.mission_dir)
-                        if lane_cfg.live_repl
-                        else None
-                    )
                     # Governor --settings (Task 2.2): single-source gate. Reuses
                     # the precomputed settings path (preflight already ran in
                     # step 0b); helper applies the enabled + claude-cli check.
+                    # Task 3.3: approval-rules are no longer plumbed into a
+                    # --allowedTools allowlist here — the governor's policy.decide
+                    # reads .fleet/approval-rules.json directly as an audited
+                    # allow-override, so the spawner passes nothing approval-related.
                     _gov_kw = governor_kwargs(
                         self.mission_config, lane_cfg, settings_path=_gov_settings
                     )
@@ -377,7 +311,6 @@ class FleetSpawner:
                         model=lane_cfg.harness.model,
                         cwd=self.mission_dir,
                         **({"live_repl": True} if lane_cfg.live_repl else {}),
-                        **({"extra_allowed_tools": _extra} if _extra else {}),
                         **_gov_kw,
                     )
                     stream_log = self.mission_dir / ".fleet" / f"{short}.stream.log"
@@ -453,15 +386,10 @@ class FleetSpawner:
                 if prompt_override is not None
                 else (lane_cfg.role or "")
             )
-            # PM-8: merge operator-approved patterns into the allowlist at spawn time.
-            # Only live_repl lanes use --allowedTools; non-live_repl lanes ignore it.
-            _extra = (
-                _load_approval_rule_patterns(self.mission_dir)
-                if lane_cfg.live_repl
-                else None
-            )
             # Governor --settings (Task 2.2): single-source gate. Reuses the
             # precomputed settings path (preflight already ran in step 0b).
+            # Task 3.3: approval-rules are no longer plumbed into --allowedTools
+            # here — the governor reads them directly as an audited allow-override.
             _gov_kw = governor_kwargs(
                 self.mission_config, lane_cfg, settings_path=_gov_settings
             )
@@ -470,7 +398,6 @@ class FleetSpawner:
                 model=lane_cfg.harness.model,
                 cwd=self.mission_dir,
                 **({"live_repl": True} if lane_cfg.live_repl else {}),
-                **({"extra_allowed_tools": _extra} if _extra else {}),
                 **_gov_kw,
             )
             session_name = f"lane-{short}"

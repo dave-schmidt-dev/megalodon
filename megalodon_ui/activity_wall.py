@@ -4,9 +4,14 @@ The activity wall aggregates events from 6 sources into a shared in-memory
 ring buffer (deque, maxlen=500) and fans them out to per-connection asyncio
 queues for SSE clients.
 
+The six sources are: findings, signals, history, queue_applier, inject_log,
+and governor_log (the PreToolUse governor's audit log — see Phase 3 governor
+hook). The governor-log source is what makes a governed lane's allow/deny
+activity visible on the board.
+
 Usage (from server.py lifespan)
 --------------------------------
-    wall = ActivityWall(mission_dir, permission_watcher)
+    wall = ActivityWall(mission_dir)
     await wall.start()
     app.state.activity_wall = wall
     # ...at shutdown:
@@ -16,12 +21,15 @@ Event shape (all sources)
 --------------------------
     {
       "type": str,           # "finding" | "signal" | "history" | "queue"
-                             #   | "inject" | "restart-loop" | "approval"
+                             #   | "inject" | "restart-loop" | "governor"
       "lane": str | None,
       "ts": str,             # ISO-8601 UTC
       "summary": str,        # ≤200 chars
       "payload": dict,       # source-specific fields
     }
+
+``"governor"`` events carry ``payload`` keys: ``permission`` ("allow"/"deny"),
+``category``, ``reason``, ``tool``, ``input_sha256``.
 """
 
 from __future__ import annotations
@@ -33,7 +41,6 @@ import re
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -82,14 +89,13 @@ def _parse_lane_from_filename(name: str) -> str | None:
 class ActivityWall:
     """Central fan-in hub for the 6 activity-wall event sources.
 
+    Sources: findings, signals, history, queue_applier, inject_log,
+    governor_log.
+
     Parameters
     ----------
     mission_dir:
         Root of the mission directory (same as ``MissionContext.mission_dir``).
-    permission_watcher:
-        PermissionWatcher instance (or None during test-mode when the watcher
-        is not started). If provided, registers an ``on_change`` callback to
-        receive approval events.
 
     Memory
     ------
@@ -106,9 +112,8 @@ class ActivityWall:
     ``stop()`` cancels the task and awaits it.
     """
 
-    def __init__(self, mission_dir: Path, permission_watcher: Any = None) -> None:
+    def __init__(self, mission_dir: Path) -> None:
         self._mission_dir = mission_dir
-        self._perm_watcher = permission_watcher
         self._ring: deque[dict] = deque(maxlen=RING_BUFFER_MAXLEN)
         self._subscribers: list[asyncio.Queue] = []
         self._task: asyncio.Task | None = None
@@ -123,10 +128,6 @@ class ActivityWall:
         """Launch the fan-in background task."""
         if self._task is not None:
             return  # already running
-        # Register permission-watcher callback (sync, called from watcher's
-        # poll loop — not from an asyncio task).
-        if self._perm_watcher is not None:
-            self._perm_watcher._on_change = self._on_permission_change
         self._task = asyncio.create_task(self._fan_in(), name="activity-wall-fan-in")
 
     async def stop(self) -> None:
@@ -139,12 +140,6 @@ class ActivityWall:
         except (asyncio.CancelledError, Exception):
             pass
         self._task = None
-        # Unregister callback
-        if self._perm_watcher is not None:
-            try:
-                self._perm_watcher._on_change = None
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------
     # Public API used by endpoints
@@ -202,31 +197,6 @@ class ActivityWall:
                 pass
 
     # ------------------------------------------------------------------
-    # Permission-watcher callback (called synchronously from watcher)
-    # ------------------------------------------------------------------
-
-    def _on_permission_change(self, lane: str, info: Any, action: str | None) -> None:
-        """Sync callback wired to PermissionWatcher._on_change."""
-        summary = action if action is not None else "pending"
-        payload_info: Any = None
-        if info is not None:
-            try:
-                payload_info = info.to_json() if hasattr(info, "to_json") else str(info)
-            except Exception:
-                payload_info = str(info)
-        event = {
-            "type": "approval",
-            "lane": lane,
-            "ts": _now_utc_iso(),
-            "summary": summary,
-            "payload": {
-                "info": payload_info,
-                "action": action,
-            },
-        }
-        self._emit(event)
-
-    # ------------------------------------------------------------------
     # Fan-in task
     # ------------------------------------------------------------------
 
@@ -239,6 +209,7 @@ class ActivityWall:
                 self._source_history(),
                 self._source_queue_applier(),
                 self._source_inject_log(),
+                self._source_governor_log(),
                 return_exceptions=True,
             )
         except asyncio.CancelledError:
@@ -461,6 +432,101 @@ class ActivityWall:
             raise
         except Exception:
             _log.exception("activity-wall: inject-log source crashed")
+
+    # ------------------------------------------------------------------
+    # Source 6: .fleet/governor-log-YYYY-MM-DD.jsonl (daily rotation)
+    # ------------------------------------------------------------------
+
+    async def _source_governor_log(self) -> None:
+        """Tail today's governor-log file; restart the inner tail on date rollover.
+
+        The governor (PreToolUse hook) writes one JSON line per tool decision:
+        ``{ts, lane, tool, permission, category, reason, input_sha256}`` where
+        ``permission`` is ``"allow"`` or ``"deny"``. Surfacing these is what
+        makes a governed lane's activity visible on the board (without this, a
+        deny-looping or governed-but-quiet lane reads as IDLE).
+
+        Mirrors ``_source_inject_log``: a separate drainer task feeds lines into
+        a local queue, polled once per second so date rollover is detected. This
+        avoids ``asyncio.wait_for(__anext__, ...)`` cancellation hazards.
+        """
+        from .event_tail import tail_file_lines
+
+        fleet_dir = self._mission_dir / ".fleet"
+        current_date: str = ""
+        drainer_task: asyncio.Task | None = None
+        line_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+
+        async def _drain_into_queue(path: Path, q: asyncio.Queue) -> None:
+            try:
+                async for line in tail_file_lines(path):
+                    await q.put(line)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception(
+                    "activity-wall: governor-log drainer crashed for %s", path
+                )
+
+        try:
+            while True:
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                if today != current_date:
+                    # Date rolled over (or first start): restart the drainer.
+                    if drainer_task is not None and not drainer_task.done():
+                        drainer_task.cancel()
+                        try:
+                            await drainer_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    current_date = today
+                    log_path = fleet_dir / f"governor-log-{today}.jsonl"
+                    drainer_task = asyncio.create_task(
+                        _drain_into_queue(log_path, line_queue),
+                        name="governor-log-drainer",
+                    )
+
+                # Read lines from the queue; poll with short timeout so we can
+                # detect date rollover once per second.
+                try:
+                    line = await asyncio.wait_for(line_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+                event = {
+                    "type": "governor",
+                    "lane": entry.get("lane"),
+                    "ts": entry.get("ts") or _now_utc_iso(),
+                    "summary": f"{entry.get('permission', '?')} "
+                    f"{entry.get('category', '')}".strip(),
+                    "payload": {
+                        "permission": entry.get("permission"),
+                        "category": entry.get("category"),
+                        "reason": entry.get("reason"),
+                        "tool": entry.get("tool"),
+                        "input_sha256": entry.get("input_sha256"),
+                    },
+                }
+                self._emit(event)
+
+        except asyncio.CancelledError:
+            if drainer_task is not None and not drainer_task.done():
+                drainer_task.cancel()
+                try:
+                    await drainer_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            raise
+        except Exception:
+            _log.exception("activity-wall: governor-log source crashed")
 
 
 # ---------------------------------------------------------------------------

@@ -77,7 +77,7 @@ from .harnesses import get_adapter
 
 #: Path prefixes that ALWAYS require a valid mui_session cookie. Any method.
 _V92_GATED_PATH_RE = re.compile(
-    r"^/api/v1/(lane/[^/]+|__fake__|permission_prompts|activity-wall|narrative-stream|narrative|approval-rules|lanes/stale|_test)(/|$)"
+    r"^/api/v1/(lane/[^/]+|__fake__|activity-wall|narrative-stream|narrative|approval-rules|lanes/stale|_test)(/|$)"
 )
 
 #: Exact (method, path) pairs that require a cookie.
@@ -110,6 +110,15 @@ _TEST_STALE_OVERRIDES: dict[str, float] = {}
 
 _STALE_THRESHOLD_SECONDS: float = 900.0
 _STALE_CACHE_TTL_SECONDS: float = 5.0
+
+# Governor deny-loop detection (plan §8.3/§8.7): a fail-closed governor can
+# produce a deny→retry→deny loop. Such a lane is NOT silent (so silence-based
+# `stale` won't catch it), or a governor-blocked lane goes quiet and gets
+# mis-read as `stale` and killed. A deny-looping lane therefore gets a DISTINCT
+# `governor-blocked` status computed from the governor-log, not from silence.
+_GOVERNOR_BLOCK_WINDOW_SECONDS = 60.0  # deny-loop detection window
+_GOVERNOR_BLOCK_DENY_COUNT = 5  # N denies within the window → governor-blocked
+_GOVERNOR_LOG_TAIL_LINES = 500  # bound governor-log read to the tail
 
 # Regex to extract the UTC timestamp from an applier log line:
 # Format: 2026-05-16T22:00:00Z | INFO | APPLIED rid=... agent=agent-xxxx lane=... ...
@@ -151,11 +160,88 @@ def _stale_latest_applier_ts(mission_dir: Path, agent_id: str) -> datetime | Non
     return best
 
 
+def _compute_governor_blocked(mission_dir: Path) -> dict[str, dict]:
+    """Detect lanes stuck in a governor deny-loop (plan §8.3/§8.7).
+
+    Reads today's ``.fleet/governor-log-{YYYY-MM-DD}.jsonl`` (UTC date) and, per
+    lane, counts ``permission == "deny"`` decisions whose ``ts`` falls within the
+    last ``_GOVERNOR_BLOCK_WINDOW_SECONDS``. A lane with
+    ``deny_count >= _GOVERNOR_BLOCK_DENY_COUNT`` is governor-blocked.
+
+    Returns a mapping ``lane_short -> {deny_count, window_seconds, last_category,
+    last_reason}`` containing only governor-blocked lanes. Robust by design:
+    missing file → ``{}``; unparseable lines / bad timestamps are skipped; never
+    raises.
+
+    Only the tail matters, so at most the last ``_GOVERNOR_LOG_TAIL_LINES`` lines
+    of today's file are considered (bounded; mirrors how
+    ``_stale_latest_applier_ts`` reads the whole file but cannot blow up here
+    because we slice the line list).
+    """
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    log_path = mission_dir / ".fleet" / f"governor-log-{today}.jsonl"
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+
+    window_start = now.timestamp() - _GOVERNOR_BLOCK_WINDOW_SECONDS
+    # Per-lane: deny count in window + most-recent category/reason in window.
+    counts: dict[str, int] = {}
+    last_seen: dict[str, tuple[float, str | None, str | None]] = {}
+
+    # Only the tail matters for a deny-loop; bound the work on a huge file.
+    lines = text.splitlines()[-_GOVERNOR_LOG_TAIL_LINES:]
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("permission") != "deny":
+            continue
+        lane = entry.get("lane")
+        if not lane:
+            continue
+        raw_ts = entry.get("ts")
+        try:
+            ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+        except (ValueError, AttributeError, TypeError):
+            continue
+        ts_epoch = ts.timestamp()
+        if ts_epoch < window_start:
+            continue
+        counts[lane] = counts.get(lane, 0) + 1
+        prev = last_seen.get(lane)
+        if prev is None or ts_epoch >= prev[0]:
+            last_seen[lane] = (
+                ts_epoch,
+                entry.get("category"),
+                entry.get("reason"),
+            )
+
+    blocked: dict[str, dict] = {}
+    for lane, deny_count in counts.items():
+        if deny_count >= _GOVERNOR_BLOCK_DENY_COUNT:
+            _, last_category, last_reason = last_seen[lane]
+            blocked[lane] = {
+                "deny_count": deny_count,
+                "window_seconds": _GOVERNOR_BLOCK_WINDOW_SECONDS,
+                "last_category": last_category,
+                "last_reason": last_reason,
+            }
+    return blocked
+
+
 def _compute_stale_response(
     mission_dir: Path,
     lane_rows: list[dict[str, Any]],
     mission_config: "MissionConfig",
-    permission_watcher: Any,
 ) -> dict:
     """Compute the full stale-lanes payload (no caching here).
 
@@ -168,6 +254,11 @@ def _compute_stale_response(
     Tie-break: when two sources share the same second-level precision we prefer
     in order: applier-log > stream-log > status-md (i.e. last wins on a
     ``max()`` over ``(ts, source_priority)`` tuples).
+
+    A lane detected as governor-blocked (deny-loop, see
+    ``_compute_governor_blocked``) is reported in a separate ``governor_blocked``
+    list and is EXCLUDED from ``stale_lanes`` — the operator must not kill a
+    governor-blocked lane thinking it is merely stale (plan §8.3/§8.7).
     """
     now = datetime.now(timezone.utc)
 
@@ -180,12 +271,7 @@ def _compute_stale_response(
         _row_short(r): r.get("agent", "") for r in lane_rows
     }
 
-    pending_lanes: set[str] = set()
-    if permission_watcher is not None:
-        try:
-            pending_lanes = {p.lane_short for p in permission_watcher.pending()}
-        except Exception:
-            pass
+    governor_blocked_map = _compute_governor_blocked(mission_dir)
 
     stale_lanes: list[dict] = []
     for lc in mission_config.lanes:
@@ -243,8 +329,12 @@ def _compute_stale_response(
         if short in _TEST_STALE_OVERRIDES:
             silent_seconds = _TEST_STALE_OVERRIDES.pop(short)
 
-        pending_approval = short in pending_lanes
-        is_stale = silent_seconds >= _STALE_THRESHOLD_SECONDS and not pending_approval
+        # A governor-blocked lane is reported separately, never as plain stale,
+        # so the operator does not kill it thinking it is merely silent.
+        is_stale = (
+            silent_seconds >= _STALE_THRESHOLD_SECONDS
+            and short not in governor_blocked_map
+        )
 
         if is_stale:
             stale_lanes.append(
@@ -253,13 +343,17 @@ def _compute_stale_response(
                     "silent_seconds": silent_seconds
                     if silent_seconds != float("inf")
                     else None,
-                    "pending_approval": pending_approval,
                     "last_activity_source": last_activity_source,
                 }
             )
 
+    governor_blocked = [
+        {"lane": lane, **info} for lane, info in governor_blocked_map.items()
+    ]
+
     return {
         "stale_lanes": stale_lanes,
+        "governor_blocked": governor_blocked,
         "checked_at_utc": now.isoformat(),
     }
 
@@ -1139,19 +1233,9 @@ def make_app(
                 socket,
             )
             app.state.startup_complete = True
-            # Start PermissionWatcher in fake-spawner mode so smoke tests can
-            # seed permission prompts via stream-log writes and exercise the
-            # approval event path end-to-end.
-            from .permission_watcher import PermissionWatcher
             from .activity_wall import ActivityWall
 
-            _fake_lane_pairs = [
-                (lane.short, lane.name) for lane in ctx.mission_config.lanes
-            ]
-            _perm_watcher_fake = PermissionWatcher(mission_dir, _fake_lane_pairs)
-            await _perm_watcher_fake.start()
-            app.state.permission_watcher = _perm_watcher_fake
-            _aw_fake = ActivityWall(mission_dir, _perm_watcher_fake)
+            _aw_fake = ActivityWall(mission_dir)
             await _aw_fake.start()
             app.state.activity_wall = _aw_fake
             from .narrator.hub import NarrativeHub
@@ -1162,7 +1246,6 @@ def make_app(
                 yield
             finally:
                 await _aw_fake.stop()
-                await _perm_watcher_fake.stop()
             return
 
         if test_mode:
@@ -1187,10 +1270,10 @@ def make_app(
                         await asyncio.sleep(0.2)
 
                 applier_task = asyncio.create_task(_drain_loop())
-            # Activity wall (test mode — no perm_watcher)
+            # Activity wall (test mode)
             from .activity_wall import ActivityWall
 
-            _aw_test = ActivityWall(mission_dir, None)
+            _aw_test = ActivityWall(mission_dir)
             await _aw_test.start()
             app.state.activity_wall = _aw_test
             from .narrator.hub import NarrativeHub
@@ -1244,29 +1327,20 @@ def make_app(
         # 3. Start df-check background task (every 60 s; exit 12 if < 50 MB free).
         df_task = asyncio.create_task(_df_watchdog(mission_dir))
 
-        # 4. Start permission_watcher (v9.3): surfaces Claude REPL approval
-        #    prompts from each lane's pipe-pane stream to the dashboard.
-        from .permission_watcher import PermissionWatcher
-
-        lane_pairs = [(lane.short, lane.name) for lane in ctx.mission_config.lanes]
-        perm_watcher = PermissionWatcher(mission_dir, lane_pairs)
-        await perm_watcher.start()
-        app.state.permission_watcher = perm_watcher
-
-        # 5a. Start activity wall: fan-in from 6 sources into ring buffer.
+        # 4a. Start activity wall: fan-in from 6 sources into ring buffer.
         from .activity_wall import ActivityWall
 
-        activity_wall = ActivityWall(mission_dir, perm_watcher)
+        activity_wall = ActivityWall(mission_dir)
         await activity_wall.start()
         app.state.activity_wall = activity_wall
 
-        # 5b. Narrative hub + cache (passive plumbing for summary board, Task 2.2).
+        # 4b. Narrative hub + cache (passive plumbing for summary board, Task 2.2).
         from .narrator.hub import NarrativeHub
 
         app.state.narrative_hub = NarrativeHub()
         app.state.narrative_cache = {}
 
-        # 5b-ii. Persistent session store (Task D2 / WR-3): reassign to the
+        # 4b-ii. Persistent session store (Task D2 / WR-3): reassign to the
         # disk-backed store now that mission_dir/.fleet is confirmed available.
         # The hot validate() path reads only the in-memory dict (no disk IO), so
         # synchronous persist calls on create/revoke are negligible for this
@@ -1276,7 +1350,7 @@ def make_app(
             path=mission_dir / ".fleet" / "sessions.json"
         )
 
-        # 5c. Narrator runtime + scheduler (Task 4.1).
+        # 4c. Narrator runtime + scheduler (Task 4.1).
         from .narrator.runtime import NarratorRuntime
         from .narrator.scheduler import clamp_interval_s, run_narrator_scheduler
         from .narrator.board_state import build_lane_rows
@@ -1314,7 +1388,7 @@ def make_app(
         app.state.narrator_runtime = narrator_runtime
         app.state.narrator_scheduler_task = narrator_scheduler_task
 
-        # 5b-iii. Observed dashboard auto-open (Task D4). Replaces the old
+        # 4b-iii. Observed dashboard auto-open (Task D4). Replaces the old
         # unconditional pre-uvicorn browser-open: open a tab only if no live
         # tab reconnects within the grace window, so restarts don't pile up
         # duplicate tabs while a genuinely fresh launch still opens one.
@@ -1408,7 +1482,6 @@ def make_app(
                 except Exception:
                     pass
             await activity_wall.stop()
-            await perm_watcher.stop()
             df_task.cancel()
             try:
                 await spawner.stop_all()
@@ -2523,89 +2596,17 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     # ----- V9 M2: introspection endpoint for contract scan -----
 
-    # ----- v9.3 permission prompts (dashboard-mediated approval) -----------
-
-    @app.get("/api/v1/permission_prompts")
-    async def list_permission_prompts():  # noqa: ANN201
-        """Snapshot every lane's pending Claude REPL approval prompt.
-
-        Cookie-gated via ``_V92_GATED_PATH_RE``. Returns ``{prompts: [...]}``
-        where each entry is the JSON form of a ``PromptInfo`` (lane, command
-        preview, detected_at, fingerprint). Empty list when no lane is
-        currently blocked on a prompt.
-        """
-        watcher = getattr(app.state, "permission_watcher", None)
-        if watcher is None:
-            return JSONResponse(content={"prompts": []})
-        return JSONResponse(
-            content={"prompts": [p.to_json() for p in watcher.pending()]}
-        )
-
-    @app.post("/api/v1/permission_prompts/{lane}/respond")
-    async def respond_permission_prompt(lane: str, request: Request):  # noqa: ANN201
-        """Send the operator's approve/deny response to lane via tmux send-keys.
-
-        Body: ``{"action": "approve"|"deny"}``.
-
-        Approve → send ``1`` + Enter (selects Claude's "Yes" menu option).
-        Deny    → send ``3`` + Enter (selects "No"). The watcher's pending
-        state for the lane is cleared optimistically; the next poll will
-        re-populate if the prompt re-appears (e.g. if the agent retries).
-
-        Returns 202 on success, 404 if lane unknown or no prompt active,
-        422 if body malformed.
-        """
-        watcher = getattr(app.state, "permission_watcher", None)
-        spawner = getattr(app.state, "spawner", None)
-        if watcher is None or spawner is None:
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "permission watcher / spawner not initialized"},
-            )
-        if lane not in spawner.sessions:
-            return JSONResponse(
-                status_code=404, content={"detail": f"unknown lane {lane}"}
-            )
-
-        try:
-            body = await request.json()
-        except Exception:
-            return JSONResponse(
-                status_code=422, content={"detail": "invalid JSON body"}
-            )
-        action = body.get("action") if isinstance(body, dict) else None
-        if action not in ("approve", "approve_remember", "deny"):
-            return JSONResponse(
-                status_code=422,
-                content={
-                    "detail": "action must be 'approve', 'approve_remember', or 'deny'"
-                },
-            )
-
-        # Fake-spawner short-circuit: FakeFleetSpawner has no real tmux socket;
-        # skip send_keys and fall through to clear_lane + audit.  The fake_emit
-        # attribute is the canonical marker that distinguishes FakeFleetSpawner
-        # from the real FleetSpawner (same pattern as inject and restart-loop).
-        if not hasattr(spawner, "fake_emit"):
-            from . import tmux
-
-            # Claude REPL menu: 1=Yes, 2=Yes-and-remember-pattern, 3=No
-            keys = {"approve": "1", "approve_remember": "2", "deny": "3"}[action]
-            session_name = spawner.sessions[lane].name
-            rc = await tmux.send_keys(spawner.socket, session_name, keys)
-            if rc != 0:
-                return JSONResponse(
-                    status_code=500,
-                    content={"detail": f"tmux send-keys failed (rc={rc})"},
-                )
-        watcher.clear_lane(lane, action=action)
-        return JSONResponse(status_code=202, content={"action": action, "lane": lane})
-
     # ----- v9.4 stale-lane detection ----------------------------------------
 
     @app.get("/api/v1/lanes/stale")
     async def get_stale_lanes():  # noqa: ANN201
-        """Return lanes that have been silent for ≥ 900 s and are NOT pending approval.
+        """Return silent lanes and governor-blocked (deny-loop) lanes.
+
+        A lane is *stale* when it has been silent for ≥ 900 s. A lane is
+        *governor-blocked* when the governor-log shows a deny-loop (plan
+        §8.3/§8.7); such a lane is reported separately and EXCLUDED from
+        ``stale_lanes`` so the operator does not kill it thinking it is merely
+        silent.
 
         Cookie-gated via ``_V92_GATED_PATH_RE``. Cached for 5 s (serves
         concurrent operator polls without recomputing).
@@ -2615,7 +2616,12 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             {
               "stale_lanes": [
                 {"lane": "A", "silent_seconds": 1234.5,
-                 "pending_approval": false, "last_activity_source": "stream-log"},
+                 "last_activity_source": "stream-log"},
+                ...
+              ],
+              "governor_blocked": [
+                {"lane": "B", "deny_count": 6, "window_seconds": 60.0,
+                 "last_category": "write", "last_reason": "outside-mission"},
                 ...
               ],
               "checked_at_utc": "2026-05-20T15:00:00+00:00"
@@ -2641,13 +2647,11 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         ):
             return JSONResponse(content=cached["response"])
 
-        watcher = getattr(app.state, "permission_watcher", None)
         lane_rows = parse_status(ctx.mission_dir, ctx)
         response = _compute_stale_response(
             ctx.mission_dir,
             lane_rows,
             ctx.mission_config,
-            watcher,
         )
         override_count_after = len(_TEST_STALE_OVERRIDES)
         # Cache only if no overrides were consumed in this computation.

@@ -1,21 +1,23 @@
-"""v9.4 T3.3 — approval-rules wired into spawn (PM-8).
+"""Task 3.3 — spawn no longer reads approval-rules; the governor is the sole consumer.
 
-Four cases:
-1. Rules merged with tool-surface filtering (2026-05-22): bounded scripts/ rules
-   are appended; unbounded operator rules (curl/find) are dropped by the PM-8
-   filter, never reaching --allowedTools.
-2. No rules file: argv has static allowlist only (regression test).
-3. Corrupt rules file: spawn warns and uses static allowlist only.
-4. Empty rules list: file with {rules: []} behaves like no-file.
+Before Task 3.3, FleetSpawner loaded ``.fleet/approval-rules.json`` and plumbed the
+operator patterns into a ``--allowedTools`` allowlist (filtered through the now-removed
+``_is_unbounded_tool``). That whole path is gone: the governor's ``policy.decide`` reads
+approval-rules directly as an audited allow-override. The migration safety net for that
+behavior lives in ``test_approval_rules_migration_audit.py``.
+
+These tests now assert the NEW reality at the spawn boundary, regardless of the
+approval-rules file's state:
+  * spawn's build_argv argv carries ``--settings`` (governor wiring intact), and
+  * NEVER carries ``--allowedTools`` (no allowlist), and
+  * the spawner never passes ``extra_allowed_tools`` to build_argv.
 
 Note: the file format is a raw JSON *list* (not wrapped in {"rules": ...}).
-The GET endpoint wraps it; the file itself is the bare list.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,8 +36,7 @@ def _link_scripts(run_dir: Path) -> None:
     preflight (Task 2.2, default-on) resolves the hook and spawn proceeds.
 
     These tests run the real ClaudeAdapter with the default governor (enabled),
-    so each spawn argv ALSO carries --settings — harmless to the --allowedTools
-    assertions here, and bonus coverage that the allowlist and --settings coexist.
+    so each spawn argv carries --settings — which is exactly what we assert.
     """
     link = run_dir / "scripts"
     if not link.exists():
@@ -48,7 +49,7 @@ def _link_scripts(run_dir: Path) -> None:
 
 
 def _make_live_repl_config(lane_short: str = "A") -> MissionConfig:
-    """Single live_repl lane so --allowedTools is relevant."""
+    """Single live_repl lane."""
     return MissionConfig.model_validate(
         {
             "mission": {
@@ -75,185 +76,109 @@ def _make_live_repl_config(lane_short: str = "A") -> MissionConfig:
 def _make_real_resolver() -> MagicMock:
     """Resolver that returns a real ClaudeAdapter so build_argv is exercised."""
     adapter = ClaudeAdapter()
-    # Wrap in a MagicMock so the resolver call itself is trackable, but the
-    # adapter methods are the real implementations.
     resolver = MagicMock(return_value=adapter)
     return resolver
 
 
-def _patch_spawn_success():
-    """Context-manager stack: patch tmux calls so spawn completes without error."""
-    return (
+async def _run_spawn_capture_argv(spawner: FleetSpawner) -> list[str]:
+    """Run start_all with tmux patched out, capturing the spawned argv."""
+    captured_argv: list[str] = []
+
+    async def capture_new_session(**kwargs):
+        captured_argv.extend(kwargs["argv"])
+        return 0
+
+    with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
-        patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)),
+        patch(
+            "megalodon_ui.spawn.tmux.new_session",
+            new=AsyncMock(side_effect=capture_new_session),
+        ),
         patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(return_value=0)),
         patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
         patch(
             "megalodon_ui.spawn._discover_session_id", new=AsyncMock(return_value=None)
         ),
         patch("megalodon_ui.spawn.FleetSpawner._start_tail_task", new=AsyncMock()),
+    ):
+        await spawner.start_all()
+    return captured_argv
+
+
+def _assert_governed_no_allowlist(argv: list[str]) -> None:
+    """The spawned live_repl argv carries the governor --settings flag and has
+    NO --allowedTools / no extra_allowed_tools plumbing."""
+    assert "--settings" in argv, f"governor --settings missing from argv: {argv!r}"
+    assert "--allowedTools" not in argv, (
+        f"--allowedTools must be gone (Task 3.3): {argv!r}"
     )
-
-
-def _get_allowed_value(captured_argv: list[str]) -> str:
-    """Extract the --allowedTools string from a captured argv list."""
-    idx = captured_argv.index("--allowedTools")
-    return captured_argv[idx + 1]
+    # The bare live_repl argv shape: claude --model <id> --settings <path>.
+    assert argv[:3] == ["claude", "--model", "claude-opus-4-7"], argv
+    assert "--print" not in argv  # live_repl has no --print
 
 
 # ---------------------------------------------------------------------------
-# Case 1: rules merged through the tool-surface filter (2026-05-22 policy) —
-# bounded scripts/ rule appended; unbounded curl/find rules dropped.
+# Approval-rules file present (bounded + unbounded) — spawn ignores it entirely.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_rules_merged_bounded_kept_unbounded_filtered(tmp_path: Path):
-    """approval-rules.json flows through spawn into --allowedTools, but the PM-8
-    filter (_is_unbounded_tool) drops interpreter/network/find patterns even from
-    an operator 'approve & remember'. Only bounded scripts/ patterns are appended.
-    """
-    # Raw JSON list (not wrapped in {rules: ...}). Two unbounded patterns that the
-    # OLD policy would have appended, plus one bounded scripts/ pattern.
+async def test_spawn_ignores_approval_rules_file(tmp_path: Path):
+    """A populated approval-rules.json (bounded AND unbounded patterns) does NOT
+    flow into the spawn argv — spawn no longer reads it; the governor does."""
     rules = [
-        {
-            "pattern": "Bash(curl -s http://127.0.0.1:8765/*)",  # network → dropped
-            "added_at_utc": "2026-05-20T00:00:00+00:00",
-            "added_by_session": "sess-abc",
-        },
-        {
-            "pattern": "Bash(find:*)",  # find -exec → dropped
-            "added_at_utc": "2026-05-20T00:01:00+00:00",
-            "added_by_session": "sess-abc",
-        },
-        {
-            "pattern": "Bash(scripts/custom_tool.sh:*)",  # bounded path → kept
-            "added_at_utc": "2026-05-20T00:02:00+00:00",
-            "added_by_session": "sess-abc",
-        },
+        {"pattern": "Bash(curl -s http://127.0.0.1:8765/*)"},
+        {"pattern": "Bash(find:*)"},
+        {"pattern": "Bash(scripts/custom_tool.sh:*)"},
+        {"pattern": "Read"},
     ]
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir(parents=True, exist_ok=True)
     _link_scripts(tmp_path)
     (fleet_dir / "approval-rules.json").write_text(json.dumps(rules), encoding="utf-8")
 
-    config = _make_live_repl_config("A")
-    resolver = _make_real_resolver()
-    spawner = FleetSpawner(tmp_path, config, resolver, SOCKET)
-
-    captured_argv: list[str] = []
-
-    async def capture_new_session(**kwargs):
-        captured_argv.extend(kwargs["argv"])
-        return 0
-
-    with (
-        patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
-        patch(
-            "megalodon_ui.spawn.tmux.new_session",
-            new=AsyncMock(side_effect=capture_new_session),
-        ),
-        patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(return_value=0)),
-        patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
-        patch(
-            "megalodon_ui.spawn._discover_session_id", new=AsyncMock(return_value=None)
-        ),
-        patch("megalodon_ui.spawn.FleetSpawner._start_tail_task", new=AsyncMock()),
-    ):
-        await spawner.start_all()
-
-    assert "--allowedTools" in captured_argv, "Expected --allowedTools in spawn argv"
-    allowed = _get_allowed_value(captured_argv)
-
-    # Bounded static allowlist is present (no curl/npm under the 2026-05-22 policy).
-    assert "Read" in allowed, "Static Read tool missing"
-    assert "Bash(scripts/queue_submit.py:*)" in allowed, "Static bounded script missing"
-
-    # Unbounded operator rules MUST be filtered out — never re-admitted via PM-8.
-    assert "Bash(curl" not in allowed, "curl approval-rule must be filtered out"
-    assert "Bash(find:*)" not in allowed, "find approval-rule must be filtered out"
-
-    # The bounded scripts/ operator rule IS appended, after the static allowlist.
-    assert "Bash(scripts/custom_tool.sh:*)" in allowed, (
-        f"Bounded approval-rule pattern missing from --allowedTools: {allowed!r}"
+    spawner = FleetSpawner(
+        tmp_path, _make_live_repl_config("A"), _make_real_resolver(), SOCKET
     )
-    static_end = allowed.rindex("Bash(printf:*)")
-    assert allowed.index("Bash(scripts/custom_tool.sh:*)") > static_end, (
-        "Bounded extra pattern must appear after the static allowlist"
-    )
+    argv = await _run_spawn_capture_argv(spawner)
+
+    _assert_governed_no_allowlist(argv)
+    # None of the operator patterns leak into argv (no allowlist at all).
+    joined = " ".join(argv)
+    for pat in ["curl", "find", "custom_tool.sh"]:
+        assert pat not in joined, f"approval-rule pattern leaked into argv: {pat}"
 
 
 # ---------------------------------------------------------------------------
-# Case 2: No rules file — static allowlist only (regression)
+# No approval-rules file — identical governed argv (no regression, no read).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_no_rules_file_uses_static_allowlist_only(tmp_path: Path):
-    """When no approval-rules.json exists, spawn behaves exactly as before."""
+async def test_spawn_no_rules_file_same_governed_argv(tmp_path: Path):
+    """Absent approval-rules.json: spawn argv is still governed, still no allowlist."""
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir(parents=True, exist_ok=True)
     _link_scripts(tmp_path)
-    # Explicitly ensure the file is absent.
-    rules_file = fleet_dir / "approval-rules.json"
-    rules_file.unlink(missing_ok=True)
+    (fleet_dir / "approval-rules.json").unlink(missing_ok=True)
 
-    config = _make_live_repl_config("B")
-    resolver = _make_real_resolver()
-    spawner = FleetSpawner(tmp_path, config, resolver, SOCKET)
-
-    # Capture argv from a no-rules baseline using ClaudeAdapter directly.
-    baseline_adapter = ClaudeAdapter()
-    baseline_argv, _ = baseline_adapter.build_argv(
-        "test role",
-        model="claude-opus-4-7",
-        cwd=tmp_path,
-        live_repl=True,
+    spawner = FleetSpawner(
+        tmp_path, _make_live_repl_config("B"), _make_real_resolver(), SOCKET
     )
+    argv = await _run_spawn_capture_argv(spawner)
 
-    captured_argv: list[str] = []
-
-    async def capture_new_session(**kwargs):
-        captured_argv.extend(kwargs["argv"])
-        return 0
-
-    with (
-        patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
-        patch(
-            "megalodon_ui.spawn.tmux.new_session",
-            new=AsyncMock(side_effect=capture_new_session),
-        ),
-        patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(return_value=0)),
-        patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
-        patch(
-            "megalodon_ui.spawn._discover_session_id", new=AsyncMock(return_value=None)
-        ),
-        patch("megalodon_ui.spawn.FleetSpawner._start_tail_task", new=AsyncMock()),
-    ):
-        await spawner.start_all()
-
-    assert "--allowedTools" in captured_argv
-    allowed = _get_allowed_value(captured_argv)
-    baseline_allowed = _get_allowed_value(baseline_argv)
-
-    # With no rules file the allowed string must be identical to the baseline.
-    assert allowed == baseline_allowed, (
-        f"Expected identical allowlist when no rules file.\n"
-        f"  got:      {allowed!r}\n"
-        f"  baseline: {baseline_allowed!r}"
-    )
+    _assert_governed_no_allowlist(argv)
 
 
 # ---------------------------------------------------------------------------
-# Case 3: Corrupt rules file — warn and proceed with static allowlist only
+# Corrupt approval-rules file — spawn unaffected (it doesn't read the file).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_corrupt_rules_file_warns_and_uses_static_allowlist(
-    tmp_path: Path, caplog
-):
-    """Invalid JSON in approval-rules.json triggers WARNING and falls back gracefully."""
+async def test_spawn_corrupt_rules_file_does_not_affect_argv(tmp_path: Path):
+    """Invalid JSON no longer matters at the spawn boundary — spawn never reads it,
+    so there is no warning and no fallback; the argv is governed with no allowlist."""
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir(parents=True, exist_ok=True)
     _link_scripts(tmp_path)
@@ -261,115 +186,22 @@ async def test_corrupt_rules_file_warns_and_uses_static_allowlist(
         "this is not valid json {{{", encoding="utf-8"
     )
 
-    config = _make_live_repl_config("C")
-    resolver = _make_real_resolver()
-    spawner = FleetSpawner(tmp_path, config, resolver, SOCKET)
-
-    baseline_adapter = ClaudeAdapter()
-    baseline_argv, _ = baseline_adapter.build_argv(
-        "test role",
-        model="claude-opus-4-7",
-        cwd=tmp_path,
-        live_repl=True,
+    spawner = FleetSpawner(
+        tmp_path, _make_live_repl_config("C"), _make_real_resolver(), SOCKET
     )
+    argv = await _run_spawn_capture_argv(spawner)
 
-    captured_argv: list[str] = []
-
-    async def capture_new_session(**kwargs):
-        captured_argv.extend(kwargs["argv"])
-        return 0
-
-    with caplog.at_level(logging.WARNING, logger="megalodon_ui.spawn"):
-        with (
-            patch(
-                "megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])
-            ),
-            patch(
-                "megalodon_ui.spawn.tmux.new_session",
-                new=AsyncMock(side_effect=capture_new_session),
-            ),
-            patch(
-                "megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(return_value=0)
-            ),
-            patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
-            patch(
-                "megalodon_ui.spawn._discover_session_id",
-                new=AsyncMock(return_value=None),
-            ),
-            patch("megalodon_ui.spawn.FleetSpawner._start_tail_task", new=AsyncMock()),
-        ):
-            await spawner.start_all()
-
-    # A warning must have been logged mentioning the failure.
-    assert any("approval-rules" in r.message.lower() for r in caplog.records), (
-        f"Expected an approval-rules warning; got: {[r.message for r in caplog.records]}"
-    )
-
-    # Spawn must have proceeded — argv captured.
-    assert "--allowedTools" in captured_argv
-    allowed = _get_allowed_value(captured_argv)
-    baseline_allowed = _get_allowed_value(baseline_argv)
-
-    # Must fall back to static allowlist only (no extra patterns appended).
-    assert allowed == baseline_allowed, (
-        f"Expected static allowlist only after corrupt file.\n"
-        f"  got:      {allowed!r}\n"
-        f"  baseline: {baseline_allowed!r}"
-    )
+    _assert_governed_no_allowlist(argv)
 
 
 # ---------------------------------------------------------------------------
-# Case 4: Empty rules list — behaves like no-file case
+# The loader symbol is gone (regression guard for the removal).
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_empty_rules_list_behaves_like_no_file(tmp_path: Path):
-    """A file with an empty JSON list [] produces the static allowlist only."""
-    fleet_dir = tmp_path / ".fleet"
-    fleet_dir.mkdir(parents=True, exist_ok=True)
-    _link_scripts(tmp_path)
-    (fleet_dir / "approval-rules.json").write_text("[]", encoding="utf-8")
+def test_spawn_loader_symbol_removed():
+    """Task 3.3 deleted _load_approval_rule_patterns / _PATTERN_RE from spawn."""
+    import megalodon_ui.spawn as spawn_mod
 
-    config = _make_live_repl_config("D")
-    resolver = _make_real_resolver()
-    spawner = FleetSpawner(tmp_path, config, resolver, SOCKET)
-
-    baseline_adapter = ClaudeAdapter()
-    baseline_argv, _ = baseline_adapter.build_argv(
-        "test role",
-        model="claude-opus-4-7",
-        cwd=tmp_path,
-        live_repl=True,
-    )
-
-    captured_argv: list[str] = []
-
-    async def capture_new_session(**kwargs):
-        captured_argv.extend(kwargs["argv"])
-        return 0
-
-    with (
-        patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
-        patch(
-            "megalodon_ui.spawn.tmux.new_session",
-            new=AsyncMock(side_effect=capture_new_session),
-        ),
-        patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(return_value=0)),
-        patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
-        patch(
-            "megalodon_ui.spawn._discover_session_id", new=AsyncMock(return_value=None)
-        ),
-        patch("megalodon_ui.spawn.FleetSpawner._start_tail_task", new=AsyncMock()),
-    ):
-        await spawner.start_all()
-
-    assert "--allowedTools" in captured_argv
-    allowed = _get_allowed_value(captured_argv)
-    baseline_allowed = _get_allowed_value(baseline_argv)
-
-    assert allowed == baseline_allowed, (
-        f"Expected static allowlist only for empty rules list.\n"
-        f"  got:      {allowed!r}\n"
-        f"  baseline: {baseline_allowed!r}"
-    )
+    assert not hasattr(spawn_mod, "_load_approval_rule_patterns")
+    assert not hasattr(spawn_mod, "_PATTERN_RE")

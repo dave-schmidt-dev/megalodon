@@ -96,32 +96,6 @@ def _make_mission(tmp_path: Path, status_rows: dict[str, str]) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Fake PermissionWatcher
-# ---------------------------------------------------------------------------
-
-
-class _FakeWatcher:
-    """Minimal stand-in for PermissionWatcher."""
-
-    def __init__(self, pending_lanes: set[str]) -> None:
-        self._pending_lanes = pending_lanes
-
-    def pending(self):
-        from megalodon_ui.permission_watcher import PromptInfo
-
-        return [
-            PromptInfo(
-                lane_short=lane,
-                lane_name=f"LANE{lane}",
-                command_preview="test",
-                detected_at_utc="2026-01-01T00:00:00Z",
-                fingerprint="abc",
-            )
-            for lane in self._pending_lanes
-        ]
-
-
-# ---------------------------------------------------------------------------
 # Async fixture for authenticated client with MEGALODON_FAKE_SPAWNER=1
 # ---------------------------------------------------------------------------
 
@@ -149,8 +123,6 @@ async def _make_fake_spawner_client(
     _TEST_STALE_OVERRIDES.clear()
 
     async with app.router.lifespan_context(app):
-        app.state.permission_watcher = _FakeWatcher(set())
-
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -187,8 +159,6 @@ async def test_no_fake_spawner_env_returns_404(tmp_path, monkeypatch):
     _stale_cache.pop(id(app), None)
 
     async with app.router.lifespan_context(app):
-        app.state.permission_watcher = _FakeWatcher(set())
-
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:

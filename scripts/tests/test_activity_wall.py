@@ -12,6 +12,9 @@ the generator does eventually complete.
 HTTP-layer tests that don't rely on streaming (snapshot, auth gate, limit clip)
 are tested via the normal httpx client against the ASGI transport.
 
+The six sources are: findings, signals, history, queue_applier, inject_log,
+governor_log.
+
 Tests
 -----
 1. Each of the 6 event sources: trigger → ActivityWall queue delivers within 2 s.
@@ -290,29 +293,43 @@ async def test_source_inject_log_roundtrip(aw_client):
 
 
 # ---------------------------------------------------------------------------
-# 1f. Source roundtrip: approval (PermissionWatcher callback)
+# 1f. Source roundtrip: governor-log-YYYY-MM-DD.jsonl
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_source_approval_roundtrip(aw_client):
-    """Firing the permission-change callback → 'approval' event delivered within 1 s."""
+async def test_source_governor_log_roundtrip(aw_client):
+    """Appending a JSON line to governor-log-*.jsonl → 'governor' event within 2 s."""
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log_path = mission_dir / ".fleet" / f"governor-log-{today}.jsonl"
+    log_path.touch()
 
-    # Subscribe first
-    q = wall.subscribe()
-    try:
-        # Fire the callback directly (simulates watcher detecting a prompt)
-        wall._on_permission_change("A", None, "approve")
+    await asyncio.sleep(0.3)
 
-        ev = await asyncio.wait_for(q.get(), timeout=2.0)
-        assert ev["type"] == "approval"
-        assert ev["lane"] == "A"
-        assert ev["summary"] == "approve"
-        assert ev["payload"]["action"] == "approve"
-    finally:
-        wall.unsubscribe(q)
+    entry = {
+        "ts": "2026-05-20T12:00:00Z",
+        "lane": LANE_SHORT,
+        "tool": "Write",
+        "permission": "deny",
+        "category": "outside-mission",
+        "reason": "path escapes mission dir",
+        "input_sha256": "abc123",
+    }
+    with log_path.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+        f.flush()
+
+    ev = await _wait_for_event(
+        wall,
+        lambda e: e["type"] == "governor",
+        timeout_s=3.0,
+    )
+    assert ev is not None, "No 'governor' event received within 3 s"
+    assert ev["lane"] == LANE_SHORT
+    assert ev["payload"]["permission"] == "deny"
+    assert ev["payload"]["category"] == "outside-mission"
 
 
 # ---------------------------------------------------------------------------

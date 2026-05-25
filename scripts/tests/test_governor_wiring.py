@@ -254,20 +254,23 @@ async def _capture_spawn_argv(tmp_path: Path, *, governor_enabled_flag: bool):
 
 @pytest.mark.asyncio
 async def test_killswitch_on_spawn_passes_settings(tmp_path: Path):
-    """Default (governor_enabled=True) → spawn argv carries --settings <path>,
-    and the --allowedTools allowlist is still present (additive)."""
+    """Default (governor_enabled=True) → spawn argv carries --settings <path>.
+
+    Task 3.3: the --allowedTools allowlist was removed (the governor hook is the
+    sole gate), so the argv must NOT carry it."""
     argv = await _capture_spawn_argv(tmp_path, governor_enabled_flag=True)
     assert "--settings" in argv
     assert argv[argv.index("--settings") + 1] == str(governor_settings_path())
-    assert "--allowedTools" in argv  # allowlist untouched
+    assert "--allowedTools" not in argv  # allowlist removed (Task 3.3)
 
 
 @pytest.mark.asyncio
 async def test_killswitch_off_spawn_omits_settings(tmp_path: Path):
-    """governor_enabled=False → spawn argv has NO --settings (governor_settings=None)."""
+    """governor_enabled=False → spawn argv has NO --settings (governor_settings=None)
+    and NO --allowedTools (allowlist removed in Task 3.3)."""
     argv = await _capture_spawn_argv(tmp_path, governor_enabled_flag=False)
     assert "--settings" not in argv
-    assert "--allowedTools" in argv  # allowlist still present
+    assert "--allowedTools" not in argv  # allowlist removed (Task 3.3)
 
 
 def test_killswitch_disabled_skips_preflight(tmp_path: Path):

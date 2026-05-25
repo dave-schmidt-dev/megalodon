@@ -60,29 +60,50 @@ done
 shopt -u nullglob
 echo ""
 
-# Pending permission prompts. Best-effort: only attempt if token file exists.
-echo "PROMPTS:"
+# Governor-blocked lanes (Task 3.3). Under the governor there are no operator
+# permission prompts — instead the PreToolUse hook denies, and a lane that hits a
+# deny-loop is surfaced by GET /api/v1/lanes/stale in a top-level
+# `governor_blocked` list (Task 3.2). These lanes are NOT stale-failures; they
+# need a governor-log peek, not a respawn. Best-effort: only attempt if the
+# token file exists and the server is listening.
+echo "GOVERNOR-BLOCKED:"
 TOKEN_FILE="$MISSION_DIR/.fleet/ui.token"
+# Lanes already excluded from `stale_lanes` by the server; captured here only so
+# the operator sees them under their own heading (not mislabeled as silent).
+GOV_BLOCKED_LANES_LIST=""
 if [[ -f "$TOKEN_FILE" ]]; then
     TOKEN=$(cat "$TOKEN_FILE")
     PORT_OPEN=$(lsof -nP -i ":$PORT" -t 2>/dev/null | head -1)
     if [[ -n "$PORT_OPEN" ]]; then
         # Inline uv run with httpx — operator already approved this script as
-        # a unit, so the runtime call is in-scope of the single approval.
-        uv run --quiet --with httpx python3 - <<PYEOF
-import httpx, sys
+        # a unit, so the runtime call is in-scope of the single approval. The
+        # human report lines start with "  " (two spaces); the bare lane-id lines
+        # (no prefix) are parsed out afterward for the stale carve-out.
+        GOV_BLOCKED_OUT=$(uv run --quiet --with httpx python3 - <<PYEOF 2>/dev/null
+import httpx
 try:
     with httpx.Client(timeout=5.0) as c:
         c.post("http://127.0.0.1:${PORT}/api/v1/auth/exchange", json={"token": "${TOKEN}"})
-        r = c.get("http://127.0.0.1:${PORT}/api/v1/permission_prompts")
-        ps = r.json().get("prompts", [])
-        print(f"  {len(ps)} pending")
-        for p in ps:
-            cmd = p["command"][:200]
-            print(f"  LANE-{p['lane']}: {cmd}")
+        r = c.get("http://127.0.0.1:${PORT}/api/v1/lanes/stale")
+        blocked = r.json().get("governor_blocked", [])
+        if not blocked:
+            print("  (none)")
+        for b in blocked:
+            lane = b.get("lane", "?")
+            n = b.get("deny_count", "?")
+            cat = b.get("last_category", "?")
+            reason = (b.get("last_reason") or "")[:160]
+            print(f"  LANE-{lane}: governor-blocked ({n} denies, last={cat}) "
+                  f"-- check .fleet/governor-log-*.jsonl: {reason}")
+            print(f"LANE_ID={lane}")
 except Exception as e:
-    print(f"  (api unreachable: {type(e).__name__})", file=sys.stderr)
+    print(f"  (api unreachable: {type(e).__name__})")
 PYEOF
+)
+        # Human report (the indented lines) to stdout.
+        echo "$GOV_BLOCKED_OUT" | grep -E '^  ' || true
+        # Bare lane ids for the carve-out below.
+        GOV_BLOCKED_LANES_LIST=$(echo "$GOV_BLOCKED_OUT" | sed -n 's/^LANE_ID=//p')
     else
         echo "  (server not listening on port $PORT)"
     fi
@@ -105,30 +126,16 @@ echo ""
 echo "STALE LANES (>15min silent):"
 APPLIER_LOG="$MISSION_DIR/.fleet/queue-applier.log"
 
-# Pre-fetch lanes that have a CURRENTLY-PENDING permission prompt — those
-# aren't "silent", they're "blocked on operator approval" which is operator
-# action, not agent failure. Treating them as silent floods the report with
-# false stales (LANE-E showed 200+ min stale for hours while actually alive
-# but waiting on a buried prompt).
+# Governor-blocked lanes (captured above from /api/v1/lanes/stale) aren't
+# "silent" — they're caught in a governor deny-loop, which is a policy/operator
+# matter, not agent failure. The server ALREADY excludes them from `stale_lanes`,
+# so this is belt-and-suspenders: if our local activity heuristic still flags one
+# (e.g. it stopped writing findings because it's wedged on denies), label it
+# governor-blocked rather than silent.
 # Bash 3 (macOS default) doesn't have associative arrays, so we store as a
 # pipe-delimited string and use case-match for membership.
-PENDING_LANES_LIST=""
-if [[ -f "$TOKEN_FILE" && -n "${PORT_OPEN:-}" ]]; then
-    PENDING_LANES_LIST=$(uv run --quiet --with httpx python3 - <<PYEOF 2>/dev/null
-import httpx
-try:
-    with httpx.Client(timeout=5.0) as c:
-        c.post("http://127.0.0.1:${PORT}/api/v1/auth/exchange", json={"token": "${TOKEN}"})
-        r = c.get("http://127.0.0.1:${PORT}/api/v1/permission_prompts")
-        for p in r.json().get("prompts", []):
-            print(p["lane"])
-except Exception:
-    pass
-PYEOF
-)
-fi
 # Convert newlines to pipe-delimited for substring match below.
-PENDING_LANES_PIPED="|$(echo "$PENDING_LANES_LIST" | tr '\n' '|' | sed 's/||/|/g')"
+GOV_BLOCKED_PIPED="|$(echo "$GOV_BLOCKED_LANES_LIST" | tr '\n' '|' | sed 's/||/|/g')"
 
 declare -a LANE_AGENT_PAIRS
 # Derive (LANE-SHORT, agent-id) from the most-recent claim/finding/log per agent.
@@ -171,11 +178,11 @@ while IFS= read -r pair; do
     [[ "$last_act" -eq 0 ]] && continue
     silent_min=$(( (now - last_act) / 60 ))
     if [[ "$silent_min" -ge 15 ]]; then
-        # Differentiate "silent (probably wedged)" from "alive but waiting on
-        # operator approval". Membership check via substring on the
+        # Differentiate "silent (probably wedged)" from "governor-blocked"
+        # (caught in a deny-loop). Membership check via substring on the
         # pipe-delimited list (bash 3 has no assoc arrays on macOS default).
-        if [[ "$PENDING_LANES_PIPED" == *"|$lane|"* ]]; then
-            echo "  LANE-$lane ($agent): ${silent_min}min stale-display BUT pending approval — approve in dashboard"
+        if [[ "$GOV_BLOCKED_PIPED" == *"|$lane|"* ]]; then
+            echo "  LANE-$lane ($agent): ${silent_min}min stale-display BUT governor-blocked — check .fleet/governor-log-*.jsonl"
         else
             any_stale=1
             echo "  LANE-$lane ($agent): silent ${silent_min}min — peek .fleet/$lane.stream.log"

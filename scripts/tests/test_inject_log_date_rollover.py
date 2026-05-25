@@ -129,7 +129,7 @@ async def test_inject_log_date_rollover_switches_to_new_file(
     # Patch only the datetime name inside activity_wall's module namespace.
     monkeypatch.setattr(_aw_mod, "datetime", _FakeDatetime)
 
-    wall = ActivityWall(tmp_path, permission_watcher=None)
+    wall = ActivityWall(tmp_path)
     await wall.start()
 
     try:
