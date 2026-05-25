@@ -10,6 +10,31 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-25 (PM) — Governor P3 gate PASSED (REPL + live canary) + activity-visibility finding
+
+**Gate cleared (both recorded PASS):**
+- **REPL validation** (`verifications/2026-05-25-governor-repl-validation.md`): live interactive
+  `claude` REPL — canary + `sudo` denied, benign `echo` ran with NO permission prompt, audit
+  deny+allow written. **Risk 8.1 resolved**: a hook `allow` suffices in a REPL with no allowlist
+  entry → the `--allowedTools` allowlist removal is now unblocked.
+- **Single-lane live canary / Task 2.6** (`verifications/2026-05-25-governor-canary-rollout.md`):
+  a one-lane run through the REAL spawn path — preflight + `governor_canary_selftest` passed,
+  the live tmux `claude` argv carried `--settings`, `A.governed` marker written, governor-log
+  accrued `governor-canary` deny → `bash-ok` allow → `bash-privilege` deny, lane did not stall.
+  Torn down clean (no procs/lanes left); throwaway run dir removed.
+
+**Finding (operator-spotted during the canary — drives P3.2):** the summary board showed the
+governed lane as IDLE with no activity. Root cause: the ActivityWall's 6 sources include a
+*permission-watcher* callback that fires on permission PROMPTS — but the governor suppresses
+prompts (auto-allow/deny via the hook), so that source goes silent for governed lanes, and
+nothing tails the governor-log yet. **P3.2 must wire the ActivityWall to
+`.fleet/governor-log-*.jsonl`** so governed-lane deny/allow activity is visible — not merely
+swap one silent source for another. (Board lane-state also reads from queued *tasks* + the
+narrator, both absent in the minimal canary, which is why it read idle.) Enforcement itself
+is proven; this is a visibility gap, already scoped in P3.
+
+---
+
 ## 2026-05-25 (PM) — Governor Phase 2 CODE COMPLETE (settings + wiring + canary + reattach)
 
 **What:** Phase 2 wiring is built (additive; the old screen-scraping watcher is untouched and still live — decommission is P3, gated below). All claude lanes now spawn under the `PreToolUse` governor hook.
