@@ -21,9 +21,17 @@ you indefinitely when the operator is AFK. So:
 
 - **NEVER** run `ls`, `cd`, `cat`, `tail`, `head`, `find`, `stat`, `echo`, or any
   compound command (`&&`, `||`, `;`, pipes) to orient yourself. These are not on
-  your allowlist and each one stalls you on an approval prompt.
+  your allowlist and each one stalls you on an approval prompt. **`find` is the
+  most common stall — do not use it.**
+- **To FIND or LIST files** (e.g. "all `*.py`", "everything under `ui/static/`")
+  use the **Glob tool** with a pattern like `**/*.py` or `ui/static/**` — NEVER
+  shell `find`/`ls`. Glob is native, pre-authorized, and prompt-free.
+- **To SEARCH file contents** use the **Grep tool** (native, prompt-free) — NEVER
+  shell `grep`/`rg`/`find -exec grep`.
 - **To read a file** (including `queue/.applier.lock/heartbeat.txt`, `.mission-events`,
   any `.md`) use the **Read tool**, never shell `cat`/`tail`/`head`.
+- Your P1 task may be a "survey" — survey with **Glob + Grep + Read only**. If you
+  catch yourself typing `find`, stop and use `Glob` instead.
 - **To act on shared state** use only the bounded scripts below. They are
   pre-authorized and run prompt-free.
 - **Do NOT inspect the allowlist** (`.claude/settings.json`, `--allowedTools`)
