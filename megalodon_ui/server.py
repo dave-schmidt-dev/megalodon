@@ -1286,12 +1286,16 @@ def make_app(
 
         async def _narrator_build_rows():
             tasks_fe = parse_tasks_fe_shape(mission_dir, ctx)
+            # STATUS.md fallback: lets the board reflect live lane activity
+            # (working:/initialized) when no TASKS.md row backs the lane yet.
+            status_rows = parse_status(mission_dir, ctx)
             return await build_lane_rows(
                 mission_dir,
                 tasks_fe,
                 spawner.sessions,
                 spawner.adapter_resolver,
                 ctx.mission_config.lanes,
+                status_rows=status_rows,
             )
 
         narrator_interval_s = clamp_interval_s(_parse_narrator_interval_env())

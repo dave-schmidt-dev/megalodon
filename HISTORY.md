@@ -10,6 +10,45 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-24 — Bugfix: summary board shows all lanes IDLE during INIT/pre-PLAN
+
+**Symptom:** During the `v10-prep` dogfood launch, all six lanes were live (tmux
+sessions alive, transcripts growing, STATUS.md showing `working: P1-x` /
+`initialized`) yet the summary board rendered every lane as **IDLE** with
+`Last —` / `Now —`. The permission BLOCKED pill updated live, which masked the
+issue as a partial-SSE problem.
+
+**Root cause:** Three independent state surfaces had diverged. `/api/v1/state`
+(STATUS.md) was correct, but the board's Last/Now/pill are driven by
+`/api/v1/narrative` → `board_state.assemble_lane_rows`, which derives lane state
+**solely from TASKS.md task-row `claim_state`** (blocked>claimed>done>open). This
+run was in INIT with an empty PHASE-PLAN — zero task rows seeded — so every lane
+fell through to `state="open"` → IDLE, `now=null`. Agents had claimed lanes in
+STATUS.md and created `claims/P1-x` mutex dirs for task IDs with no backing
+TASKS.md rows. The narrator being offline (`narrator_ok=false`) was a separate,
+orthogonal issue: the IDLE/Last/Now come from the deterministic builder, not the
+LLM phrases — a healthy narrator would still have shown IDLE.
+
+**Remediation (board reflects STATUS.md):** `assemble_lane_rows` /
+`build_lane_rows` gained an optional `status_rows` param (`server.parse_status()`
+shape). When a lane has **no** TASKS.md row (task-derived `state=="open"` and
+`now`/`last` both None), the board falls back to the lane's STATUS.md state:
+`working: <id>`/`initialized` → `claimed` (RUNNING pill) with `now` populated from
+the STATUS notes (task id parsed from `working: <id>`); `blocked` → blocked;
+`unclaimed`/`idle`/unknown stay IDLE. Goal stays the lane role. Task-derived
+state always takes precedence — the fallback only fills the gap, so seeded runs
+are unaffected. Wired at `server.py:_narrator_build_rows` via
+`parse_status(mission_dir, ctx)`.
+
+**Regression tests:** `scripts/tests/test_board_state.py` — `TestStatusFallback`
+(working→RUNNING, initialized→RUNNING, unclaimed→IDLE, task-claim precedence,
+no-status backward-compat) + `TestBuildLaneRows::test_status_rows_forwarded_to_assembler`.
+49 tests pass. Verified against the live `v10-prep` STATUS.md: all six lanes flip
+`open`→`claimed` with `now` text. (Note: live server must be restarted to load
+the new code; running process predates the fix.)
+
+---
+
 ## 2026-05-24 — Post-Phase-5 cleanup: deferred items + preflight fix
 
 **Six commits wrapping up Phase 5 and addressing backlog items:**

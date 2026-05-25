@@ -395,6 +395,108 @@ class TestAssembleLaneRows:
 
 
 # ---------------------------------------------------------------------------
+# STATUS.md fallback: when a lane has no TASKS.md task rows, the board reflects
+# the lane's STATUS.md state so live lane activity (working:/initialized) is not
+# misrendered as IDLE. Task-derived state always takes precedence when present.
+# ---------------------------------------------------------------------------
+
+
+def _status_row(
+    lane: str,
+    state: str,
+    *,
+    agent: str = "agent-0001",
+    last_utc: str = "2026-05-25T01:41:55Z",
+    notes: str = "",
+) -> dict[str, Any]:
+    """Build a STATUS.md row dict matching server.parse_status() output."""
+    return {
+        "lane": lane,
+        "agent": agent,
+        "state": state,
+        "last_utc": last_utc,
+        "notes": notes,
+        "staleness_seconds": 1.0,
+        "is_stale": False,
+    }
+
+
+class TestStatusFallback:
+    """assemble_lane_rows falls back to STATUS.md state when no task rows exist."""
+
+    def _make_lane_cfgs(self) -> list[MagicMock]:
+        return [
+            _lane_cfg("AUDIT", "A", "Audit all findings"),
+            _lane_cfg("BUILD", "B", "Build the artefact"),
+        ]
+
+    def test_working_status_makes_lane_running_when_no_tasks(self) -> None:
+        """STATUS.md 'working: P1-B' with no task rows → state=claimed, now from notes."""
+        cfgs = self._make_lane_cfgs()
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        digests: dict[str, SessionDigest | None] = {"A": None, "B": None}
+        status_rows = [_status_row("AUDIT", "working: P1-B", notes="surveying surface")]
+        rows = assemble_lane_rows(tasks_fe, cfgs, digests, {}, status_rows=status_rows)
+        row = rows["A"]
+        # state must map to a RUNNING-equivalent (resolvePill treats "claimed" as RUNNING).
+        assert row.state == "claimed"
+        assert row.now is not None
+        assert row.now["task_id"] == "P1-B"
+        assert row.now["desc"] == "surveying surface"
+        assert row.now["phrase"] is None
+        # Goal stays the lane role — STATUS fallback must not hijack the Goal line.
+        assert row.goal == "Audit all findings"
+
+    def test_initialized_status_makes_lane_running(self) -> None:
+        """STATUS.md 'initialized' (bootstrapped, no task) → non-idle state."""
+        cfgs = self._make_lane_cfgs()
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        digests: dict[str, SessionDigest | None] = {"A": None, "B": None}
+        status_rows = [_status_row("AUDIT", "initialized", notes="bootstrap tick")]
+        rows = assemble_lane_rows(tasks_fe, cfgs, digests, {}, status_rows=status_rows)
+        assert rows["A"].state == "claimed"
+        assert rows["A"].now is not None
+        assert rows["A"].now["desc"] == "bootstrap tick"
+
+    def test_unclaimed_status_stays_idle(self) -> None:
+        """STATUS.md 'unclaimed' → state stays 'open' (IDLE), now stays None."""
+        cfgs = self._make_lane_cfgs()
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        digests: dict[str, SessionDigest | None] = {"A": None, "B": None}
+        status_rows = [_status_row("AUDIT", "unclaimed", agent="unclaimed")]
+        rows = assemble_lane_rows(tasks_fe, cfgs, digests, {}, status_rows=status_rows)
+        assert rows["A"].state == "open"
+        assert rows["A"].now is None
+
+    def test_task_claim_takes_precedence_over_status(self) -> None:
+        """A real claimed task wins over STATUS.md — fallback only fills the gap."""
+        cfgs = self._make_lane_cfgs()
+        tasks = [
+            _task("A-1", "AUDIT", "real task", "claimed", "2026-05-01T11:00:00Z"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None, "B": None}
+        # STATUS says unclaimed, but the task claim must still drive the row.
+        status_rows = [_status_row("AUDIT", "unclaimed", agent="unclaimed")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"A-1": 0}, status_rows=status_rows
+        )
+        assert rows["A"].state == "claimed"
+        assert rows["A"].now is not None
+        assert rows["A"].now["task_id"] == "A-1"
+        assert rows["A"].now["desc"] == "real task"
+
+    def test_no_status_rows_is_backward_compatible(self) -> None:
+        """Omitting status_rows preserves the original open/IDLE behavior."""
+        cfgs = self._make_lane_cfgs()
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        digests: dict[str, SessionDigest | None] = {"A": None, "B": None}
+        rows = assemble_lane_rows(tasks_fe, cfgs, digests, {})
+        assert rows["A"].state == "open"
+        assert rows["A"].now is None
+
+
+# ---------------------------------------------------------------------------
 # CR-4: blocked task state
 # ---------------------------------------------------------------------------
 
@@ -640,3 +742,31 @@ class TestBuildLaneRows:
 
         assert call_count == 0
         assert rows["A"].tokens is None
+
+    @pytest.mark.asyncio
+    async def test_status_rows_forwarded_to_assembler(self, tmp_path: Path) -> None:
+        """build_lane_rows threads status_rows into the assembler (no task rows)."""
+        mission_dir = tmp_path / "mission"
+        mission_dir.mkdir()
+        (mission_dir / "TASKS.md").write_text("## PHASE-PLAN\n", encoding="utf-8")
+
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        sessions = {"A": _session(session_id=None, cwd=mission_dir)}
+        lane_cfgs = [_lane_cfg("AUDIT", "A", "Audit role", cli="claude")]
+        status_rows = [_status_row("AUDIT", "working: P1-B", notes="surveying")]
+
+        def adapter_resolver(cli: str) -> MagicMock:
+            return MagicMock()
+
+        rows = await build_lane_rows(
+            mission_dir,
+            tasks_fe,
+            sessions,
+            adapter_resolver,
+            lane_cfgs,
+            status_rows=status_rows,
+        )
+
+        assert rows["A"].state == "claimed"
+        assert rows["A"].now is not None
+        assert rows["A"].now["task_id"] == "P1-B"

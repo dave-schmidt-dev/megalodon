@@ -172,6 +172,68 @@ def _pick_latest(
 
 
 # ---------------------------------------------------------------------------
+# STATUS.md fallback helpers
+# ---------------------------------------------------------------------------
+
+
+def _status_to_board_state(status_state: str) -> tuple[str, str | None]:
+    """Map a STATUS.md lane-state string to a board state + optional task id.
+
+    The board pill only understands a fixed vocabulary (``blocked`` / ``claimed``
+    drive non-IDLE treatment; ``open`` is IDLE). STATUS.md lane states are
+    richer (``"working: P1-B"``, ``"initialized"``, ``"unclaimed"``, ...). This
+    collapses them so a lane reporting live activity in STATUS.md is not shown
+    as IDLE when TASKS.md has no row backing it (the INIT/pre-PLAN case).
+
+    Returns ``(board_state, task_id)`` where ``board_state`` is one of
+    ``"blocked" | "claimed" | "open"`` and ``task_id`` is parsed from a
+    ``"working: <id>"`` form when present (else None).
+    """
+    s = (status_state or "").strip().lower()
+    if s.startswith("blocked"):
+        return ("blocked", None)
+    if s.startswith("working"):
+        # "working: P1-B" / "working:P1-C" → task id after the colon.
+        task_id = status_state.split(":", 1)[1].strip() if ":" in status_state else None
+        return ("claimed", task_id or None)
+    if s == "initialized":
+        return ("claimed", None)
+    # unclaimed, idle, awaiting OPERATOR-ACK, unknown → leave IDLE.
+    return ("open", None)
+
+
+def _index_status_rows(
+    status_rows: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Index STATUS.md rows by a lowercased lane key for O(1) lookup.
+
+    The ``lane`` column may be a long name (``AUDIT``) or a ``LANE-A`` form
+    depending on the mission's status table; callers resolve against both.
+    """
+    index: dict[str, dict[str, Any]] = {}
+    for row in status_rows or []:
+        key = str(row.get("lane", "")).strip().lower()
+        if key:
+            index[key] = row
+    return index
+
+
+def _lookup_status_row(
+    cfg: Any, status_index: dict[str, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Find the STATUS.md row for a lane config, trying name / short / LANE-<short>."""
+    for cand in (getattr(cfg, "name", None), getattr(cfg, "short", None)):
+        if cand:
+            row = status_index.get(str(cand).strip().lower())
+            if row is not None:
+                return row
+    short = getattr(cfg, "short", None)
+    if short:
+        return status_index.get(f"lane-{str(short).strip().lower()}")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Pure assembler
 # ---------------------------------------------------------------------------
 
@@ -181,6 +243,7 @@ def assemble_lane_rows(
     lane_cfgs: list[Any],
     digests: dict[str, SessionDigest | None],
     doc_order: dict[str, int],
+    status_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, LaneRow]:
     """Assemble one ``LaneRow`` per lane — pure, no I/O.
 
@@ -206,6 +269,9 @@ def assemble_lane_rows(
     all_tasks.extend(tasks_fe.get("cross", []))
 
     rows: dict[str, LaneRow] = {}
+
+    # STATUS.md fallback index (empty when no status_rows supplied).
+    status_index = _index_status_rows(status_rows)
 
     for cfg in lane_cfgs:
         short = cfg.short
@@ -255,6 +321,25 @@ def assemble_lane_rows(
             state = "done"
         else:
             state = "open"
+
+        # STATUS.md fallback: when no TASKS.md row backs this lane (the INIT /
+        # pre-PLAN case), reflect the lane's STATUS.md state so live activity
+        # ("working: <id>" / "initialized") is not misrendered as IDLE. Task-
+        # derived state always wins — we only fill the gap. Goal is left as the
+        # lane role (set above); the fallback drives state + the Now line only.
+        if status_index and now is None and last is None and state == "open":
+            status_row = _lookup_status_row(cfg, status_index)
+            if status_row is not None:
+                status_state = str(status_row.get("state", ""))
+                board_state, task_id = _status_to_board_state(status_state)
+                if board_state != "open":
+                    state = board_state
+                    notes = str(status_row.get("notes", "")).strip()
+                    now = {
+                        "task_id": task_id,
+                        "desc": notes or status_state.strip(),
+                        "phrase": None,
+                    }
 
         # Digest + tokens.
         digest = digests.get(short)
@@ -318,6 +403,7 @@ async def build_lane_rows(
     sessions: dict[str, Any],
     adapter_resolver: Callable[[str], Any],
     lane_cfgs: list[Any],
+    status_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, LaneRow]:
     """Async wrapper: read transcripts off-loop, then assemble board rows.
 
@@ -334,6 +420,9 @@ async def build_lane_rows(
         adapter_resolver: Callable that maps a harness CLI name to its adapter
             instance (e.g. ``FleetSpawner.adapter_resolver``).
         lane_cfgs: List of ``LaneConfig`` objects from the mission config.
+        status_rows: Optional STATUS.md rows (``server.parse_status()`` shape).
+            When supplied, a lane with no TASKS.md row falls back to its
+            STATUS.md state so live activity is not rendered as IDLE.
 
     Returns:
         Dict mapping lane short code to its assembled ``LaneRow``.
@@ -377,7 +466,9 @@ async def build_lane_rows(
             )
             digests[short] = None
 
-    rows = assemble_lane_rows(tasks_fe, lane_cfgs, digests, doc_order)
+    rows = assemble_lane_rows(
+        tasks_fe, lane_cfgs, digests, doc_order, status_rows=status_rows
+    )
 
     # Attach digest_text to rows that have a digest (internal, for the scheduler).
     for cfg in lane_cfgs:
