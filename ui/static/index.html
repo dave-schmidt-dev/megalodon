@@ -103,6 +103,10 @@
 
   <div id="toast-region" role="status" aria-live="polite"></div>
 
+  <!-- auth.js — shared first-load auth gating + global re-auth modal. Loaded
+       FIRST (before sse.js / components) so window.__megalodon_auth__ and the
+       re-auth modal exist before any gated request/EventSource can fire. -->
+  <script type="module" src="/static/js/auth.js"></script>
   <script type="module" src="/static/js/store.js"></script>
   <script type="module" src="/static/js/sse.js"></script>
   <script type="module" src="/static/js/app.js"></script>

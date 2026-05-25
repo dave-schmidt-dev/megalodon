@@ -11,6 +11,7 @@
 // All page mounts use safe DOM APIs only — no innerHTML with user-influenced content.
 
 import { store } from "./store.js";
+import { whenAuthReady } from "./auth.js";
 
 const ROUTES = [
   { pattern: /^\/$/, loader: () => import("../pages/board.js"), params: () => ({}) },
@@ -155,8 +156,20 @@ function attachRouter() {
 
   window.addEventListener("popstate", () => mountPage(location.pathname));
 
-  // Initial mount.
-  mountPage(location.pathname);
+  // Initial mount — gated behind the first-load auth exchange so no page
+  // module issues a gated request (narrative, lanes/stale, narrative-stream,
+  // activity-wall, terminal pane-streams, approval-rules) BEFORE the
+  // token→cookie exchange has set the session cookie. Without this gate the
+  // first paint races the exchange → 401 → permanently empty board (audit
+  // bug #1). whenAuthReady() is idempotent and never rejects. Show a loading
+  // placeholder immediately so the chrome isn't blank during the (sub-100ms)
+  // exchange.
+  const root = getRoot();
+  if (root) {
+    clearNode(root);
+    root.appendChild(emptyState("Authenticating…"));
+  }
+  whenAuthReady().then(() => mountPage(location.pathname));
 }
 
 function attachControlToggle() {

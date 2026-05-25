@@ -454,15 +454,70 @@ def _parse_yaml_frontmatter(text: str) -> dict[str, Any]:
     return out
 
 
+def _build_task_section_re(mc: "MissionConfig | None") -> "re.Pattern | None":
+    """Build the `^## <title>$` matcher for TASKS.md, honoring `task_sections`.
+
+    The real missions use human-readable section headers (``## PHASE 1 — PLAN``)
+    declared in ``config.task_sections``; older/canonical missions use
+    ``## PHASE-PLAN`` declared in ``config.phases``.  This matcher accepts BOTH
+    so every TASKS.md format parses (Bug fix: ``/api/v1/tasks`` previously only
+    matched canonical phase tokens and so returned ``{"phases": []}`` on real
+    missions).  Returns None when neither source supplies any title.
+    """
+    section_titles: list[str] = []
+    if mc is not None and getattr(mc, "task_sections", None):
+        section_titles = list(mc.task_sections)
+    if mc is not None:
+        for p in mc.phases:
+            if p not in section_titles:
+                section_titles.append(p)
+    if not section_titles:
+        return None
+    # Length-descending so e.g. "PHASE 2.5 — Plan-v2" wins over a "PHASE 2"
+    # prefix-match. Escape so / — ( ) are matched literally.
+    section_titles.sort(key=len, reverse=True)
+    return re.compile(
+        r"^##\s+(?P<title>" + "|".join(re.escape(t) for t in section_titles) + r")\s*$",
+        re.MULTILINE,
+    )
+
+
+def _parse_task_state_block(state_block: str) -> tuple[str, str | None, str | None]:
+    """Decode a task line's ``state_block`` into (state, agent, utc).
+
+    States: ``open`` (blank), ``done:``, ``claimed:``, ``blocked:``.  For
+    done/claimed the trailing ``agent@utc`` is split out.  Anything else is
+    treated as ``open``.
+    """
+    state_block = state_block.strip()
+    if state_block in ("", " "):
+        return "open", None, None
+    for prefix, state in (("done:", "done"), ("claimed:", "claimed")):
+        if state_block.startswith(prefix):
+            rest = state_block[len(prefix) :].strip()
+            agent, _, utc = rest.partition("@")
+            return state, (agent.strip() or None), (utc.strip() or None)
+    if state_block.startswith("blocked:"):
+        return "blocked", None, None
+    return "open", None, None
+
+
 def parse_tasks(
     mission_dir: Path, ctx: "MissionContext | None" = None
 ) -> list[dict[str, Any]]:
     """Parse TASKS.md into a list of phase dicts.
 
     REPAIR-MUTATIONS-E2E-5-STATUS-VIEW: shape `[{name, tasks: [...]}]`.
-    Each task dict has `id`, `lane`, `state` ("open"|"claimed"|"done"),
-    `agent` (if claimed/done), `utc` (if claimed/done), `description`.
-    Consumed by FE `tasks.js:417,452` via `store.get("tasks.phases")`.
+    Each task dict has `id`, `lane`, `state`
+    ("open"|"claimed"|"done"|"blocked"), `agent` (if claimed/done), `utc` (if
+    claimed/done), `description`.  Consumed by FE `tasks.js:400-419` via
+    ``GET /api/v1/tasks``.
+
+    Sections are matched from ``config.task_sections`` (human headers like
+    ``## PHASE 1 — PLAN``) with a fallback to ``config.phases`` (canonical
+    ``## PHASE-PLAN``), so BOTH the real-mission and v9.0 TASKS.md formats
+    populate the kanban (previously only canonical tokens matched, leaving the
+    real-format kanban empty).
     """
     path = mission_dir / "TASKS.md"
     if not path.exists():
@@ -470,47 +525,40 @@ def parse_tasks(
     text = path.read_text()
     if ctx is not None:
         task_line_re = ctx.task_line_re
-        phase_header_re = ctx.phase_header_re
+        mc = ctx.mission_config
     else:
         mc = load_mission_config(mission_dir)
         task_line_re = build_task_line_re(mc)
-        phase_header_re = build_phase_header_re(mc)
-    phase_headers = list(phase_header_re.finditer(text))
-    phases: list[dict[str, Any]] = []
+
+    section_re = _build_task_section_re(mc)
+    if section_re is None:
+        return []
+    section_hdrs = list(section_re.finditer(text))
+
     # Build a short-code → long-name map from the mission config so task.lane
     # matches what the FE kanban buckets by (config.lanes[i].name, e.g. "AUDIT").
     short_to_name: dict[str, str] = {}
-    if ctx is not None and ctx.mission_config is not None:
-        for lane_cfg in ctx.mission_config.lanes:
+    if mc is not None:
+        for lane_cfg in mc.lanes:
             if lane_cfg.short:
                 short_to_name[lane_cfg.short] = lane_cfg.name
-    for i, hdr in enumerate(phase_headers):
+
+    # Catch-all `^## ` so an unrecognized ## header (not in task_sections/phases)
+    # bounds a known section instead of letting it run to EOF and vacuum up
+    # unrelated task lines.
+    any_h2_re = re.compile(r"^##\s+", re.MULTILINE)
+
+    phases: list[dict[str, Any]] = []
+    for i, hdr in enumerate(section_hdrs):
         start = hdr.end()
-        end = phase_headers[i + 1].start() if i + 1 < len(phase_headers) else len(text)
+        end = section_hdrs[i + 1].start() if i + 1 < len(section_hdrs) else len(text)
+        next_h2 = any_h2_re.search(text, start + 1, end)
+        if next_h2:
+            end = next_h2.start()
         section = text[start:end]
         tasks: list[dict[str, Any]] = []
         for m in task_line_re.finditer(section):
-            state_block = m.group("state_block").strip()
-            if state_block == "" or state_block == " ":
-                state = "open"
-                agent = None
-                utc = None
-            elif state_block.startswith("done:"):
-                state = "done"
-                rest = state_block[len("done:") :].strip()
-                agent, _, utc = rest.partition("@")
-                agent = agent.strip()
-                utc = utc.strip()
-            elif state_block.startswith("claimed:"):
-                state = "claimed"
-                rest = state_block[len("claimed:") :].strip()
-                agent, _, utc = rest.partition("@")
-                agent = agent.strip()
-                utc = utc.strip()
-            else:
-                state = "open"
-                agent = None
-                utc = None
+            state, agent, utc = _parse_task_state_block(m.group("state_block"))
             short = m.group("lane")
             tasks.append(
                 {
@@ -522,7 +570,7 @@ def parse_tasks(
                     "description": (m.group("description") or "").strip(),
                 }
             )
-        phases.append({"name": hdr.group("phase").strip(), "tasks": tasks})
+        phases.append({"name": hdr.group("title").strip(), "tasks": tasks})
     return phases
 
 
@@ -764,28 +812,11 @@ def parse_tasks_fe_shape(
             if lane_cfg.short:
                 short_to_name[lane_cfg.short] = lane_cfg.name
 
-    # Build a section-header regex from the config's task_sections list, with
-    # a graceful fallback to the canonical PHASE-* form (so v9.0 missions
-    # where TASKS.md uses ``## PHASE-PLAN`` still parse).
-    section_titles: list[str] = []
-    if mc is not None and getattr(mc, "task_sections", None):
-        section_titles = list(mc.task_sections)
-    # Fallback: include canonical phase names so a mission whose TASKS.md
-    # already uses canonical headers parses too.
-    if mc is not None:
-        for p in mc.phases:
-            if p not in section_titles:
-                section_titles.append(p)
-    if not section_titles:
+    # Section-header regex from config.task_sections with a canonical PHASE-*
+    # fallback (shared with parse_tasks so both endpoints match identically).
+    section_re = _build_task_section_re(mc)
+    if section_re is None:
         return {"phases": {}, "cross": []}
-
-    # Length-descending so e.g. "PHASE 2.5 — Plan-v2 reconciliation" wins over
-    # "PHASE 2" prefix-match. Escape to handle / — ( ) literally.
-    section_titles.sort(key=len, reverse=True)
-    section_re = re.compile(
-        r"^##\s+(?P<title>" + "|".join(re.escape(t) for t in section_titles) + r")\s*$",
-        re.MULTILINE,
-    )
     section_hdrs = list(section_re.finditer(text))
 
     phases: dict[str, list[dict[str, Any]]] = {}
@@ -813,31 +844,7 @@ def parse_tasks_fe_shape(
         phase_id = _section_title_to_phase_id(title)
 
         for m in task_line_re.finditer(section):
-            state_block = m.group("state_block").strip()
-            if state_block == "" or state_block == " ":
-                claim_state = "open"
-                agent = None
-                utc = None
-            elif state_block.startswith("done:"):
-                claim_state = "done"
-                rest = state_block[len("done:") :].strip()
-                agent, _, utc = rest.partition("@")
-                agent = agent.strip() or None
-                utc = utc.strip() or None
-            elif state_block.startswith("claimed:"):
-                claim_state = "claimed"
-                rest = state_block[len("claimed:") :].strip()
-                agent, _, utc = rest.partition("@")
-                agent = agent.strip() or None
-                utc = utc.strip() or None
-            elif state_block.startswith("blocked:"):
-                claim_state = "blocked"
-                agent = None
-                utc = None
-            else:
-                claim_state = "open"
-                agent = None
-                utc = None
+            claim_state, agent, utc = _parse_task_state_block(m.group("state_block"))
             short = m.group("lane")
             task_id = m.group("task_id").strip()
             description = (m.group("description") or "").strip()
@@ -1226,12 +1233,13 @@ def make_app(
             if _fake_sessions_path:
                 ctx.session_store = auth.SessionStore(path=Path(_fake_sessions_path))
 
-            app.state.spawner = FakeFleetSpawner(
+            fake_spawner_obj = FakeFleetSpawner(
                 mission_dir,
                 ctx.mission_config,
                 get_adapter,
                 socket,
             )
+            app.state.spawner = fake_spawner_obj
             app.state.startup_complete = True
             from .activity_wall import ActivityWall
 
@@ -1242,9 +1250,76 @@ def make_app(
 
             app.state.narrative_hub = NarrativeHub()
             app.state.narrative_cache = {}
+
+            # Narrator scheduler in fake/demo mode (Bug fix: the fake branch
+            # previously created an empty cache and returned, so the demo board
+            # was permanently blank — run_narrator_scheduler only ran in the
+            # live branch). Reuse the SAME scheduler/build_rows path the live
+            # branch uses (no forked logic) against the fake spawner's sessions,
+            # and seed the cache with one deterministic tick at startup so the
+            # board is populated even before any SSE subscriber connects.
+            from .narrator.board_state import build_lane_rows
+            from .narrator.runtime import NarratorRuntime
+            from .narrator.scheduler import (
+                clamp_interval_s,
+                narrator_tick,
+                run_narrator_scheduler,
+            )
+
+            _fake_narrator_runtime = NarratorRuntime.from_env()
+            await _fake_narrator_runtime.start()
+
+            async def _fake_narrator_build_rows():
+                tasks_fe = parse_tasks_fe_shape(mission_dir, ctx)
+                status_rows = parse_status(mission_dir, ctx)
+                return await build_lane_rows(
+                    mission_dir,
+                    tasks_fe,
+                    fake_spawner_obj.sessions,
+                    fake_spawner_obj.adapter_resolver,
+                    ctx.mission_config.lanes,
+                    status_rows=status_rows,
+                )
+
+            # Deterministic one-shot tick: populate Goal/Now/Last/state from
+            # build_lane_rows immediately so a fresh demo boot is never blank.
+            try:
+                await narrator_tick(
+                    hub=app.state.narrative_hub,
+                    runtime=_fake_narrator_runtime,
+                    cache=app.state.narrative_cache,
+                    build_rows=_fake_narrator_build_rows,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[narrator-fake] startup tick failed: {exc!r}", file=sys.stderr)
+
+            _fake_narrator_interval_s = clamp_interval_s(_parse_narrator_interval_env())
+            _fake_narrator_stop = asyncio.Event()
+            _fake_narrator_task = asyncio.create_task(
+                run_narrator_scheduler(
+                    hub=app.state.narrative_hub,
+                    runtime=_fake_narrator_runtime,
+                    cache=app.state.narrative_cache,
+                    build_rows=_fake_narrator_build_rows,
+                    interval_s=_fake_narrator_interval_s,
+                    stop_event=_fake_narrator_stop,
+                )
+            )
+            app.state.narrator_runtime = _fake_narrator_runtime
+            app.state.narrator_scheduler_task = _fake_narrator_task
             try:
                 yield
             finally:
+                _fake_narrator_stop.set()
+                _fake_narrator_task.cancel()
+                try:
+                    await _fake_narrator_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                try:
+                    await _fake_narrator_runtime.stop()
+                except Exception:
+                    pass
                 await _aw_fake.stop()
             return
 

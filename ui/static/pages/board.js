@@ -48,6 +48,7 @@
 
 import { loadConfig } from "../js/config.js";
 import { mountPage } from "../js/app.js";
+import { authedFetch, probeReauthOn401 } from "../js/auth.js";
 import { createTerminalPane } from "../components/terminal_pane.js";
 import { createActivityWall } from "../components/activity_wall.js";
 import { StaleModal } from "../components/stale_modal.js";
@@ -117,12 +118,36 @@ function navigate(path) {
  */
 async function fetchNarrative() {
   try {
-    const resp = await fetch("/api/v1/narrative", { credentials: "include" });
+    // authedFetch awaits the first-load auth exchange (bug #1) and surfaces the
+    // re-auth modal on 401 (bug #2) before we fall back to an empty map.
+    const resp = await authedFetch("/api/v1/narrative");
     if (!resp.ok) return {};
     const json = await resp.json();
     return json && typeof json.lanes === "object" && json.lanes ? json.lanes : {};
   } catch (_) {
     return {};
+  }
+}
+
+/**
+ * Fetch the UNGATED /api/status (STATUS.md rows) as a reliable baseline for the
+ * board (bug #3). This endpoint survives the auth race (it is not session-gated)
+ * so we can seed each lane's state/last from the durable STATUS.md state even
+ * before the narrator cache warms up or when the narrator is in demo mode —
+ * blank-IDLE is then distinguishable from genuinely-no-data.
+ *
+ * Returns a map keyed by BOTH the STATUS.md "lane" value (e.g. "LANE-A") and,
+ * when resolvable, the short code, so the caller can match either.
+ * @returns {Promise<Array<{lane: string, agent: string, state: string, last_utc: string, notes: string}>>}
+ */
+async function fetchStatusBaseline() {
+  try {
+    const resp = await fetch("/api/status", { credentials: "same-origin" });
+    if (!resp.ok) return [];
+    const json = await resp.json();
+    return Array.isArray(json) ? json : [];
+  } catch (_) {
+    return [];
   }
 }
 
@@ -141,7 +166,7 @@ async function fetchNarrative() {
  */
 async function fetchStaleLanes() {
   try {
-    const resp = await fetch("/api/v1/lanes/stale", { credentials: "include" });
+    const resp = await authedFetch("/api/v1/lanes/stale");
     if (!resp.ok) return { stale_lanes: [], governor_blocked: [] };
     const json = await resp.json();
     return {
@@ -425,8 +450,16 @@ function applyNarrativeText(refs, payload) {
   }
 
   // Now from now.phrase (narrator), fall back to now.desc when phrase is null.
+  // A real narrative phrase clears any "narrator warming up…" baseline marker
+  // (bug #3 overlay): drop the italic + baseline flag so the live phrase reads
+  // as authoritative.
   if (now && (now.phrase || now.desc)) {
     refs.nowEl.textContent = String(now.phrase || now.desc);
+    refs.nowEl.style.fontStyle = "";
+    delete refs.nowEl.dataset.baseline;
+  } else if (refs.nowEl.dataset.baseline === "true") {
+    // Keep the baseline "warming up" hint rather than overwriting it with "—".
+    /* leave as-is */
   } else {
     refs.nowEl.textContent = "—";
   }
@@ -443,6 +476,62 @@ function applyNarrativeText(refs, payload) {
   // Stash the governance provenance for the UNGOVERNED indicator re-eval. Left
   // undefined when the payload omits the field (so it can't false-flag).
   refs.governed = payload ? payload.governed : undefined;
+}
+
+/**
+ * Map a STATUS.md `state` cell (e.g. "idle", "working: T2", "blocked") to the
+ * narrative-style state vocabulary the pill resolver understands. STATUS.md is
+ * the durable on-disk truth, so this is what the board shows as a baseline
+ * before (or instead of) narrator phrases.
+ * @param {string|null|undefined} statusState
+ * @returns {string} narrative-style state
+ */
+function statusStateToNarrative(statusState) {
+  const s = String(statusState || "").trim().toLowerCase();
+  if (!s) return "open";
+  if (s.startsWith("working")) return "claimed"; // "working: T2" → RUNNING
+  if (s === "blocked") return "blocked";
+  if (s === "idle" || s === "done" || s === "open") return s === "idle" ? "open" : s;
+  return s;
+}
+
+/**
+ * Format an ISO-8601Z timestamp as a short relative/absolute label for the
+ * baseline "Last" line. Falls back to the raw string on parse failure.
+ * @param {string} iso
+ * @returns {string}
+ */
+function formatBaselineLast(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return `last seen ${d.toLocaleString()}`;
+  } catch (_) {
+    return iso;
+  }
+}
+
+/**
+ * Seed a row from a STATUS.md baseline record (bug #3). This populates state +
+ * Last so an empty/warming narrator does not render bare "—"/IDLE for a lane
+ * that STATUS.md says is actually working. Narrative frames overlay this later.
+ * @param {LaneRowRefs} refs
+ * @param {{state: string, last_utc: string, agent: string, notes: string}} row
+ */
+function applyStatusBaseline(refs, row) {
+  refs.state = statusStateToNarrative(row.state);
+  const lastLabel = formatBaselineLast(row.last_utc);
+  // Only fill cells the narrator has not already populated (text still "—").
+  if (refs.lastEl.textContent === "—" || refs.lastEl.textContent === "") {
+    refs.lastEl.textContent = lastLabel || "—";
+  }
+  if (refs.nowEl.textContent === "—" || refs.nowEl.textContent === "") {
+    // No live narrator phrase yet — say so explicitly rather than bare "—".
+    refs.nowEl.textContent = "narrator warming up…";
+    refs.nowEl.style.fontStyle = "italic";
+    refs.nowEl.dataset.baseline = "true";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -882,10 +971,39 @@ export async function render(root, _params) {
     if (updateStatus) setNarratorOk(anyOk);
   }
 
+  /**
+   * Seed every row from the UNGATED /api/status baseline (bug #3) so the board
+   * shows STATUS.md's durable state/last instead of a uniform blank-IDLE while
+   * the narrator cache is empty/warming. Narrative frames overlay this. Matches
+   * a status row to a config lane by short code OR full lane name (STATUS.md's
+   * "Lane" column is the full name, e.g. "LANE-A").
+   * @param {Array<{lane: string, agent: string, state: string, last_utc: string, notes: string}>} rows
+   */
+  function applyBaseline(rows) {
+    const byKey = {};
+    for (const r of rows) byKey[String(r.lane).toUpperCase()] = r;
+    for (const lane of lanes) {
+      const refs = rowRefs[lane.short];
+      if (!refs) continue;
+      const row =
+        byKey[String(lane.short).toUpperCase()] || byKey[String(lane.name).toUpperCase()];
+      if (!row) continue;
+      applyStatusBaseline(refs, row);
+      reevaluatePill(lane.short);
+      reevaluateGovernance(lane.short);
+    }
+  }
+
   // Instant first paint before the first SSE frame. The await above may have
   // been superseded by a newer mount — bail out (C1) before touching the page.
-  const initial = await fetchNarrative();
+  // Fetch the ungated baseline AND the gated narrative in parallel; apply the
+  // baseline first so the narrative (when present) overlays it.
+  const [baseline, initial] = await Promise.all([
+    fetchStatusBaseline(),
+    fetchNarrative(),
+  ]);
   if (!alive) return () => {};
+  applyBaseline(baseline);
   applyFrame(initial, { updateStatus: false });
 
   // Live stream — same uniform `{ lanes: {...} }` shape every frame.
@@ -910,6 +1028,10 @@ export async function render(root, _params) {
     // Stream disruption: only treat a fully CLOSED stream as narrator-offline.
     if (es.readyState === EventSource.CLOSED) {
       setNarratorOk(false);
+      // Probe whether the close was a 401 (session expired / server restart) and
+      // surface the shared re-auth modal so the board can recover instead of
+      // sitting silently offline forever (audit bug #2).
+      probeReauthOn401("/api/v1/narrative-stream");
     }
   };
 

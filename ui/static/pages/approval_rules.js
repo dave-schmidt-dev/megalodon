@@ -13,6 +13,8 @@
 //
 // No innerHTML. All DOM via textContent / createElement.
 
+import { authedFetch } from "../js/auth.js";
+
 // ---------------------------------------------------------------------------
 // DOM helper (same pattern as grid.js / lane_detail.js)
 // ---------------------------------------------------------------------------
@@ -102,16 +104,23 @@ function showToast(message, kind = "info", durationMs = 3500) {
 
 /**
  * Fetch current approval rules from the server.
- * @returns {Promise<Array<{pattern: string, added_at_utc: string, added_by_session: string}>>}
+ *
+ * Returns a discriminated result so the caller can tell an EMPTY rule set from a
+ * FETCH FAILURE (bug #4). Previously both `!resp.ok` and exceptions returned
+ * `[]`, so a 401 (session expired) rendered identically to "No approval rules
+ * yet." — masking the real failure. authedFetch also surfaces the global
+ * re-auth modal on a 401.
+ *
+ * @returns {Promise<{ok: true, rules: Array<{pattern: string, added_at_utc: string, added_by_session: string}>} | {ok: false, status: number}>}
  */
 async function fetchRules() {
   try {
-    const resp = await fetch("/api/v1/approval-rules", { credentials: "include" });
-    if (!resp.ok) return [];
+    const resp = await authedFetch("/api/v1/approval-rules");
+    if (!resp.ok) return { ok: false, status: resp.status };
     const json = await resp.json();
-    return Array.isArray(json.rules) ? json.rules : [];
+    return { ok: true, rules: Array.isArray(json.rules) ? json.rules : [] };
   } catch (_) {
-    return [];
+    return { ok: false, status: 0 };
   }
 }
 
@@ -124,9 +133,8 @@ async function fetchRules() {
 async function postRule(pattern, sessionId) {
   const csrf = getCsrfToken();
   try {
-    const resp = await fetch("/api/v1/approval-rules", {
+    const resp = await authedFetch("/api/v1/approval-rules", {
       method: "POST",
-      credentials: "include",
       headers: {
         "Content-Type": "application/json",
         ...(csrf ? { "X-CSRF-Token": csrf } : {}),
@@ -149,11 +157,10 @@ async function postRule(pattern, sessionId) {
 async function deleteRule(pattern) {
   const csrf = getCsrfToken();
   try {
-    const resp = await fetch(
+    const resp = await authedFetch(
       `/api/v1/approval-rules?pattern=${encodeURIComponent(pattern)}`,
       {
         method: "DELETE",
-        credentials: "include",
         headers: csrf ? { "X-CSRF-Token": csrf } : {},
       }
     );
@@ -179,6 +186,45 @@ function formatDate(iso) {
   } catch (_) {
     return iso;
   }
+}
+
+/**
+ * Render an explicit error/retry state (bug #4) — distinct from the empty
+ * state, so a 401/500 is never mistaken for "no rules yet".
+ * @param {HTMLElement} tableContainer
+ * @param {number} status
+ * @param {() => void} onRetry
+ */
+function renderError(tableContainer, status, onRetry) {
+  clearNode(tableContainer);
+  const is401 = status === 401;
+  const msg = is401
+    ? "Session expired — reload or re-authenticate to load approval rules."
+    : `Failed to load approval rules (HTTP ${status || "network error"}).`;
+  const wrap = el("div", {
+    "data-testid": "approval-rules-error",
+    "data-status": String(status),
+    style: [
+      "padding: 12px 14px;",
+      "background: #2a1515;",
+      "border: 1px solid #d04848;",
+      "border-radius: 4px;",
+      "color: #f99;",
+      "display: flex;",
+      "gap: 12px;",
+      "align-items: center;",
+      "flex-wrap: wrap;",
+    ].join(" "),
+  },
+    el("span", { style: "flex: 1 1 auto;" }, msg),
+    el("button", {
+      type: "button",
+      class: "button",
+      "data-testid": "approval-rules-retry",
+      onclick: onRetry,
+    }, is401 ? "Reload" : "Retry"),
+  );
+  tableContainer.appendChild(wrap);
 }
 
 /**
@@ -356,7 +402,20 @@ export async function render(root, _params) {
 
   // --- load + render table ---
   async function refresh() {
-    const rules = await fetchRules();
+    const result = await fetchRules();
+    // Bug #4: distinguish a fetch failure (esp. 401) from a genuinely empty
+    // rule set. On failure render an error/retry state, NOT "No rules yet."
+    if (!result.ok) {
+      renderError(tableContainer, result.status, () => {
+        if (result.status === 401) {
+          try { location.reload(); } catch (_) { /* ignore */ }
+        } else {
+          refresh();
+        }
+      });
+      return;
+    }
+    const rules = result.rules;
     renderTable(tableContainer, rules, async (pattern) => {
       const result = await deleteRule(pattern);
       if (result.ok) {

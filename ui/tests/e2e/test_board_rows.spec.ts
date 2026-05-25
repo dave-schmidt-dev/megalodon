@@ -14,6 +14,21 @@
 // this spec is the row/navigation structural contract only.
 
 import { test, expect } from '@playwright/test';
+import { readUiToken } from './_helpers';
+
+// Authenticate via the hash-token exchange and land on the board. The board's
+// narrative / lanes/stale / narrative-stream requests are session-gated; an
+// unauthenticated load now (correctly) surfaces the re-auth modal which would
+// overlay and block row clicks. (P0 frontend audit: bugs #1/#2.)
+async function authAndGotoBoard(
+  page: import('@playwright/test').Page,
+  testInfo: import('@playwright/test').TestInfo,
+): Promise<void> {
+  const token = readUiToken(testInfo);
+  await page.goto(`/#t=${token}`);
+  await expect(page).toHaveURL('/', { timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+}
 
 test.describe('board page: row count matches mission config', () => {
 
@@ -52,9 +67,8 @@ test.describe('board page: row count matches mission config', () => {
 
 test.describe('board page: clicking a row navigates to /lane/<short>', () => {
 
-  test('click row A changes URL to /lane/A', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  test('click row A changes URL to /lane/A', async ({ page }, testInfo) => {
+    await authAndGotoBoard(page, testInfo);
     await expect(page.locator('[data-testid="board-row-A"]')).toBeVisible({ timeout: 5_000 });
 
     await page.locator('[data-testid="board-row-A"]').click();
@@ -62,9 +76,8 @@ test.describe('board page: clicking a row navigates to /lane/<short>', () => {
     await expect(page).toHaveURL(/\/lane\/A$/, { timeout: 5_000 });
   });
 
-  test('click row B changes URL to /lane/B', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  test('click row B changes URL to /lane/B', async ({ page }, testInfo) => {
+    await authAndGotoBoard(page, testInfo);
     await expect(page.locator('[data-testid="board-row-B"]')).toBeVisible({ timeout: 5_000 });
 
     await page.locator('[data-testid="board-row-B"]').click();
@@ -72,9 +85,8 @@ test.describe('board page: clicking a row navigates to /lane/<short>', () => {
     await expect(page).toHaveURL(/\/lane\/B$/, { timeout: 5_000 });
   });
 
-  test('going back from a lane restores the board at /', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  test('going back from a lane restores the board at /', async ({ page }, testInfo) => {
+    await authAndGotoBoard(page, testInfo);
 
     // Navigate to a lane.
     await page.locator('[data-testid="board-row-A"]').click();

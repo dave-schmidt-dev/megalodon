@@ -15,6 +15,7 @@
 
 import { store } from "./store.js";
 import { API_STATE, API_CONFIG, API_EVENTS, SSE_EVENT_TYPES } from "./constants.js";
+import { whenAuthReady, authedFetch, probeReauthOn401, onReauthSuccess } from "./auth.js";
 
 const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
@@ -63,9 +64,12 @@ function armHeartbeatWatchdog() {
 
 async function hydrateInitialState() {
   try {
+    // authedFetch awaits the first-load token→cookie exchange before issuing
+    // these gated requests (audit bug #1) and surfaces the re-auth modal on a
+    // 401 (audit bug #2) before we throw below and back off.
     const [stateRes, configRes] = await Promise.all([
-      fetch(API_STATE, { credentials: "same-origin" }),
-      fetch(API_CONFIG, { credentials: "same-origin" }),
+      authedFetch(API_STATE),
+      authedFetch(API_CONFIG),
     ]);
     if (!stateRes.ok) throw new Error(`state: HTTP ${stateRes.status}`);
     if (!configRes.ok) throw new Error(`config: HTTP ${configRes.status}`);
@@ -108,7 +112,7 @@ async function handleLagging(payload) {
   let anySucceeded = false;
   for (const url of urls) {
     try {
-      const res = await fetch(url, { credentials: "same-origin" });
+      const res = await authedFetch(url);
       if (!res.ok) continue;
       const slice = await res.json();
       const sliceName = url.split("/").pop();
@@ -179,6 +183,10 @@ async function connect() {
   clearReconnectTimer();
   setConnectionStatus("connecting");
   try {
+    // Defensive: never construct the events EventSource before the first-load
+    // auth exchange resolves (audit bug #1). hydrateInitialState already awaits
+    // it via authedFetch, but a direct connect() path must not race it either.
+    await whenAuthReady();
     await hydrateInitialState();
     es = new EventSource(API_EVENTS);
     attachEventHandlers(es);
@@ -196,6 +204,11 @@ async function connect() {
       clearHeartbeatTimer();
       try { es.close(); } catch { /* ignore */ }
       es = null;
+      // Probe whether the disruption is a 401 (server restart invalidated the
+      // cookie) → surface the global re-auth modal (audit bug #2). Fire-and-
+      // forget; the backoff reconnect proceeds regardless and will succeed once
+      // the operator re-authenticates (onReauthSuccess below also kicks it).
+      probeReauthOn401(API_EVENTS);
       scheduleReconnect();
     };
   } catch (err) {
@@ -226,7 +239,13 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-// Auto-start on module load.
+// After a successful re-auth (operator pasted a fresh token into the global
+// modal), force an immediate reconnect rather than waiting out the backoff so
+// the live stream comes back the moment the cookie is valid again (audit #2).
+onReauthSuccess(() => reconnect());
+
+// Auto-start on module load. connect() awaits whenAuthReady() internally, so
+// this does not race the first-load token→cookie exchange (audit bug #1).
 connect();
 
 export { connect, reconnect };

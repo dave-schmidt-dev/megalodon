@@ -15,6 +15,8 @@
 // window.Terminal and window.FitAddon (optional) are the UMD exports of the
 // vendored xterm.js and addon-fit.js bundles.
 
+import { whenAuthReady, probeReauthOn401 } from '../js/auth.js';
+
 /**
  * Create a self-contained terminal pane that subscribes to a lane's pane-stream
  * SSE endpoint, decodes base64 byte chunks, and writes them to an xterm.js
@@ -54,45 +56,45 @@ export function createTerminalPane({ lane, scrollback = 500 }) {
   // --- SSE connection -------------------------------------------------------
 
   const url = `/api/v1/lane/${encodeURIComponent(lane)}/pane-stream`;
-  const es = new EventSource(url, { withCredentials: true });
+  /** @type {EventSource|null} */
+  let es = null;
+  let disposed = false;
 
-  es.onmessage = (ev) => {
-    try {
-      const bytes = _base64ToUint8(ev.data);
-      term.write(bytes);
-    } catch (e) {
-      // malformed event — ignore
-    }
-  };
+  function _openStream() {
+    if (disposed) return;
+    es = new EventSource(url, { withCredentials: true });
 
-  es.onerror = async () => {
-    // EventSource fires onerror on any disruption. Only act when CLOSED (not
-    // just a transient blip). Probe the same URL via a plain fetch so we can
-    // distinguish a 401 (session expired) from a temporary outage.
-    if (es.readyState !== EventSource.CLOSED) return;
-    try {
-      const probe = await fetch(url, {
-        method: 'GET',
-        credentials: 'same-origin',
-        headers: { Accept: 'text/event-stream' },
-      });
-      if (probe.status === 401) {
-        // Surface the auth-failure through the global v9.2 modal if present.
-        if (typeof window.__v92_showPasteTokenModal === 'function') {
-          window.__v92_showPasteTokenModal();
-        }
+    es.onmessage = (ev) => {
+      try {
+        const bytes = _base64ToUint8(ev.data);
+        term.write(bytes);
+      } catch (e) {
+        // malformed event — ignore
       }
-      // Best-effort: cancel the response body to free the connection.
-      try { probe.body && probe.body.cancel(); } catch {}
-    } catch {
-      // network error — leave silently
-    }
-  };
+    };
+
+    es.onerror = () => {
+      // EventSource fires onerror on any disruption. Only act when CLOSED (not
+      // just a transient blip). Probe the same URL so we can distinguish a 401
+      // (session expired) from a temporary outage. probeReauthOn401 surfaces the
+      // SHARED global re-auth modal (bug #2) — the old code reached for
+      // window.__v92_showPasteTokenModal, which was undefined unless the dead
+      // dashboard-v92.js IIFE happened to be loaded.
+      if (!es || es.readyState !== EventSource.CLOSED) return;
+      probeReauthOn401(url);
+    };
+  }
+
+  // Gate the EventSource behind the first-load auth exchange (bug #1) so the
+  // pane-stream isn't opened before the session cookie exists. whenAuthReady()
+  // is idempotent and resolves immediately once the cookie is in place.
+  whenAuthReady().then(() => _openStream());
 
   // --- cleanup --------------------------------------------------------------
 
   function cleanup() {
-    try { es.close(); } catch {}
+    disposed = true;
+    try { es && es.close(); } catch {}
     try { term.dispose(); } catch {}
   }
 

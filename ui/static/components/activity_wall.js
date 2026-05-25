@@ -23,6 +23,8 @@
 //   - Filter chips: hide/show via display:none, no re-render.
 //   - Pause: per-component state (not global store).
 
+import { authedFetch, probeReauthOn401, onReauthSuccess } from '../js/auth.js';
+
 // ---------------------------------------------------------------------------
 // Minimal DOM helper (mirrors grid.js pattern)
 // ---------------------------------------------------------------------------
@@ -359,6 +361,24 @@ export function createActivityWall({ container }) {
   let paused = false;
   /** @type {EventSource|null} */
   let es = null;
+  // Bug #5: reconnect machinery. The original onerror only console.warn'd, so a
+  // dropped SSE froze the feed silently with no recovery and no visible state.
+  let disposed = false;
+  let reconnectDelay = 500;
+  const RECONNECT_MAX_MS = 30_000;
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let reconnectTimer = null;
+  /** @type {() => void} */
+  let offReauth = () => {};
+  // Dedupe key set so a reconnect snapshot-backfill (bug #5) doesn't re-insert
+  // events already in the DOM. Keyed on type|lane|ts|summary (stable per event).
+  /** @type {Set<string>} */
+  const seenKeys = new Set();
+
+  /** @param {{type?: string, lane?: string|null, ts?: string, summary?: string}} ev */
+  function _eventKey(ev) {
+    return `${ev.type || ''}|${ev.lane || ''}|${ev.ts || ''}|${ev.summary || ''}`;
+  }
 
   // ---- root element -------------------------------------------------------
   const root = el('div', {
@@ -403,6 +423,38 @@ export function createActivityWall({ container }) {
 
   headerBar.appendChild(title);
   headerBar.appendChild(pauseBtn);
+
+  // ---- connection status bar (bug #5) -------------------------------------
+  // Visible "disconnected / reconnecting" state so a frozen feed is never
+  // mistaken for "quiet". Hidden while connected.
+  const statusBar = el('div', {
+    'data-testid': 'aw-status',
+    'data-state': 'connecting',
+    style: [
+      'display: none;',
+      'padding: 4px 10px;',
+      'font-size: 11px;',
+      'border-bottom: 1px solid #2a2f37;',
+      'flex-shrink: 0;',
+      'background: #2a1f15;',
+      'color: var(--sev-major, #e08a32);',
+    ].join(' '),
+  }, '');
+
+  /** @param {"connected"|"connecting"|"disconnected"} state */
+  function setConnState(state) {
+    statusBar.dataset.state = state;
+    if (state === 'connected') {
+      statusBar.style.display = 'none';
+      statusBar.textContent = '';
+    } else if (state === 'connecting') {
+      statusBar.style.display = '';
+      statusBar.textContent = 'Reconnecting…';
+    } else {
+      statusBar.style.display = '';
+      statusBar.textContent = 'Disconnected — retrying';
+    }
+  }
 
   // ---- filter chips bar ---------------------------------------------------
   const chipsBar = el('div', {
@@ -457,11 +509,31 @@ export function createActivityWall({ container }) {
     ].join(' '),
   });
 
+  // ---- empty state (bug #5) -----------------------------------------------
+  // "No activity yet" so a blank list reads as "nothing happened", not "broken".
+  const emptyEl = el('div', {
+    'data-testid': 'aw-empty',
+    style: [
+      'padding: 16px 12px;',
+      'font-size: 12px;',
+      'color: var(--text-muted, #9aa0a8);',
+      'text-align: center;',
+    ].join(' '),
+  }, 'No activity yet.');
+  listEl.appendChild(emptyEl);
+
+  /** Show the empty placeholder iff the list has no event rows. */
+  function _refreshEmptyState() {
+    const hasRows = listEl.querySelector('.aw-row') !== null;
+    emptyEl.style.display = hasRows ? 'none' : '';
+  }
+
   // ---- drawer -------------------------------------------------------------
   const { drawerEl, openDrawer, closeDrawer } = buildDrawer();
 
   // ---- assemble root -------------------------------------------------------
   root.appendChild(headerBar);
+  root.appendChild(statusBar);
   root.appendChild(chipsBar);
   root.appendChild(listEl);
   document.body.appendChild(drawerEl);
@@ -550,6 +622,9 @@ export function createActivityWall({ container }) {
    * @param {object} event
    */
   function prependRow(event) {
+    const key = _eventKey(/** @type {any} */ (event));
+    if (seenKeys.has(key)) return; // dedupe (bug #5: reconnect backfill overlap)
+    seenKeys.add(key);
     const row = buildRow(/** @type {any} */ (event), onRowClick);
     if (!_isRowVisible(row)) {
       row.style.display = 'none';
@@ -568,33 +643,44 @@ export function createActivityWall({ container }) {
     if (!paused) {
       listEl.scrollTop = 0;
     }
+    _refreshEmptyState();
   }
 
   // ---- snapshot hydration -------------------------------------------------
 
   async function fetchSnapshot() {
     try {
-      const resp = await fetch('/api/v1/activity-wall/snapshot?limit=100', {
-        credentials: 'include',
-      });
+      // authedFetch awaits the first-load auth exchange (bug #1) and surfaces
+      // the re-auth modal on 401 (bug #2).
+      const resp = await authedFetch('/api/v1/activity-wall/snapshot?limit=100');
       if (!resp.ok) return;
       const json = await resp.json();
       const events = Array.isArray(json.events) ? json.events : [];
       // Snapshot is newest-first. We want to render newest at top.
       // Append in reverse (oldest first) so the final order is newest at top.
+      // Dedupe against rows already present (a reconnect backfill re-fetches the
+      // snapshot to recover missed events — bug #5 — and must not duplicate).
       const fragment = document.createDocumentFragment();
+      let appended = 0;
       for (let i = events.length - 1; i >= 0; i--) {
         const event = events[i];
+        const key = _eventKey(event);
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
         const row = buildRow(event, onRowClick);
         if (!_isRowVisible(row)) {
           row.style.display = 'none';
         }
         fragment.appendChild(row);
+        appended++;
       }
-      // Insert the whole batch at the top in one operation.
-      listEl.insertBefore(fragment, listEl.firstChild);
-      // After hydration: scroll to top so newest is visible.
-      listEl.scrollTop = 0;
+      if (appended > 0) {
+        // Insert the whole batch at the top in one operation.
+        listEl.insertBefore(fragment, listEl.firstChild);
+        // After hydration: scroll to top so newest is visible.
+        listEl.scrollTop = 0;
+      }
+      _refreshEmptyState();
     } catch (err) {
       console.warn('[activity-wall] snapshot fetch failed:', err);
     }
@@ -602,8 +688,42 @@ export function createActivityWall({ container }) {
 
   // ---- SSE subscription ---------------------------------------------------
 
+  function _clearReconnectTimer() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  /**
+   * Schedule a capped-backoff reconnect (bug #5). On the next attempt we
+   * re-run fetchSnapshot() to backfill events missed during the outage, then
+   * re-open the SSE. seenKeys dedupes the overlap.
+   */
+  function _scheduleReconnect() {
+    if (disposed) return;
+    _clearReconnectTimer();
+    setConnState('disconnected');
+    const delay = Math.min(reconnectDelay, RECONNECT_MAX_MS);
+    reconnectTimer = setTimeout(async () => {
+      reconnectTimer = null;
+      if (disposed) return;
+      setConnState('connecting');
+      // Backfill missed events before re-subscribing so the gap is filled.
+      await fetchSnapshot();
+      if (disposed) return;
+      startSSE();
+    }, delay);
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
+  }
+
   function startSSE() {
+    if (disposed) return;
     es = new EventSource('/api/v1/activity-wall', { withCredentials: true });
+    es.onopen = () => {
+      reconnectDelay = 500;
+      setConnState('connected');
+    };
     es.onmessage = (ev) => {
       try {
         const event = JSON.parse(ev.data);
@@ -613,10 +733,14 @@ export function createActivityWall({ container }) {
       }
     };
     es.onerror = () => {
-      // Only surface on CLOSED state.
-      if (es && es.readyState === EventSource.CLOSED) {
-        console.warn('[activity-wall] SSE connection closed');
-      }
+      // Bug #5: a dropped/closed stream must reconnect with backoff + backfill,
+      // and probe for a 401 (session expired) to surface the re-auth modal.
+      // Previously this only console.warn'd, freezing the feed forever.
+      if (!es || es.readyState !== EventSource.CLOSED) return;
+      try { es.close(); } catch (_) { /* ignore */ }
+      es = null;
+      probeReauthOn401('/api/v1/activity-wall');
+      _scheduleReconnect();
     };
   }
 
@@ -630,11 +754,26 @@ export function createActivityWall({ container }) {
   document.addEventListener('keydown', onKeyDown);
 
   // ---- bootstrap (async, fire-and-forget) ---------------------------------
+  setConnState('connecting');
   fetchSnapshot().then(() => startSSE());
+
+  // After a successful re-auth (operator pasted a fresh token), force an
+  // immediate reconnect + backfill rather than waiting out the backoff (bug #2/#5).
+  offReauth = onReauthSuccess(() => {
+    if (disposed) return;
+    _clearReconnectTimer();
+    reconnectDelay = 500;
+    if (es) { try { es.close(); } catch (_) { /* ignore */ } es = null; }
+    setConnState('connecting');
+    fetchSnapshot().then(() => { if (!disposed) startSSE(); });
+  });
 
   // ---- cleanup ------------------------------------------------------------
 
   function cleanup() {
+    disposed = true;
+    _clearReconnectTimer();
+    try { offReauth(); } catch (_) {}
     if (es) {
       try { es.close(); } catch (_) {}
       es = null;

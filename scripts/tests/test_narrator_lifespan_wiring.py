@@ -272,18 +272,29 @@ class TestNarratorAbsentUnderTestModes:
             assert app.state.narrative_cache is not None
 
     @pytest.mark.asyncio
-    async def test_fake_spawner_narrator_runtime_not_set(
+    async def test_fake_spawner_narrator_runtime_IS_set(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """MEGALODON_FAKE_SPAWNER=1 → narrator_runtime absent on app.state."""
+        """MEGALODON_FAKE_SPAWNER=1 → narrator runtime + scheduler ARE wired.
+
+        Bug fix (blank demo board): the fake-spawner branch previously created
+        an empty narrative cache and returned without starting the narrator, so
+        the demo board was permanently blank. The fake branch now starts the
+        same scheduler the live branch uses (plus a deterministic startup tick),
+        so the runtime and scheduler task are present on app.state. (Pure
+        test-mode — MEGALODON_LIFESPAN_TEST_MODE=1 — still leaves them unset; see
+        test_test_mode_narrator_runtime_not_set above.)
+        """
         monkeypatch.delenv("MEGALODON_LIFESPAN_TEST_MODE", raising=False)
         monkeypatch.setenv("MEGALODON_FAKE_SPAWNER", "1")
         _setup_mission(tmp_path)
         app = make_app(mission_dir=tmp_path)
 
         async with app.router.lifespan_context(app):
-            assert getattr(app.state, "narrator_runtime", None) is None
-            assert getattr(app.state, "narrator_scheduler_task", None) is None
+            assert getattr(app.state, "narrator_runtime", None) is not None
+            task = getattr(app.state, "narrator_scheduler_task", None)
+            assert task is not None
+            assert not task.done()
             # Hub and cache still present.
             assert app.state.narrative_hub is not None
             assert app.state.narrative_cache is not None

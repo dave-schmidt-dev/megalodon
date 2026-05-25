@@ -13,9 +13,11 @@ Spec: docs/v9/QUEUE-DESIGN.md
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import secrets
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,16 +25,40 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 
+# Per-process monotonic counter so two same-second, same-agent, same-target,
+# same-intent submits from this process cannot collide on the counter field.
+# Combined with 8 bytes (64 bits) of CSPRNG entropy, a same-second collision
+# across processes is astronomically unlikely (birthday bound on 2**64), and a
+# within-process collision is impossible (the counter strictly increases).
+_RID_COUNTER = itertools.count()
+_RID_COUNTER_LOCK = threading.Lock()
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+class PendingCollisionError(RuntimeError):
+    """Raised when a submit would overwrite an existing, *distinct* pending
+    request (different idempotency_key/content) at the same path.
+
+    This is a data-loss guard: silently ``os.replace``-clobbering a prior
+    pending file would destroy that request. A legitimate idempotent retry
+    (identical content) is still a safe no-op overwrite and does NOT raise.
+    """
+
+
 def _request_id(agent: str, target: str, intent: str, utc: str) -> str:
     # Sanitize colons (UTC), dots (filenames), AND slashes (claims/<id>/...).
     safe_target = target.replace(".", "_").replace("/", "_")
+    # Monotonic per-process counter + 8 bytes of CSPRNG entropy. The leading
+    # `utc` keeps the id sortable/readable (the applier still sorts pending by
+    # submitted_utc); no call site parses the id's internal structure.
+    with _RID_COUNTER_LOCK:
+        seq = next(_RID_COUNTER)
     return (
-        f"{utc.replace(':', '-')}-{agent}-{safe_target}-{intent}-{secrets.token_hex(2)}"
+        f"{utc.replace(':', '-')}-{agent}-{safe_target}-{intent}"
+        f"-{seq:06d}-{secrets.token_hex(8)}"
     )
 
 
@@ -43,7 +69,29 @@ def _idempotency_key(payload: dict[str, Any]) -> str:
 
 
 def _atomic_write(path: Path, content: str) -> None:
+    """Atomically write ``content`` to ``path``.
+
+    Fail-loud guard against silent data loss: if ``path`` already exists and
+    its current content differs from ``content``, we refuse to overwrite and
+    raise :class:`PendingCollisionError` rather than letting ``os.replace``
+    clobber a distinct prior request. Identical content (an idempotent retry)
+    is a safe no-op overwrite.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except OSError:
+            existing = None
+        if existing is not None and existing != content:
+            raise PendingCollisionError(
+                f"refusing to overwrite distinct pending request at {path}: "
+                "a different request already occupies this request_id "
+                "(possible id collision / data-loss avoided)"
+            )
+        # Identical content — idempotent retry; nothing to do.
+        if existing == content:
+            return
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(content, encoding="utf-8")
     os.replace(tmp, path)
