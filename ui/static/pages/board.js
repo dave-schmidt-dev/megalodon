@@ -4,6 +4,7 @@
 // The fleet summary view. One row per lane, each carrying:
 //   - lane-chip + model/state
 //   - a state pill (BLOCKED / STALE / RUNNING / IDLE)
+//   - an UNGOVERNED indicator (orthogonal to the pill — see below)
 //   - a 3-line Last / Now / Goal block (Now uses the narrator phrase)
 //   - tokens
 //   - an actions cell (terminal ▸ seam, wired in Task 3.3)
@@ -24,6 +25,15 @@
 // governor-stalled lane must not be mis-read as merely stale); the narrative
 // SSE handler must NOT overwrite a blocked lane's pill. STALE overlays
 // RUNNING/IDLE only when the lane is not governor-blocked.
+//
+// UNGOVERNED indicator (§3.3): governance is ORTHOGONAL to the pill. The
+// per-lane narrative payload carries `governed` (bool) — the provenance of the
+// lane's live process under the Claude Code PreToolUse governor hook. A lane
+// that is actively running but `governed === false` (a reattached pre-governor
+// process, a non-claude harness lane, or a kill-switch-off fleet) gets a
+// distinct amber UNGOVERNED chip shown ALONGSIDE its pill (a lane can be
+// RUNNING and ungoverned at once). Strict `=== false` + the running-state guard
+// avoids false-flagging idle/absent lanes (whose `governed` defaults to false).
 //
 // Narrator-offline: a status dot turns "offline" when a payload carries
 // narrator_ok=false or when the stream closes.
@@ -148,6 +158,20 @@ async function fetchStaleLanes() {
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether a lane's narrative `state` represents an active/working lane (the
+ * "RUNNING" set). Shared by the pill (RUNNING vs IDLE) and the UNGOVERNED
+ * indicator (which only surfaces on a running lane) so the two never diverge.
+ * @param {string|null|undefined} state
+ * @returns {boolean}
+ */
+function isRunningState(state) {
+  const s = String(state || "").toLowerCase();
+  return (
+    s === "claimed" || s === "running" || s === "active" || s === "working" || s === "in_progress"
+  );
+}
+
+/**
  * Resolve the effective pill for a lane given precedence:
  *   BLOCKED > STALE > RUNNING/IDLE.
  * @param {{ blocked: boolean, stale: boolean, state: string|null|undefined }} args
@@ -161,11 +185,8 @@ function resolvePill({ blocked, stale, state }) {
     return { label: "BLOCKED", kind: "blocked" };
   }
   if (stale) return { label: "STALE", kind: "stale" };
-  const s = String(state || "").toLowerCase();
   // Treat any active/working state as RUNNING; otherwise IDLE.
-  const running =
-    s === "claimed" || s === "running" || s === "active" || s === "working" || s === "in_progress";
-  return running
+  return isRunningState(state)
     ? { label: "RUNNING", kind: "running" }
     : { label: "IDLE", kind: "idle" };
 }
@@ -209,6 +230,20 @@ function paintPill(pill, resolved) {
   }
 }
 
+/**
+ * Show/hide the UNGOVERNED chip. The chip is rendered ALONGSIDE the pill
+ * (governance is orthogonal to the pill kind). Visible iff the lane is in a
+ * running state AND its governance is strictly `false` — so a frame missing the
+ * `governed` field (or an idle/absent lane, whose `governed` defaults false)
+ * never false-flags as ungoverned.
+ * @param {HTMLElement} chip
+ * @param {{ state: string|null|undefined, governed: boolean|undefined }} args
+ */
+function paintUngoverned(chip, { state, governed }) {
+  const show = governed === false && isRunningState(state);
+  chip.style.display = show ? "" : "none";
+}
+
 // ---------------------------------------------------------------------------
 // Row construction
 // ---------------------------------------------------------------------------
@@ -217,11 +252,13 @@ function paintPill(pill, resolved) {
  * @typedef {Object} LaneRowRefs
  * @property {HTMLElement} root      the row container
  * @property {HTMLElement} pill      the state pill span
+ * @property {HTMLElement} ungovChip the UNGOVERNED indicator chip
  * @property {HTMLElement} lastEl    Last line text node holder
  * @property {HTMLElement} nowEl     Now line text node holder
  * @property {HTMLElement} goalEl    Goal line text node holder
  * @property {HTMLElement} tokensEl  tokens cell
  * @property {string|null|undefined} state  last-known narrative state (for pill re-eval)
+ * @property {boolean|undefined} governed  last-known governance provenance (for indicator re-eval)
  */
 
 /**
@@ -256,6 +293,26 @@ function buildRow(lane, onToggleTerminal, onStalePillClick) {
   });
   paintPill(pill, { label: "IDLE", kind: "idle" });
 
+  // UNGOVERNED indicator (§3.3) — orthogonal to the pill. Amber warning tone,
+  // distinct from the BLOCKED pill's --sev-blocking. Hidden by default; shown
+  // only for a running, strictly-ungoverned lane (see paintUngoverned).
+  const ungovChip = el("span", {
+    class: "badge",
+    "data-testid": `board-ungoverned-${short}`,
+    title: "Live process is not running under the governor hook.",
+    style: [
+      "display: none;",
+      "font-weight: 600;",
+      "letter-spacing: 0.4px;",
+      "text-transform: uppercase;",
+      "border-width: 1px;",
+      "border-style: solid;",
+      "background: var(--surface-2);",
+      "color: var(--sev-major);",
+      "border-color: var(--sev-major);",
+    ].join(" "),
+  }, "⚠ UNGOV");
+
   const laneChip = el("span", { class: `lane-chip ${laneName}` }, laneName);
 
   const headCell = el(
@@ -263,6 +320,7 @@ function buildRow(lane, onToggleTerminal, onStalePillClick) {
     { class: "row", style: "gap: var(--sp-2); min-width: 200px; flex: 0 0 auto;" },
     laneChip,
     pill,
+    ungovChip,
   );
 
   // 3-line Last / Now / Goal block.
@@ -340,7 +398,7 @@ function buildRow(lane, onToggleTerminal, onStalePillClick) {
     actionsCell,
   );
 
-  return { root, pill, lastEl, nowEl, goalEl, tokensEl, state: null };
+  return { root, pill, ungovChip, lastEl, nowEl, goalEl, tokensEl, state: null, governed: undefined };
 }
 
 /**
@@ -382,6 +440,9 @@ function applyNarrativeText(refs, payload) {
 
   // Stash the narrative state for later pill re-evaluation.
   refs.state = payload ? payload.state : null;
+  // Stash the governance provenance for the UNGOVERNED indicator re-eval. Left
+  // undefined when the payload omits the field (so it can't false-flag).
+  refs.governed = payload ? payload.governed : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -782,6 +843,19 @@ export async function render(root, _params) {
     paintPill(refs.pill, resolved);
   }
 
+  /**
+   * Re-paint one lane's UNGOVERNED indicator from its current narrative state +
+   * governance flag. Orthogonal to the pill: a lane shows it iff it is running
+   * AND `governed === false`. Repainted on every frame so it disappears when a
+   * lane stops running or becomes governed.
+   * @param {string} short
+   */
+  function reevaluateGovernance(short) {
+    const refs = rowRefs[short];
+    if (!refs) return;
+    paintUngoverned(refs.ungovChip, { state: refs.state, governed: refs.governed });
+  }
+
   // --- narrative: initial paint, then SSE ---
 
   /**
@@ -803,6 +877,7 @@ export async function render(root, _params) {
       applyNarrativeText(refs, payload);
       if (payload && payload.narrator_ok === false) anyOk = false;
       reevaluatePill(short);
+      reevaluateGovernance(short);
     }
     if (updateStatus) setNarratorOk(anyOk);
   }

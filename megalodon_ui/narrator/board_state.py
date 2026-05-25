@@ -76,13 +76,13 @@ class LaneRow:
     # spawner's spawn-time marker). False == ``ungoverned`` — a reattached
     # pre-governor process that must be respawned to come under governance. This
     # is provenance, NOT the P3.2 deny-loop ``governor-blocked`` alarm.
-    # TODO(P4): render an ``ungoverned`` board indicator. Left as a data-only
-    # field for now — board.js's pill is driven by blocked/stale/state precedence
-    # and Phase 4 reworks the permission banner; adding a pill here now would
-    # collide with that rework. The field is exposed so P4 can render it.
+    # board.js renders this as the UNGOVERNED indicator (§3.3) — an amber chip
+    # shown alongside (orthogonal to) the state pill, but only for a RUNNING lane
+    # whose ``governed`` is strictly False.
     # Defaults False (fail toward ungoverned): an absent/non-running lane was NOT
     # spawned under the governor, so it must not claim governance — consistent
-    # with ``LaneSession.governed``'s own False default.
+    # with ``LaneSession.governed``'s own False default. (The board's running-state
+    # guard prevents this default from false-flagging idle lanes.)
     governed: bool = False
     digest_text: str | None = field(default=None, repr=False)
 
