@@ -240,6 +240,42 @@ async def send_keys(socket: Path, name: str, keys: str, *, enter: bool = True) -
     return await proc.wait()
 
 
+async def display_message_pane_pid(socket: Path, name: str) -> int | None:
+    """Return the OS pid of the named session's pane child process, or None.
+
+    Runs ``tmux display-message -p -F '#{pane_pid}'`` on pane 0.0. tmux reports
+    the pid of the process tmux forked for the pane (the harness CLI). Used by
+    the spawner to write ``~/.megalodon-pids/<lane>.pid`` so the watchdog's S1
+    process-alive detector has a pid to probe.
+
+    Returns:
+        The integer pid, or None on any non-zero rc / unparseable output (the
+        caller degrades to tmux ``has_session`` liveness).
+    """
+    spawn = asyncio.create_subprocess_exec
+    proc = await spawn(
+        "tmux",
+        "-S",
+        str(socket),
+        "display-message",
+        "-p",
+        "-F",
+        "#{pane_pid}",
+        "-t",
+        name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    text = stdout.decode("utf-8", errors="replace").strip()
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 async def display_message_pane_pipe(socket: Path, name: str) -> bool:
     """Return True if pipe-pane is currently active on the named session's pane."""
     proc = await asyncio.create_subprocess_exec(

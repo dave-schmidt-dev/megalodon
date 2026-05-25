@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from megalodon_ui.narrator.board_state import (
+    _derive_liveness,
     _owning_agent_id,
     _pick_latest,
     _resolve_session_ids_by_agent,
@@ -496,6 +497,121 @@ class TestStatusFallback:
         rows = assemble_lane_rows(tasks_fe, cfgs, digests, {})
         assert rows["A"].state == "open"
         assert rows["A"].now is None
+
+
+# ---------------------------------------------------------------------------
+# Liveness (Wave-3 CRITICAL fix): a dead/crashed lane must be visible
+# immediately, not after the ~15 min STATUS-stale heuristic.
+# ---------------------------------------------------------------------------
+
+
+def _live_session(running: object = ..., exited_rc: object = ...) -> Any:
+    """Return an object with only the requested liveness attributes.
+
+    Uses a plain namespace so an OMITTED arg leaves the attribute genuinely
+    absent (exercising _derive_liveness's defensive getattr), rather than a
+    MagicMock auto-attr that would always be present.
+    """
+    import types
+
+    s = types.SimpleNamespace()
+    # build_lane_rows reads session_id before the harness check; keep it present
+    # so this fixture survives the full async path. _derive_liveness never reads
+    # it, so its presence does not weaken the liveness assertions.
+    s.session_id = None
+    if running is not ...:
+        s.running = running
+    if exited_rc is not ...:
+        s.exited_rc = exited_rc
+    return s
+
+
+class TestDeriveLiveness:
+    """Direct tests of the _derive_liveness helper."""
+
+    def test_running_when_alive(self) -> None:
+        assert (
+            _derive_liveness(_live_session(running=True, exited_rc=None)) == "running"
+        )
+
+    def test_exited_when_rc_zero(self) -> None:
+        assert _derive_liveness(_live_session(running=False, exited_rc=0)) == "exited"
+
+    def test_dead_when_rc_nonzero(self) -> None:
+        assert _derive_liveness(_live_session(running=False, exited_rc=1)) == "dead"
+
+    def test_dead_when_rc_negative_signal(self) -> None:
+        # A signal-killed pane reports a negative rc (e.g. -9): crashed → dead.
+        assert _derive_liveness(_live_session(running=False, exited_rc=-9)) == "dead"
+
+    def test_unknown_when_session_none(self) -> None:
+        assert _derive_liveness(None) == "unknown"
+
+    def test_unknown_when_attributes_missing(self) -> None:
+        # A fake/partial session lacking both attrs cannot assert health.
+        assert _derive_liveness(_live_session()) == "unknown"
+
+    def test_unknown_when_not_running_and_no_rc(self) -> None:
+        # Idle/not-yet-started lane: running False, rc None → unknown, not dead.
+        assert (
+            _derive_liveness(_live_session(running=False, exited_rc=None)) == "unknown"
+        )
+
+    def test_unknown_when_rc_unparseable(self) -> None:
+        assert (
+            _derive_liveness(_live_session(running=True, exited_rc="boom")) == "unknown"
+        )
+
+
+class TestAssembleLivenessField:
+    """liveness flows through assemble_lane_rows and to_dict."""
+
+    def test_liveness_defaults_unknown_when_not_supplied(self) -> None:
+        cfgs = [_lane_cfg("AUDIT", "A", "role")]
+        rows = assemble_lane_rows(_tasks_fe({"PHASE-PLAN": []}), cfgs, {"A": None}, {})
+        assert rows["A"].liveness == "unknown"
+        assert rows["A"].to_dict()["liveness"] == "unknown"
+
+    def test_liveness_from_map(self) -> None:
+        cfgs = [_lane_cfg("AUDIT", "A", "role"), _lane_cfg("BUILD", "B", "role")]
+        rows = assemble_lane_rows(
+            _tasks_fe({"PHASE-PLAN": []}),
+            cfgs,
+            {"A": None, "B": None},
+            {},
+            liveness_by_lane={"A": "dead", "B": "running"},
+        )
+        assert rows["A"].liveness == "dead"
+        assert rows["B"].liveness == "running"
+        assert rows["A"].to_dict()["liveness"] == "dead"
+
+    @pytest.mark.asyncio
+    async def test_build_lane_rows_sets_liveness_from_sessions(
+        self, tmp_path: Path
+    ) -> None:
+        """A session with exited_rc=1 → 'dead'; running → 'running'; missing → 'unknown'."""
+        mission_dir = tmp_path / "mission"
+        mission_dir.mkdir()
+        cfgs = [
+            _lane_cfg("AUDIT", "A", "role", cli="codex"),  # codex → no transcript read
+            _lane_cfg("BUILD", "B", "role", cli="codex"),
+            _lane_cfg("CHECK", "C", "role", cli="codex"),
+        ]
+        sessions = {
+            "A": _live_session(running=False, exited_rc=1),  # crashed
+            "B": _live_session(running=True, exited_rc=None),  # alive
+            # C: no session at all → unknown
+        }
+        rows = await build_lane_rows(
+            mission_dir,
+            _tasks_fe({"PHASE-PLAN": []}),
+            sessions,
+            lambda cli: MagicMock(),
+            cfgs,
+        )
+        assert rows["A"].liveness == "dead"
+        assert rows["B"].liveness == "running"
+        assert rows["C"].liveness == "unknown"
 
 
 # ---------------------------------------------------------------------------

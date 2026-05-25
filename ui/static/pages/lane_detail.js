@@ -20,6 +20,8 @@
 import { loadConfig } from "../js/config.js";
 import { mountPage } from "../js/app.js";
 import { createTerminalPane } from "../components/terminal_pane.js";
+import { showConfirmModal } from "../components/confirm_modal.js";
+import { controlEnabled, onControlMode } from "../js/store.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -344,6 +346,12 @@ function buildInjectForm(short) {
   /** @type {ReturnType<typeof setTimeout>|null} */
   let debounceTimer = null;
 
+  // Control-mode gate: in READ-ONLY mode (the safe default) the inject form is a
+  // no-op affordance — Send + textarea are disabled and visually marked. Flip to
+  // CONTROL to enable. Tracked here so updateCount() never re-enables Send while
+  // read-only.
+  let control = controlEnabled();
+
   /** @returns {number} */
   function getByteLen() {
     return encoder.encode(textarea.value).length;
@@ -355,17 +363,43 @@ function buildInjectForm(short) {
     byteCountEl.textContent = `${len} / ${BYTE_LIMIT} bytes`;
     byteCountEl.style.color = over ? "#d04848" : "#9aa0a8";
     limitWarning.hidden = !over;
-    // Disable Send when over limit (or if debounce active).
-    if (over) {
+    // Disable Send when read-only, over limit, or while a debounce is active.
+    if (!control || over) {
       sendBtn.disabled = true;
     } else if (!debounceTimer) {
       sendBtn.disabled = false;
     }
   }
 
+  /** Apply the control-mode posture to the inject affordances. */
+  function applyControl(on) {
+    control = on;
+    sendBtn.dataset.readonlyGated = on ? "false" : "true";
+    if (!on) {
+      sendBtn.title = "Enable Control mode to act.";
+      sendBtn.style.opacity = "0.5";
+      sendBtn.style.cursor = "not-allowed";
+      textarea.disabled = true;
+    } else {
+      sendBtn.title = "Send injected text to the lane terminal. Disabled for 6 seconds after a successful send.";
+      sendBtn.style.opacity = "";
+      sendBtn.style.cursor = "pointer";
+      textarea.disabled = false;
+    }
+    updateCount();
+  }
+
+  const unsubControl = onControlMode(applyControl);
+
   textarea.addEventListener("input", updateCount);
 
   async function handleSend() {
+    // Read-only safety: refuse to act even if the button is reached.
+    if (!control) {
+      showToast("Read-only mode — enable Control mode to inject", "error");
+      return;
+    }
+
     const text = textarea.value;
     const byteLen = encoder.encode(text).length;
 
@@ -374,6 +408,15 @@ function buildInjectForm(short) {
       showToast("Message exceeds 16384-byte limit", "error");
       return;
     }
+
+    // Confirm before the destructive/mutating action (control-mode AND modal).
+    const ok = await showConfirmModal({
+      title: "Inject into lane?",
+      message: `Send this text to lane ${short}'s terminal?`,
+      confirmLabel: "Inject",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
 
     const enter = enterCheckbox.checked;
     const csrf = getCsrfToken();
@@ -477,6 +520,7 @@ function buildInjectForm(short) {
       clearTimeout(debounceTimer);
       debounceTimer = null;
     }
+    try { unsubControl(); } catch (_) { /* ignore */ }
   }
 
   return { element: formEl, cleanup };
@@ -556,8 +600,34 @@ export async function render(root, { short }) {
     ].join(" "),
   }, "Restart /loop"));
 
+  // Control-mode gate for the Restart /loop button (state-changing action).
+  function applyRestartControl(on) {
+    restartLoopBtn.dataset.readonlyGated = on ? "false" : "true";
+    restartLoopBtn.disabled = !on;
+    if (!on) {
+      restartLoopBtn.title = "Enable Control mode to act.";
+      restartLoopBtn.style.opacity = "0.5";
+      restartLoopBtn.style.cursor = "not-allowed";
+    } else {
+      restartLoopBtn.title = `Restart the /loop cycle for lane ${short}. Sends the lane's initial_prompt to its tmux session. Requires confirmation.`;
+      restartLoopBtn.style.opacity = "";
+      restartLoopBtn.style.cursor = "";
+    }
+  }
+  const unsubRestartControl = onControlMode(applyRestartControl);
+
   restartLoopBtn.addEventListener("click", async () => {
-    if (!window.confirm(`Restart loop for lane ${short}?`)) return;
+    if (!controlEnabled()) {
+      showToast("Read-only mode — enable Control mode to restart", "error");
+      return;
+    }
+    const ok = await showConfirmModal({
+      title: "Restart /loop?",
+      message: `Restart the /loop cycle for lane ${short}? This sends the lane's initial prompt to its tmux session.`,
+      confirmLabel: "Restart /loop",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
 
     const csrf = getCsrfToken();
     restartLoopBtn.disabled = true;
@@ -586,7 +656,9 @@ export async function render(root, { short }) {
     } catch (err) {
       showToast(`Network error — ${String(err)}`, "error");
     } finally {
-      restartLoopBtn.disabled = false;
+      // Re-enable only if still in control mode (a flip to read-only mid-flight
+      // must keep the button disabled).
+      restartLoopBtn.disabled = !controlEnabled();
     }
   });
 
@@ -645,6 +717,7 @@ export async function render(root, { short }) {
   function cleanup() {
     termComponent.cleanup();
     injectForm.cleanup();
+    try { unsubRestartControl(); } catch (_) { /* ignore */ }
     // Do NOT clearNode(root): app.js clears the mount root before every page
     // render. A stale page's cleanup that clears root can wipe a newer page
     // when app.js discards a superseded render's cleanup (WebKit back-nav bug).

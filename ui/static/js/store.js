@@ -437,6 +437,30 @@ export class Store {
 }
 
 export const store = new Store();
+
+/**
+ * Whether the operator is in CONTROL mode (state-changing actions allowed).
+ * READ-ONLY is the safe default. This is the single read every action affordance
+ * (inject, restart-loop, kill-switch) must consult before enabling itself.
+ * @returns {boolean}
+ */
+export function controlEnabled() {
+  return !!store.get("ui.controlMode");
+}
+
+/**
+ * Subscribe to control-mode flips. Fires immediately with the current value so
+ * callers can set their initial enabled/disabled state in one place, then again
+ * on every change. Returns an unsubscribe function.
+ * @param {(on: boolean) => void} fn
+ * @returns {() => void} unsubscribe
+ */
+export function onControlMode(fn) {
+  const unsub = store.subscribe("ui.controlMode", (next) => fn(!!next));
+  try { fn(controlEnabled()); } catch (_) { /* ignore */ }
+  return unsub;
+}
+
 // Reflect initial control-mode onto <body> so CSS can hook it on first paint.
 try {
   if (typeof document !== "undefined" && document.body) {

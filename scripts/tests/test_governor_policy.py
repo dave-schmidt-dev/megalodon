@@ -611,15 +611,152 @@ def test_webfetch_non_allowlisted_host(project_dir):
     _assert_deny(d, "network-host")
 
 
+def test_webfetch_subdomain_allowed(project_dir):
+    """A subdomain of an allowlisted host is allowed."""
+    d = policy.decide_webfetch(
+        "https://docs.allowed.example/x", allowlist={"allowed.example"}
+    )
+    _assert_allow(d)
+
+
+def test_webfetch_subdomain_suffix_not_substring(project_dir):
+    """Suffix matching is on a dot boundary — `notallowed.example` is NOT a sub."""
+    d = policy.decide_webfetch(
+        "https://evilallowed.example/x", allowlist={"allowed.example"}
+    )
+    _assert_deny(d, "network-host")
+
+
+def test_webfetch_malformed_url_denied(project_dir):
+    d = policy.decide_webfetch("not a url ::::", allowlist={"allowed.example"})
+    _assert_deny(d, "network-host")
+
+
+# ---------------------------------------------------------------------------
+# Committed host-allowlist loader (governor-hosts.txt)
+# ---------------------------------------------------------------------------
+
+
+def test_load_host_allowlist_parses_committed_file():
+    """The shipped governor-hosts.txt loads, lowercased, comments/blanks dropped."""
+    hosts = policy._load_host_allowlist()
+    assert "github.com" in hosts
+    assert "docs.python.org" in hosts
+    assert "pypi.org" in hosts
+    # No comment / blank artefacts leaked in.
+    assert all(h and not h.startswith("#") for h in hosts)
+    assert all(h == h.lower().strip() for h in hosts)
+
+
+def test_load_host_allowlist_missing_file_deny_all(monkeypatch, tmp_path):
+    """A missing hosts file yields an empty allowlist (deny-all)."""
+    monkeypatch.setattr(policy, "_HOSTS_FILE", tmp_path / "does-not-exist.txt")
+    policy._load_host_allowlist.cache_clear()
+    try:
+        assert policy._load_host_allowlist() == frozenset()
+    finally:
+        policy._load_host_allowlist.cache_clear()
+
+
+def test_load_host_allowlist_parsing(monkeypatch, tmp_path):
+    """Comments, blanks, surrounding whitespace and case are normalised away."""
+    f = tmp_path / "hosts.txt"
+    f.write_text(
+        "# comment\n\n  Docs.Python.Org  \nexample.com\n   # indented comment\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(policy, "_HOSTS_FILE", f)
+    policy._load_host_allowlist.cache_clear()
+    try:
+        hosts = policy._load_host_allowlist()
+        assert hosts == frozenset({"docs.python.org", "example.com"})
+    finally:
+        policy._load_host_allowlist.cache_clear()
+
+
+def test_decide_webfetch_uses_committed_allowlist(project_dir):
+    """`decide` wires WebFetch through the committed allowlist (github.com OK)."""
+    policy._load_host_allowlist.cache_clear()
+    d = decide(
+        "WebFetch",
+        {"url": "https://github.com/anthropics/anthropic-sdk-python"},
+        project_dir=project_dir,
+        lane=LANE,
+    )
+    _assert_allow(d)
+
+
+def test_decide_webfetch_denies_non_allowlisted(project_dir):
+    policy._load_host_allowlist.cache_clear()
+    d = decide(
+        "WebFetch",
+        {"url": "https://evil.example/x"},
+        project_dir=project_dir,
+        lane=LANE,
+    )
+    _assert_deny(d, "network-host")
+
+
+def test_decide_websearch_uses_committed_allowlist(project_dir):
+    """WebSearch with a query (no url) hits the allowlist via the query string."""
+    policy._load_host_allowlist.cache_clear()
+    d = decide(
+        "WebSearch",
+        {"query": "https://pypi.org/project/requests"},
+        project_dir=project_dir,
+        lane=LANE,
+    )
+    _assert_allow(d)
+
+
 # ---------------------------------------------------------------------------
 # Unknown future tool
 # ---------------------------------------------------------------------------
 
 
-def test_unknown_tool_allow_with_warn(project_dir):
+def test_unknown_tool_dangerous_denied(project_dir):
+    """A genuinely-unknown tool (e.g. a fabricated MCP tool) is denied (fail-closed).
+
+    Regression for the confirmed exploit: a fabricated tool carrying a
+    destructive payload used to be allowed-by-default. The default for unknown
+    tools is now DENY.
+    """
+    d = decide(
+        "mcp__evil__shell",
+        {"command": "rm -rf /"},
+        project_dir=project_dir,
+        lane=LANE,
+    )
+    _assert_deny(d, "unknown-tool-deny")
+
+
+def test_unknown_tool_plain_denied(project_dir):
     d = decide("SomeBrandNewTool", {"foo": "bar"}, project_dir=project_dir, lane=LANE)
-    _assert_allow(d, "unknown-tool-warn")
+    _assert_deny(d, "unknown-tool-deny")
+
+
+def test_inert_allowed_tool_in_unknown_branch(project_dir, monkeypatch):
+    """A tool in _INERT_ALLOWED_TOOLS that reaches the unknown branch is allowed.
+
+    The known inert tools (TodoWrite/AskUserQuestion/ExitPlanMode) are already
+    short-circuited earlier as category `inert`. _INERT_ALLOWED_TOOLS is the
+    last-line allowlist for any of those control tools that — should the earlier
+    short-circuit ever be removed — would otherwise fall into the unknown-deny
+    branch. We simulate that by emptying _INERT_TOOLS so the inert tool reaches
+    the unknown branch, and assert it is allowed (category `inert-tool`) with a
+    WARN flag for classification.
+    """
+    monkeypatch.setattr(policy, "_INERT_TOOLS", frozenset())
+    d = decide("TodoWrite", {"todos": []}, project_dir=project_dir, lane=LANE)
+    _assert_allow(d, "inert-tool")
     assert "warn" in d.reason.lower()
+
+
+def test_inert_allowed_set_membership():
+    """The inert-allowed set covers at least the audited control tools."""
+    assert {"TodoWrite", "AskUserQuestion", "ExitPlanMode"} <= set(
+        policy._INERT_ALLOWED_TOOLS
+    )
 
 
 # ---------------------------------------------------------------------------

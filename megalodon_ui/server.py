@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -78,7 +78,7 @@ from .harnesses import get_adapter
 
 #: Path prefixes that ALWAYS require a valid mui_session cookie. Any method.
 _V92_GATED_PATH_RE = re.compile(
-    r"^/api/v1/(lane/[^/]+|__fake__|activity-wall|narrative-stream|narrative|approval-rules|lanes/stale|coordination|_test)(/|$)"
+    r"^/api/v1/(lane/[^/]+|__fake__|activity-wall|narrative-stream|narrative|approval-rules|lanes/stale|alerts|coordination|_test)(/|$)"
 )
 
 #: Exact (method, path) pairs that require a cookie.
@@ -191,6 +191,13 @@ def _compute_governor_blocked(mission_dir: Path) -> dict[str, dict]:
     # Per-lane: deny count in window + most-recent category/reason in window.
     counts: dict[str, int] = {}
     last_seen: dict[str, tuple[float, str | None, str | None]] = {}
+    # Per-lane TRAILING consecutive-deny run (Task E / contract §3): count of
+    # consecutive `deny` decisions since the lane's last `allow`, across today's
+    # full (tail-bounded) log — distinct from the window deny count above. An
+    # `allow` resets the run to 0; a `deny` increments it. Because we process
+    # lines in document (chronological) order, the value left in this dict after
+    # the loop IS the trailing run.
+    consecutive: dict[str, int] = {}
 
     # Only the tail matters for a deny-loop; bound the work on a huge file.
     lines = text.splitlines()[-_GOVERNOR_LOG_TAIL_LINES:]
@@ -204,11 +211,21 @@ def _compute_governor_blocked(mission_dir: Path) -> dict[str, dict]:
             continue
         if not isinstance(entry, dict):
             continue
-        if entry.get("permission") != "deny":
+        permission = entry.get("permission")
+        if permission not in ("deny", "allow"):
             continue
         lane = entry.get("lane")
         if not lane:
             continue
+
+        # Consecutive-deny tracking runs on EVERY decision line (no timestamp
+        # gate): an allow anywhere resets the trailing run, a deny extends it.
+        if permission == "allow":
+            consecutive[lane] = 0
+            continue
+        consecutive[lane] = consecutive.get(lane, 0) + 1
+
+        # --- window deny-count (existing behaviour) ---
         raw_ts = entry.get("ts")
         try:
             ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
@@ -235,8 +252,53 @@ def _compute_governor_blocked(mission_dir: Path) -> dict[str, dict]:
                 "window_seconds": _GOVERNOR_BLOCK_WINDOW_SECONDS,
                 "last_category": last_category,
                 "last_reason": last_reason,
+                # Trailing consecutive denies since the last allow (contract §3).
+                "consecutive_denies": consecutive.get(lane, 0),
             }
     return blocked
+
+
+#: Bound the alerts JSONL read so a long-running mission's log can't blow up
+#: the endpoint; the operator only needs the recent tail anyway.
+_ALERTS_TAIL_LINES = 500
+
+
+def _read_alerts(mission_dir: Path, limit: int = _ALERTS_TAIL_LINES) -> list[dict]:
+    """Read the structured watchdog alerts JSONL, newest-first (contract §2).
+
+    Source: ``.fleet/watchdog-alerts.jsonl`` (written by ``AlertManager``). Each
+    line is one ``{ts, lane, kind, severity, evidence, message}`` record. Robust
+    by design: a missing file → ``[]``; unparseable / non-dict lines are skipped;
+    never raises. Only the last ``limit`` lines are considered (bounded), then
+    reversed so the newest alert is first.
+
+    Args:
+        mission_dir: Mission root.
+        limit: Max trailing lines to parse.
+
+    Returns:
+        List of alert dicts, newest-first.
+    """
+    from .watchdog.alerts import ALERTS_JSONL_RELPATH
+
+    path = mission_dir / ALERTS_JSONL_RELPATH
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out: list[dict] = []
+    for line in text.splitlines()[-limit:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            out.append(entry)
+    out.reverse()  # newest-first
+    return out
 
 
 def _compute_stale_response(
@@ -1281,6 +1343,305 @@ async def _df_watchdog(mission_dir: Path) -> None:
             sys.exit(12)
 
 
+#: Lane-health watchdog poll interval (seconds). Module-level so tests can
+#: monkey-patch it to a small value without waiting a full minute.
+_LANE_WATCHDOG_INTERVAL_SECONDS: float = 60.0
+
+
+async def _lane_health_watchdog(mission_dir: Path) -> None:
+    """Background task: run the watchdog S1–S4 detectors on an interval (Task C).
+
+    The standalone ``watchdog.daemon.run()`` is a SYNC signal-driven loop that
+    installs SIGTERM/SIGINT handlers, so it cannot be called from the server
+    lifespan. Instead we drive the extracted ``check_lanes_once`` off-loop via
+    ``asyncio.to_thread`` every ``_LANE_WATCHDOG_INTERVAL_SECONDS`` — mirroring
+    the ``_df_watchdog`` pattern. Each pass writes findings + the structured
+    JSONL alert log (see ``AlertManager``) so a dead/stale/hung lane is visible
+    via ``GET /api/v1/alerts`` within one interval rather than ~15 min.
+
+    Robust by design: an exception in one pass is logged and the loop continues
+    (a transient FS error must not take the health watchdog permanently dark).
+    Cancelled on server shutdown.
+    """
+    from .watchdog.alerts import AlertManager
+    from .watchdog.daemon import check_lanes_once
+
+    alerts = AlertManager(mission_dir)
+    while True:
+        await asyncio.sleep(_LANE_WATCHDOG_INTERVAL_SECONDS)
+        try:
+            await asyncio.to_thread(check_lanes_once, mission_dir, alerts)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"lane-health watchdog pass error: {e!r}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Auto-recovery supervisor (Task F / contract §4) — DEFAULT OFF.
+# ---------------------------------------------------------------------------
+
+#: Env flag that ARMS the supervisor. Unset / anything-but-"1" ⇒ disabled.
+#: Auto-recovery silently restarts agents (an OUTWARD action), so it is fail-
+#: closed: the operator must opt in explicitly.
+AUTORECOVER_ENV = "MEGALODON_AUTORECOVER"
+
+#: A lane must be continuously unhealthy for at least this many seconds before
+#: the FIRST restart fires (debounce — a momentary blip must not trigger a
+#: restart). Module-level so tests can shrink it.
+_AUTORECOVER_GRACE_SECONDS: float = 60.0
+
+#: Trailing consecutive governor denies that mark a lane unhealthy (alongside
+#: liveness == "dead"). Distinct from the window deny-count threshold.
+_AUTORECOVER_DENY_THRESHOLD: int = 5
+
+#: Hard cap on restart attempts per lane per process. Once hit, the supervisor
+#: stops acting on that lane (no infinite restart storm) until the lane recovers.
+_AUTORECOVER_MAX_ATTEMPTS: int = 5
+
+#: Backoff base + cap (seconds): the n-th restart for a lane is gated by
+#: ``min(base * 2**(n-1), cap)`` since the previous attempt — never faster.
+_AUTORECOVER_BACKOFF_BASE_SECONDS: float = 30.0
+_AUTORECOVER_BACKOFF_CAP_SECONDS: float = 600.0
+
+#: Supervisor poll interval. Module-level so tests can drive it fast.
+_AUTORECOVER_INTERVAL_SECONDS: float = 30.0
+
+
+def autorecover_enabled() -> bool:
+    """Return True iff the operator armed auto-recovery via the env flag.
+
+    Fail-closed: only the exact string ``"1"`` arms it.
+    """
+    return os.environ.get(AUTORECOVER_ENV) == "1"
+
+
+async def _perform_restart_loop(mission_dir: Path, spawner: Any, short: str) -> bool:
+    """Execute the restart-loop action for ``short`` (shared by route + supervisor).
+
+    Re-issues the lane's recorded ``initial_prompt`` via tmux send-keys (skipped
+    for the fake spawner) and appends a ``source="restart-loop"`` line to today's
+    ``.fleet/inject-log-YYYY-MM-DD.jsonl`` — which the activity wall tails into a
+    ``restart-loop`` event. This is the SAME path the operator's manual
+    ``POST /api/v1/lane/{short}/restart-loop`` uses, so auto-recovery and manual
+    recovery are observationally identical on the wall.
+
+    Args:
+        mission_dir: Mission root.
+        spawner: The live (or fake) spawner; must have ``sessions[short]``.
+        short: Lane short code.
+
+    Returns:
+        True if the restart action completed; False on a missing lane / absent
+        initial_prompt / tmux send-keys failure (the caller decides how to log).
+    """
+    session = spawner.sessions.get(short) if spawner is not None else None
+    if session is None or not getattr(session, "initial_prompt", None):
+        return False
+
+    text = session.initial_prompt
+    text_bytes = text.encode("utf-8")
+
+    # Fake-spawner short-circuit (no real tmux socket); the fake_emit attribute
+    # marks the fake spawner.
+    if not hasattr(spawner, "fake_emit"):
+        rc = await tmux.send_keys(spawner.socket, session.name, text, enter=True)
+        if rc != 0:
+            return False
+
+    fleet_dir = mission_dir / ".fleet"
+    fleet_dir.mkdir(parents=True, exist_ok=True)
+    ts_now = datetime.now(timezone.utc)
+    log_path = fleet_dir / f"inject-log-{ts_now.strftime('%Y-%m-%d')}.jsonl"
+    entry = {
+        "ts": ts_now.isoformat(),
+        "lane": short,
+        "text_sha256": hashlib.sha256(text_bytes).hexdigest(),
+        "byte_count": len(text_bytes),
+        "enter": True,
+        "source": "restart-loop",
+    }
+    with open(log_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+    return True
+
+
+@dataclass
+class _LaneRecoverState:
+    """Per-lane bookkeeping for the supervisor (in-memory, process-lived)."""
+
+    unhealthy_since: float | None = None  # monotonic ts of first unhealthy sighting
+    attempts: int = 0  # restarts fired this process
+    next_allowed_mono: float = 0.0  # earliest monotonic ts the next restart may fire
+
+
+class AutoRecoverSupervisor:
+    """Bounded, logged, idempotent auto-restart of dead / deny-looping lanes.
+
+    SAFETY (contract §4): default OFF (the lifespan only constructs+runs this
+    when ``autorecover_enabled()``). A lane is *unhealthy* when its liveness is
+    strictly ``"dead"`` OR its trailing ``consecutive_denies`` reaches the
+    threshold. A restart fires only after the lane has been continuously
+    unhealthy for ``grace_seconds`` AND the per-lane backoff has elapsed AND the
+    per-lane attempt cap is not yet hit. A healthy lane resets its state, so the
+    supervisor is idempotent and never touches a healthy lane.
+
+    All restart actions are logged to ``.fleet/autorecover.log`` and (because the
+    injected ``restart_fn`` is the restart-loop path, which appends to the
+    inject-log JSONL with ``source="restart-loop"``) also surface on the activity
+    wall for free.
+
+    The ``restart_fn`` / ``get_liveness`` / ``compute_consecutive_denies`` seams
+    are injected so tests can drive the supervisor without a real tmux fleet.
+    """
+
+    def __init__(
+        self,
+        mission_dir: Path,
+        *,
+        get_liveness: "Callable[[], dict[str, str]]",
+        get_consecutive_denies: "Callable[[], dict[str, int]]",
+        restart_fn: "Callable[[str], Any]",
+        grace_seconds: float | None = None,
+        deny_threshold: int | None = None,
+        max_attempts: int | None = None,
+        backoff_base_seconds: float | None = None,
+        backoff_cap_seconds: float | None = None,
+        clock: "Callable[[], float] | None" = None,
+    ) -> None:
+        self.mission_dir = mission_dir
+        self._get_liveness = get_liveness
+        self._get_consecutive_denies = get_consecutive_denies
+        self._restart_fn = restart_fn
+        self.grace_seconds = (
+            grace_seconds if grace_seconds is not None else _AUTORECOVER_GRACE_SECONDS
+        )
+        self.deny_threshold = (
+            deny_threshold
+            if deny_threshold is not None
+            else _AUTORECOVER_DENY_THRESHOLD
+        )
+        self.max_attempts = (
+            max_attempts if max_attempts is not None else _AUTORECOVER_MAX_ATTEMPTS
+        )
+        self.backoff_base_seconds = (
+            backoff_base_seconds
+            if backoff_base_seconds is not None
+            else _AUTORECOVER_BACKOFF_BASE_SECONDS
+        )
+        self.backoff_cap_seconds = (
+            backoff_cap_seconds
+            if backoff_cap_seconds is not None
+            else _AUTORECOVER_BACKOFF_CAP_SECONDS
+        )
+        self._clock = clock or time.monotonic
+        self._state: dict[str, _LaneRecoverState] = {}
+        self.log_path = mission_dir / ".fleet" / "autorecover.log"
+
+    def _log(self, message: str) -> None:
+        """Append a UTC-stamped line to ``.fleet/autorecover.log`` (best-effort)."""
+        line = f"{datetime.now(timezone.utc).isoformat()} | {message}\n"
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+        except OSError:
+            pass
+
+    def _is_unhealthy(
+        self, lane: str, liveness: dict[str, str], denies: dict[str, int]
+    ) -> bool:
+        """A lane is unhealthy iff strictly dead OR at/over the deny threshold."""
+        if liveness.get(lane) == "dead":
+            return True
+        return denies.get(lane, 0) >= self.deny_threshold
+
+    async def tick(self) -> list[str]:
+        """Evaluate all lanes once; restart those eligible. Returns lanes restarted.
+
+        Idempotent and bounded: a healthy lane's state is cleared; an unhealthy
+        lane is restarted at most once per tick, only when grace + backoff +
+        attempt-cap all permit.
+        """
+        liveness = self._get_liveness()
+        denies = self._get_consecutive_denies()
+        now = self._clock()
+        # Union of lanes seen in either source so a lane that vanished from one
+        # map still gets its state evaluated/cleared.
+        lanes = set(liveness) | set(denies) | set(self._state)
+        restarted: list[str] = []
+
+        for lane in sorted(lanes):
+            st = self._state.setdefault(lane, _LaneRecoverState())
+            if not self._is_unhealthy(lane, liveness, denies):
+                # Healthy ⇒ reset everything. Never act on a healthy lane.
+                if st.unhealthy_since is not None or st.attempts:
+                    self._log(f"lane={lane} recovered — clearing recovery state")
+                self._state[lane] = _LaneRecoverState()
+                continue
+
+            # Unhealthy. Start (or keep) the continuous-unhealthy clock.
+            if st.unhealthy_since is None:
+                st.unhealthy_since = now
+                continue  # debounce: never restart on the very first sighting
+
+            if (now - st.unhealthy_since) < self.grace_seconds:
+                continue  # not unhealthy long enough yet
+            if st.attempts >= self.max_attempts:
+                continue  # hard cap reached — stop acting on this lane
+            if now < st.next_allowed_mono:
+                continue  # backoff not elapsed — never restart faster than backoff
+
+            # Fire the bounded restart.
+            reason = (
+                "dead"
+                if liveness.get(lane) == "dead"
+                else f"deny-loop({denies.get(lane, 0)})"
+            )
+            try:
+                result = self._restart_fn(lane)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:  # noqa: BLE001
+                self._log(f"lane={lane} restart FAILED ({reason}): {e!r}")
+                # Still advance backoff/attempt so a persistently-failing restart
+                # cannot busy-loop.
+            st.attempts += 1
+            backoff = min(
+                self.backoff_base_seconds * (2 ** (st.attempts - 1)),
+                self.backoff_cap_seconds,
+            )
+            st.next_allowed_mono = now + backoff
+            self._log(
+                f"lane={lane} restart #{st.attempts}/{self.max_attempts} "
+                f"reason={reason} next_backoff={backoff:.0f}s"
+            )
+            restarted.append(lane)
+
+        return restarted
+
+    async def run(self, interval_seconds: float | None = None) -> None:
+        """Run the supervisor loop until cancelled (lifespan task).
+
+        Robust by design: an exception in one tick is logged and the loop
+        continues — auto-recovery going dark must not crash the server.
+        """
+        interval = (
+            interval_seconds
+            if interval_seconds is not None
+            else _AUTORECOVER_INTERVAL_SECONDS
+        )
+        self._log("auto-recovery supervisor ARMED")
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                self._log(f"tick error: {e!r}")
+
+
 # ---------------------------------------------------------------------------
 # V9 M2 — contract validation
 # ---------------------------------------------------------------------------
@@ -1575,6 +1936,12 @@ def make_app(
             )
             app.state.narrator_runtime = _fake_narrator_runtime
             app.state.narrator_scheduler_task = _fake_narrator_task
+            # Lane-health watchdog (Task C) also runs under the fake fleet so the
+            # safety backbone is exercised end-to-end: a stale STATUS row produces
+            # an alert reachable via GET /api/v1/alerts without a real tmux fleet.
+            _fake_lane_watchdog_task = asyncio.create_task(
+                _lane_health_watchdog(mission_dir)
+            )
             try:
                 yield
             finally:
@@ -1582,6 +1949,11 @@ def make_app(
                 _fake_narrator_task.cancel()
                 try:
                     await _fake_narrator_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                _fake_lane_watchdog_task.cancel()
+                try:
+                    await _fake_lane_watchdog_task
                 except (asyncio.CancelledError, Exception):
                     pass
                 try:
@@ -1669,6 +2041,43 @@ def make_app(
 
         # 3. Start df-check background task (every 60 s; exit 12 if < 50 MB free).
         df_task = asyncio.create_task(_df_watchdog(mission_dir))
+
+        # 3b. Start lane-health watchdog (Task C): drives the extracted
+        # check_lanes_once off-loop on an interval so a dead/stale/hung lane is
+        # surfaced via findings + the alerts JSONL within one interval instead of
+        # going invisible for ~15 min. Cancelled on shutdown alongside df_task.
+        lane_watchdog_task = asyncio.create_task(_lane_health_watchdog(mission_dir))
+
+        # 3c. Auto-recovery supervisor (Task F) — DEFAULT OFF. Armed only by
+        # MEGALODON_AUTORECOVER=1 (silently restarting agents is an outward
+        # action; fail-closed). Reads liveness from the live sessions + trailing
+        # consecutive denies from the governor-log, and restarts via the shared
+        # restart-loop path (bounded backoff + attempt cap, all logged).
+        autorecover_task: asyncio.Task | None = None
+        if autorecover_enabled():
+            from .narrator.board_state import _derive_liveness as _dl
+
+            def _live_liveness() -> dict[str, str]:
+                return {short: _dl(sess) for short, sess in spawner.sessions.items()}
+
+            def _live_consecutive_denies() -> dict[str, int]:
+                blocked = _compute_governor_blocked(mission_dir)
+                return {
+                    lane: info.get("consecutive_denies", 0)
+                    for lane, info in blocked.items()
+                }
+
+            async def _live_restart(lane: str) -> None:
+                await _perform_restart_loop(mission_dir, spawner, lane)
+
+            _autorecover = AutoRecoverSupervisor(
+                mission_dir,
+                get_liveness=_live_liveness,
+                get_consecutive_denies=_live_consecutive_denies,
+                restart_fn=_live_restart,
+            )
+            app.state.autorecover = _autorecover
+            autorecover_task = asyncio.create_task(_autorecover.run())
 
         # 4a. Start activity wall: fan-in from 6 sources into ring buffer.
         from .activity_wall import ActivityWall
@@ -1826,6 +2235,17 @@ def make_app(
                     pass
             await activity_wall.stop()
             df_task.cancel()
+            lane_watchdog_task.cancel()
+            try:
+                await lane_watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            if autorecover_task is not None:
+                autorecover_task.cancel()
+                try:
+                    await autorecover_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             try:
                 await spawner.stop_all()
             except Exception:
@@ -3124,6 +3544,27 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             # Clear cache so next call recomputes.
             _stale_cache.pop(app_key, None)
         return JSONResponse(content=response)
+
+    @app.get("/api/v1/alerts")
+    async def get_alerts():  # noqa: ANN201
+        """Return recent watchdog alerts, newest-first (contract §2).
+
+        Cookie-gated via ``_V92_GATED_PATH_RE``. Source: the structured JSONL the
+        watchdog ``AlertManager`` appends to ``.fleet/watchdog-alerts.jsonl``.
+
+        Response shape::
+
+            {"alerts": [
+              {"ts": "...", "lane": "A", "kind": "CRASHED",
+               "severity": "critical", "evidence": ["pid 4242 not alive"],
+               "message": "A lane CRASHED"},
+              ...
+            ]}
+
+        The list is empty when no alert has ever fired (file absent). Bounded to
+        the last ``_ALERTS_TAIL_LINES`` records.
+        """
+        return JSONResponse(content={"alerts": _read_alerts(ctx.mission_dir)})
 
     if os.environ.get("MEGALODON_FAKE_SPAWNER") == "1":
 

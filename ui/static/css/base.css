@@ -471,6 +471,29 @@ body {
   color: var(--text);
 }
 
+/* ---------- Read-only gating (Wave 3 safety) -------------------------------
+   Any state-changing affordance carries data-readonly-gated="true" while the
+   operator is in READ-ONLY mode (the safe default). The button is also
+   `disabled`, so .button[disabled] above already mutes it; this rule adds a
+   "locked" dashed cue so the gating reads as intentional, not broken. */
+[data-readonly-gated="true"] {
+  border-style: dashed;
+}
+
+/* ---------- Fleet alarm strip ---------------------------------------------- */
+[data-testid="board-alarm-strip"] {
+  animation: alarm-pulse 2s ease-in-out infinite;
+}
+
+@keyframes alarm-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--sev-blocking) 35%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-testid="board-alarm-strip"] { animation: none; }
+}
+
 /* ---------- Empty state ----------------------------------------------------- */
 .empty-state {
   display: flex;

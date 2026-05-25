@@ -426,3 +426,118 @@ async def test_governor_blocked_excluded_from_stale(tmp_path, monkeypatch):
         )
         a_block = next(e for e in data["governor_blocked"] if e["lane"] == "A")
         assert a_block["deny_count"] == _GOVERNOR_BLOCK_DENY_COUNT
+
+
+# ---------------------------------------------------------------------------
+# Test 8: consecutive_denies — trailing deny run since last allow (contract §3)
+# ---------------------------------------------------------------------------
+
+
+def test_consecutive_denies_counts_trailing_run(tmp_path):
+    """6 trailing denies with no allow → consecutive_denies == 6."""
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+    _write_governor_log(mission_dir, _deny_entries("A", 6, age_seconds=10.0))
+
+    blocked = _compute_governor_blocked(mission_dir)
+    assert "A" in blocked, f"A should be governor-blocked: {blocked}"
+    assert blocked["A"]["consecutive_denies"] == 6
+
+
+def test_consecutive_denies_reset_by_allow_in_middle(tmp_path):
+    """An allow in the middle resets the trailing run to the denies AFTER it."""
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+    base = _now_utc() - timedelta(seconds=30)
+
+    def _entry(offset: int, permission: str) -> dict:
+        return {
+            "ts": _utc_iso(base + timedelta(seconds=offset)),
+            "lane": "A",
+            "tool": "Write",
+            "permission": permission,
+            "category": "outside-mission",
+            "reason": f"{permission} @{offset}",
+        }
+
+    # deny x3, allow, deny x3  → window deny_count = 6 (blocked), but the
+    # trailing consecutive run is only the final 3 (the allow reset it).
+    entries = (
+        [_entry(i, "deny") for i in range(3)]
+        + [_entry(3, "allow")]
+        + [_entry(4 + i, "deny") for i in range(3)]
+    )
+    _write_governor_log(mission_dir, entries)
+
+    blocked = _compute_governor_blocked(mission_dir)
+    assert "A" in blocked, f"A should be governor-blocked: {blocked}"
+    # 6 denies in the window → still blocked; but consecutive trailing run is 3.
+    assert blocked["A"]["deny_count"] == 6
+    assert blocked["A"]["consecutive_denies"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Test 9: GET /api/v1/alerts — watchdog alert feed (contract §2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_alerts_endpoint_returns_jsonl_records(tmp_path, monkeypatch):
+    """An AlertManager.alert() JSONL line is returned by GET /api/v1/alerts."""
+    from megalodon_ui.watchdog.alerts import AlertManager
+
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+    # Fire one alert: writes findings markdown + the structured JSONL.
+    AlertManager(mission_dir).alert("A", "CRASHED", evidence=["pid 4242 not alive"])
+
+    async for client, _ in _make_client(tmp_path, mission_dir, monkeypatch):
+        resp = await client.get("/api/v1/alerts")
+        assert resp.status_code == 200, resp.text
+        alerts = resp.json()["alerts"]
+        assert len(alerts) == 1
+        a = alerts[0]
+        assert a["lane"] == "A"
+        assert a["kind"] == "CRASHED"
+        assert a["severity"] == "critical"
+        assert a["evidence"] == ["pid 4242 not alive"]
+        assert "CRASHED" in a["message"]
+
+
+@pytest.mark.asyncio
+async def test_alerts_newest_first(tmp_path, monkeypatch):
+    """Multiple alerts are returned newest-first."""
+    from megalodon_ui.watchdog.alerts import AlertManager
+
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+    mgr = AlertManager(mission_dir)
+    # Two DISTINCT alert types on the same lane bypass the dedup guard.
+    mgr.alert("A", "STATUS-STALE", evidence=["first"])
+    mgr.alert("A", "CRASHED", evidence=["second"])
+
+    async for client, _ in _make_client(tmp_path, mission_dir, monkeypatch):
+        resp = await client.get("/api/v1/alerts")
+        assert resp.status_code == 200, resp.text
+        alerts = resp.json()["alerts"]
+        assert [a["kind"] for a in alerts] == ["CRASHED", "STATUS-STALE"]
+
+
+@pytest.mark.asyncio
+async def test_alerts_requires_auth(tmp_path, monkeypatch):
+    """GET /api/v1/alerts without a session cookie → 401."""
+    monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(_now_utc())})
+
+    import yaml
+
+    config = _make_config()
+    (mission_dir / ".mission-config.yaml").write_text(
+        yaml.dump(config.model_dump(mode="json"))
+    )
+    app = make_app(mission_dir=mission_dir)
+    _stale_cache.pop(id(app), None)
+
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # No auth exchange → no cookie.
+            resp = await client.get("/api/v1/alerts")
+            assert resp.status_code == 401, resp.text

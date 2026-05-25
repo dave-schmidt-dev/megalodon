@@ -289,3 +289,78 @@ async def test_reattach_branch_preserves_existing_marker_session():
     assert "lane-B" in new_session_calls
     # lane-A is recorded as running via reattach
     assert spawner.sessions["A"].running is True
+
+
+# ---------------------------------------------------------------------------
+# B1: watchdog pid files written on spawn, removed on cleanup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spawn_writes_pid_file_then_stop_removes_it(tmp_path):
+    """A fresh spawn writes ``<PID_DIR>/<lane_name>.pid``; stop_all removes it."""
+    config = _make_config(["A"])
+    resolver = _make_resolver()
+    spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
+
+    pid_dir = tmp_path / "pids"
+
+    with (
+        patch("megalodon_ui.spawn.PID_DIR", pid_dir),
+        patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
+        patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)),
+        patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(return_value=0)),
+        patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
+        patch(
+            "megalodon_ui.spawn.tmux.display_message_pane_pid",
+            new=AsyncMock(return_value=4242),
+        ),
+        patch(
+            "megalodon_ui.spawn._discover_session_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            FleetSpawner, "_start_tail_task", new=AsyncMock(return_value=None)
+        ),
+    ):
+        await spawner.start_all()
+
+        # The pid file is keyed by the LONG lane name ("LANEA") so the watchdog's
+        # _read_pid(lane.name) finds it; it contains the tmux pane pid.
+        pid_file = pid_dir / "LANEA.pid"
+        assert pid_file.is_file()
+        assert pid_file.read_text().strip() == "4242"
+
+        await spawner.stop_all()
+        assert not pid_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_spawn_skips_pid_file_when_pane_pid_unavailable(tmp_path):
+    """A None pane pid (query failed) writes no file — watchdog falls back."""
+    config = _make_config(["A"])
+    resolver = _make_resolver()
+    spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
+
+    pid_dir = tmp_path / "pids"
+
+    with (
+        patch("megalodon_ui.spawn.PID_DIR", pid_dir),
+        patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
+        patch("megalodon_ui.spawn.tmux.new_session", new=AsyncMock(return_value=0)),
+        patch("megalodon_ui.spawn.tmux.kill_session", new=AsyncMock(return_value=0)),
+        patch("megalodon_ui.spawn.tmux.pipe_pane", new=AsyncMock(return_value=0)),
+        patch(
+            "megalodon_ui.spawn.tmux.display_message_pane_pid",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "megalodon_ui.spawn._discover_session_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            FleetSpawner, "_start_tail_task", new=AsyncMock(return_value=None)
+        ),
+    ):
+        await spawner.start_all()
+        assert not (pid_dir / "LANEA.pid").exists()

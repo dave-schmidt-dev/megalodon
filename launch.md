@@ -59,23 +59,31 @@ Then read the result and branch:
 ## Step 0 — Orientation: do NOT explore with raw shell
 
 You are joining an established mission. **Everything you need to bootstrap is in
-this file** — you do not need to look around first. Under the hardened tool
-surface, ad-hoc shell exploration **gates to a permission prompt** that blocks
-you indefinitely when the operator is AFK. So:
+this file** — you do not need to look around first. The governor
+(`megalodon_ui/governor/policy.py`) now adjudicates every tool call: **read-only
+inspection of in-scope paths runs prompt-free** (the governor allows it by
+default — `ls`, `stat`, `find`, `cat`, `head`, `grep` and kin are bounded
+read-style heads, allowed when their targets are inside the mission/run dir and
+are not secrets). What the governor still DENIES is the dangerous surface:
+interpreter/`-c` shells, raw network, installers, privilege escalation,
+destructive `rm`, out-of-scope or secret paths, and command/process
+substitution. So you will not stall on a benign `stat`/`find`/`ls` — but reach
+for the native tools first anyway, because they are clearer and cannot trip a
+deny:
 
-- **NEVER** run `ls`, `cd`, `cat`, `tail`, `head`, `find`, `stat`, `echo`, or any
-  compound command (`&&`, `||`, `;`, pipes) to orient yourself. These are not on
-  your allowlist and each one stalls you on an approval prompt. **`find` is the
-  most common stall — do not use it.**
 - **To FIND or LIST files** (e.g. "all `*.py`", "everything under `ui/static/`")
-  use the **Glob tool** with a pattern like `**/*.py` or `ui/static/**` — NEVER
-  shell `find`/`ls`. Glob is native, pre-authorized, and prompt-free.
-- **To SEARCH file contents** use the **Grep tool** (native, prompt-free) — NEVER
-  shell `grep`/`rg`/`find -exec grep`.
+  prefer the **Glob tool** with a pattern like `**/*.py` or `ui/static/**`. Glob
+  is native and prompt-free. A bounded `find`/`ls` over in-scope paths is also
+  governed-allowed (see §6.X, which mandates `stat` for liveness checks) — just
+  keep it read-only and in scope; `find -exec`/`-delete` is denied.
+- **To SEARCH file contents** prefer the **Grep tool** (native, prompt-free). A
+  bounded shell `grep`/`rg` over in-scope paths is governed-allowed, but
+  `find -exec grep` is denied (the `-exec` runs a child command) — use Grep.
 - **To read a file** (including `queue/.applier.lock/heartbeat.txt`, `.mission-events`,
-  any `.md`) use the **Read tool**, never shell `cat`/`tail`/`head`.
-- Your P1 task may be a "survey" — survey with **Glob + Grep + Read only**. If you
-  catch yourself typing `find`, stop and use `Glob` instead.
+  any `.md`) prefer the **Read tool**; a bounded `cat`/`tail`/`head` of an
+  in-scope, non-secret file is also allowed by the governor.
+- Your P1 task may be a "survey" — survey with **Glob + Grep + Read**, falling
+  back to bounded read-only shell inspection where it is clearer.
 - **To act on shared state** use only the bounded scripts below. They are
   pre-authorized and run prompt-free.
 - **Do NOT inspect the allowlist** (`.claude/settings.json`, `--allowedTools`)

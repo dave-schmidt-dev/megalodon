@@ -38,6 +38,10 @@ test.describe('stale badge: lane-detail toolbar Restart /loop', () => {
     const token = readUiToken(testInfo);
     await authenticateAndGotoGrid(page, token);
 
+    // Wave 3 safety: Restart /loop is gated behind Control mode (READ-ONLY is
+    // the default). Enable Control mode so the button is actionable.
+    await page.locator('[data-testid="action-toggle-control-mode"]').click();
+
     // Navigate to /lane/A by clicking the board row for lane A.
     await page.locator('[data-testid="board-row-A"]').click();
     await expect(page).toHaveURL(/\/lane\/A$/, { timeout: 5_000 });
@@ -60,18 +64,17 @@ test.describe('stale badge: lane-detail toolbar Restart /loop', () => {
       });
     });
 
-    // Accept the confirm() dialog automatically.
-    page.on('dialog', async (dialog) => {
-      expect(dialog.message()).toContain('Restart loop for lane A');
-      await dialog.accept();
-    });
-
-    // Click the toolbar Restart /loop button.
+    // Click the toolbar Restart /loop button → the shared confirm modal opens
+    // (Wave 3 replaced window.confirm() with showConfirmModal). Confirm it.
     const restartBtn = page.locator('[data-testid="lane-detail-restart-loop"]');
     await expect(restartBtn).toBeVisible({ timeout: 5_000 });
+    await expect(restartBtn).toBeEnabled({ timeout: 5_000 });
+
+    await restartBtn.click();
+    await expect(page.locator('[data-testid="confirm-modal"]')).toBeVisible({ timeout: 5_000 });
 
     const responsePromise = page.waitForResponse('**/restart-loop', { timeout: 8_000 });
-    await restartBtn.click();
+    await page.locator('[data-testid="confirm-modal-confirm"]').click();
     const response = await responsePromise;
 
     // Assert POST was fired.

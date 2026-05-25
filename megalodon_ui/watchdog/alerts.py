@@ -34,12 +34,43 @@ _ACTION_HINTS = {
 }
 
 
+# Severity mapping for the structured alert log (contract §2). All current
+# watchdog detectors are TIER-1 operator-attention events; CRASHED is the most
+# urgent. Kept as a table so a future detector can register a different tier.
+_ALERT_SEVERITY = {
+    "CRASHED": "critical",
+    "STATUS-STALE": "warning",
+    "HUNG": "warning",
+    "STREAM-LOG-SIZE": "warning",
+}
+
+#: Structured JSONL alert log (contract §2). One line per fired alert so
+#: ``GET /api/v1/alerts`` has a clean machine-readable source; the markdown
+#: findings remain for back-compat / human reading.
+ALERTS_JSONL_RELPATH = Path(".fleet") / "watchdog-alerts.jsonl"
+
+
 class AlertManager:
     def __init__(self, mission_dir: Path):
         self.mission_dir = mission_dir
         self.findings_dir = mission_dir / "findings"
         self.state_path = mission_dir / ".scratch" / "watchdog" / "state.json"
+        self.alerts_jsonl_path = mission_dir / ALERTS_JSONL_RELPATH
         self._state = self._load_state()
+
+    def _append_jsonl(self, entry: dict) -> None:
+        """Append one structured alert record to the JSONL log (best-effort).
+
+        Contract §2 source of truth for ``GET /api/v1/alerts``. A write failure
+        must not crash the watchdog pass (the markdown finding is still written),
+        so any OSError is swallowed.
+        """
+        try:
+            self.alerts_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.alerts_jsonl_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
+        except OSError:
+            pass
 
     def _load_state(self) -> dict:
         if self.state_path.exists():
@@ -65,8 +96,11 @@ class AlertManager:
         filename = f"watchdog-ALERT-{lane}-{utc.replace(':', '-')}.md"
         path = self.findings_dir / filename
 
+        # Materialize evidence to a list: it is consumed twice (markdown body +
+        # structured JSONL) and the caller may pass a one-shot generator.
+        evidence_list = list(evidence)
         evidence_lines = (
-            "\n".join(f"- {e}" for e in evidence) or "- (no additional evidence)"
+            "\n".join(f"- {e}" for e in evidence_list) or "- (no additional evidence)"
         )
         action = _ACTION_HINTS.get(alert_type, "Operator decision required.")
         body = f"""---
@@ -96,6 +130,20 @@ take any other action. Operator decision required.
 """
         self.findings_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, body)
+
+        # Contract §2: append a structured record so GET /api/v1/alerts has a
+        # clean source. ``kind`` mirrors the markdown ``alert-type``; ``message``
+        # is the human one-liner; ``evidence`` is the raw list.
+        self._append_jsonl(
+            {
+                "ts": utc,
+                "lane": lane,
+                "kind": alert_type,
+                "severity": _ALERT_SEVERITY.get(alert_type, "warning"),
+                "evidence": evidence_list,
+                "message": f"{lane} lane {alert_type}",
+            }
+        )
 
         self._state["lanes"][lane] = {
             "last_alert_type": alert_type,

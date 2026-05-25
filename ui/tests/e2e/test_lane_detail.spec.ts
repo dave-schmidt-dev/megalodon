@@ -26,6 +26,10 @@ async function gotoLaneA(page: import('@playwright/test').Page, testInfo: import
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  // Wave 3 safety: the inject form + restart button are gated behind Control
+  // mode (READ-ONLY is the default). Enable Control mode so these tests can
+  // exercise the state-changing affordances they assert on.
+  await page.locator('[data-testid="action-toggle-control-mode"]').click();
   await page.locator('[data-testid="board-row-A"]').click();
   await expect(page).toHaveURL(/\/lane\/A$/, { timeout: 5_000 });
   await expect(page.locator('[data-testid="lane-detail-page"]')).toBeVisible({ timeout: 8_000 });
@@ -52,6 +56,9 @@ test.describe('lane_detail: inject form send flow', () => {
     await expect(page.locator('[data-testid="inject-enter-checkbox"]')).toBeChecked();
 
     await page.locator('[data-testid="inject-send"]').click();
+    // Wave 3 safety: inject now requires a confirm modal. Confirm it.
+    await expect(page.locator('[data-testid="confirm-modal"]')).toBeVisible({ timeout: 5_000 });
+    await page.locator('[data-testid="confirm-modal-confirm"]').click();
 
     // Wait for the route handler to capture the request.
     await expect.poll(() => capturedRequest, { timeout: 5_000 }).not.toBeNull();
@@ -147,8 +154,11 @@ test.describe('lane_detail: send debounce', () => {
 
     await textarea.fill('test message');
     await sendBtn.click();
+    // Wave 3 safety: inject now requires a confirm modal. Confirm it.
+    await expect(page.locator('[data-testid="confirm-modal"]')).toBeVisible({ timeout: 5_000 });
+    await page.locator('[data-testid="confirm-modal-confirm"]').click();
 
-    // Immediately after click, button should be disabled.
+    // Immediately after confirm, button should be disabled (6s debounce).
     await expect(sendBtn).toBeDisabled({ timeout: 2_000 });
 
     // After the 6-second debounce expires, the button should be enabled again.

@@ -1,0 +1,18 @@
+# Governor WebFetch/WebSearch host allowlist.
+#
+# One host per line. Blank lines and lines beginning with `#` are ignored.
+# Hosts are matched case-insensitively. A URL is allowed when its hostname is
+# an EXACT match for a listed host OR a subdomain of one (e.g. a rule of
+# `github.com` also admits `raw.github.com`). Everything else is denied
+# (category `webfetch-host-not-allowlisted`). A missing file = deny-all.
+#
+# Keep this list TIGHT: add only trusted documentation / package-index hosts
+# the fleet legitimately needs. Loaded by megalodon_ui/governor/policy.py
+# (resolved relative to that module's directory) and cached per-process.
+
+docs.python.org
+developer.mozilla.org
+pypi.org
+github.com
+raw.githubusercontent.com
+docs.anthropic.com

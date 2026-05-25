@@ -76,13 +76,19 @@ def _emit_wr3_warnings(lanes: list[LaneConfig]) -> None:
             )
 
 
-def poll_once(
+def check_lanes_once(
     mission_dir: Path,
     alerts: AlertManager,
     cadence_seconds: int = 300,
     lanes: list[LaneConfig] | None = None,
 ) -> None:
-    """One pass over all lanes.
+    """One synchronous pass over all lanes (S1–S4 detectors).
+
+    Extracted from the old signal-driven ``run()`` loop so it can be invoked
+    from the server's asyncio lifespan via ``asyncio.to_thread`` (Task C). It
+    installs no signal handlers and never sleeps, so it is safe to call from an
+    arbitrary thread. ``run()`` still drives it on a timer for the standalone
+    CLI; ``poll_once`` remains as a back-compat alias.
 
     Parameters
     ----------
@@ -155,6 +161,19 @@ def poll_once(
         alerts.recover(name)
 
 
+def poll_once(
+    mission_dir: Path,
+    alerts: AlertManager,
+    cadence_seconds: int = 300,
+    lanes: list[LaneConfig] | None = None,
+) -> None:
+    """Back-compat alias for :func:`check_lanes_once` (Task C rename).
+
+    Existing callers (CLI ``run()`` and tests) keep working unchanged.
+    """
+    check_lanes_once(mission_dir, alerts, cadence_seconds, lanes=lanes)
+
+
 def run(
     mission_dir: Path,
     poll_seconds: int = 60,
@@ -177,7 +196,7 @@ def run(
 
     while not stop:
         try:
-            poll_once(mission_dir, alerts, cadence_seconds, lanes=lanes)
+            check_lanes_once(mission_dir, alerts, cadence_seconds, lanes=lanes)
         except Exception as e:
             print(f"watchdog poll error: {e}", file=sys.stderr)
         for _ in range(poll_seconds * 10):

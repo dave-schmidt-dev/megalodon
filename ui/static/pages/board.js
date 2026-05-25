@@ -52,6 +52,15 @@ import { authedFetch, probeReauthOn401 } from "../js/auth.js";
 import { createTerminalPane } from "../components/terminal_pane.js";
 import { createActivityWall } from "../components/activity_wall.js";
 import { StaleModal } from "../components/stale_modal.js";
+import { showConfirmModal } from "../components/confirm_modal.js";
+import { createAlertBanner } from "../components/alert_banner.js";
+import { controlEnabled, onControlMode } from "../js/store.js";
+
+// Deny-loop threshold: a lane retrying ≥ this many times against the governor is
+// "stuck" (distinct from a single BLOCKED state). Mirrors the BE deny-loop
+// detection window (≥5 denies). Used for the DENY-LOOP per-lane badge and the
+// aggregate alarm's deny-loop count.
+const DENY_LOOP_THRESHOLD = 5;
 
 // ---------------------------------------------------------------------------
 // Minimal DOM helpers (same pattern as grid.js / activity_wall.js — each page
@@ -269,6 +278,55 @@ function paintUngoverned(chip, { state, governed }) {
   chip.style.display = show ? "" : "none";
 }
 
+/**
+ * Show/hide the liveness pill (DEAD / EXITED), orthogonal to the state pill —
+ * a lane's process can be DEAD while STATUS.md still shows a stale "working".
+ * "dead" → red DEAD pill (the process crashed/vanished, invisible until now).
+ * "exited" → muted EXITED pill (the process left cleanly). "running"/"unknown"
+ * (or a missing field) → nothing.
+ * @param {HTMLElement} pill
+ * @param {string|null|undefined} liveness
+ */
+function paintLiveness(pill, liveness) {
+  const v = String(liveness || "").toLowerCase();
+  if (v === "dead") {
+    pill.textContent = "DEAD";
+    pill.dataset.liveness = "dead";
+    pill.style.background = "var(--sev-blocking)";
+    pill.style.color = "var(--bg)";
+    pill.style.borderColor = "var(--sev-blocking)";
+    pill.style.display = "";
+  } else if (v === "exited") {
+    pill.textContent = "EXITED";
+    pill.dataset.liveness = "exited";
+    pill.style.background = "var(--surface-2)";
+    pill.style.color = "var(--text-muted)";
+    pill.style.borderColor = "var(--border)";
+    pill.style.display = "";
+  } else {
+    pill.dataset.liveness = v || "unknown";
+    pill.style.display = "none";
+  }
+}
+
+/**
+ * Show/hide the DENY-LOOP per-lane badge. A lane stuck retrying against the
+ * governor (consecutive_denies ≥ threshold) is distinct from a one-shot BLOCKED:
+ * it is actively burning denies in a loop. Visible iff denies ≥ threshold.
+ * @param {HTMLElement} badge
+ * @param {number} denies
+ */
+function paintDenyLoop(badge, denies) {
+  const n = Number(denies) || 0;
+  if (n >= DENY_LOOP_THRESHOLD) {
+    badge.textContent = `⟳ DENY×${n}`;
+    badge.title = `Lane is stuck retrying against the governor (${n} consecutive denies).`;
+    badge.style.display = "";
+  } else {
+    badge.style.display = "none";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Row construction
 // ---------------------------------------------------------------------------
@@ -278,12 +336,16 @@ function paintUngoverned(chip, { state, governed }) {
  * @property {HTMLElement} root      the row container
  * @property {HTMLElement} pill      the state pill span
  * @property {HTMLElement} ungovChip the UNGOVERNED indicator chip
+ * @property {HTMLElement} livePill  the DEAD/EXITED liveness pill
+ * @property {HTMLElement} denyBadge the DENY-LOOP badge
  * @property {HTMLElement} lastEl    Last line text node holder
  * @property {HTMLElement} nowEl     Now line text node holder
  * @property {HTMLElement} goalEl    Goal line text node holder
  * @property {HTMLElement} tokensEl  tokens cell
  * @property {string|null|undefined} state  last-known narrative state (for pill re-eval)
  * @property {boolean|undefined} governed  last-known governance provenance (for indicator re-eval)
+ * @property {string|null|undefined} liveness  last-known process liveness (for the DEAD/EXITED pill)
+ * @property {number} denies  last-known consecutive_denies (for the DENY-LOOP badge)
  */
 
 /**
@@ -338,13 +400,50 @@ function buildRow(lane, onToggleTerminal, onStalePillClick) {
     ].join(" "),
   }, "⚠ UNGOV");
 
+  // Liveness pill (DEAD / EXITED) — orthogonal to the state pill. Hidden unless
+  // liveness is "dead" or "exited". A DEAD lane was invisible before this; the
+  // red pill makes process death obvious within the board's poll cadence.
+  const livePill = el("span", {
+    class: "badge",
+    "data-testid": `board-liveness-${short}`,
+    title: "Lane process liveness (independent of the reported task state).",
+    style: [
+      "display: none;",
+      "font-weight: 700;",
+      "letter-spacing: 0.4px;",
+      "text-transform: uppercase;",
+      "border-width: 1px;",
+      "border-style: solid;",
+    ].join(" "),
+  });
+
+  // DENY-LOOP badge — lane stuck retrying against the governor. Distinct from
+  // BLOCKED (a one-shot deny vs an active retry loop). Hidden unless denies ≥ threshold.
+  const denyBadge = el("span", {
+    class: "badge",
+    "data-testid": `board-denyloop-${short}`,
+    style: [
+      "display: none;",
+      "font-weight: 600;",
+      "letter-spacing: 0.4px;",
+      "text-transform: uppercase;",
+      "border-width: 1px;",
+      "border-style: solid;",
+      "background: var(--surface-2);",
+      "color: var(--sev-major);",
+      "border-color: var(--sev-major);",
+    ].join(" "),
+  });
+
   const laneChip = el("span", { class: `lane-chip ${laneName}` }, laneName);
 
   const headCell = el(
     "div",
-    { class: "row", style: "gap: var(--sp-2); min-width: 200px; flex: 0 0 auto;" },
+    { class: "row", style: "gap: var(--sp-2); min-width: 200px; flex: 0 0 auto; flex-wrap: wrap;" },
     laneChip,
     pill,
+    livePill,
+    denyBadge,
     ungovChip,
   );
 
@@ -423,7 +522,11 @@ function buildRow(lane, onToggleTerminal, onStalePillClick) {
     actionsCell,
   );
 
-  return { root, pill, ungovChip, lastEl, nowEl, goalEl, tokensEl, state: null, governed: undefined };
+  return {
+    root, pill, ungovChip, livePill, denyBadge,
+    lastEl, nowEl, goalEl, tokensEl,
+    state: null, governed: undefined, liveness: undefined, denies: 0,
+  };
 }
 
 /**
@@ -476,6 +579,9 @@ function applyNarrativeText(refs, payload) {
   // Stash the governance provenance for the UNGOVERNED indicator re-eval. Left
   // undefined when the payload omits the field (so it can't false-flag).
   refs.governed = payload ? payload.governed : undefined;
+  // Stash liveness for the DEAD/EXITED pill re-eval. Mirrors `governed` — comes
+  // on the same per-lane narrative payload. Left undefined when absent.
+  refs.liveness = payload ? payload.liveness : undefined;
 }
 
 /**
@@ -765,6 +871,66 @@ export async function render(root, _params) {
     },
   }, "activity ▸");
 
+  // --- kill-switch ("Stop fleet") — control-mode gated + confirm modal ---
+  // DELETE /api/v1/fleet stops ALL lanes and shuts the server down. Disabled in
+  // read-only mode (the default). Requires a confirm before firing.
+  const killBtn = /** @type {HTMLButtonElement} */ (el("button", {
+    type: "button",
+    class: "button",
+    "data-testid": "board-kill-switch",
+    style: [
+      "flex: 0 0 auto;",
+      "border-color: var(--sev-blocking);",
+      "color: var(--sev-blocking);",
+    ].join(" "),
+  }, "■ Stop fleet"));
+
+  async function handleKill() {
+    if (!controlEnabled()) {
+      _showToast("Read-only mode — enable Control mode to stop the fleet", "error");
+      return;
+    }
+    const ok = await showConfirmModal({
+      title: "Stop the entire fleet?",
+      message:
+        "This stops ALL lanes and shuts the orchestrator down. " +
+        "This cannot be undone from the UI.",
+      confirmLabel: "Stop ALL lanes",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    killBtn.disabled = true;
+    try {
+      const csrf = _getCsrfToken();
+      const resp = await authedFetch("/api/v1/fleet", {
+        method: "DELETE",
+        headers: { ...(csrf ? { "X-CSRF-Token": csrf } : {}) },
+      });
+      if (resp.ok) {
+        _showToast("Fleet stopping — orchestrator shutting down", "info");
+      } else {
+        _showToast(`Stop fleet failed — HTTP ${resp.status}`, "error");
+        killBtn.disabled = !controlEnabled();
+      }
+    } catch (err) {
+      _showToast(`Network error — ${String(err)}`, "error");
+      killBtn.disabled = !controlEnabled();
+    }
+  }
+  killBtn.addEventListener("click", handleKill);
+
+  /** Apply control-mode posture to the kill-switch. */
+  function applyKillControl(on) {
+    killBtn.dataset.readonlyGated = on ? "false" : "true";
+    killBtn.disabled = !on;
+    killBtn.title = on
+      ? "Stop ALL lanes (DELETE /api/v1/fleet). Requires confirmation."
+      : "Enable Control mode to act.";
+    killBtn.style.opacity = on ? "" : "0.5";
+    killBtn.style.cursor = on ? "pointer" : "not-allowed";
+  }
+  const unsubKillControl = onControlMode(applyKillControl);
+
   const missionHeader = el(
     "div",
     {
@@ -774,11 +940,131 @@ export async function render(root, _params) {
     },
     el("span", {
       class: "mono",
-      style: "font-size: var(--fs-sm); color: var(--text-muted);",
+      style: "font-size: var(--fs-sm); color: var(--text-muted); flex: 0 0 auto;",
     }, "Summary board"),
     narratorDot,
+    el("span", { style: "flex: 1 1 auto;" }),
     activityToggleBtn,
+    killBtn,
   );
+
+  // --- aggregate alarm strip ---
+  // Summarizes BLOCKED / STALE / UNGOVERNED / DEAD / DENY-LOOP counts across the
+  // fleet. Shown prominently (red) when any CRITICAL count (dead/blocked/
+  // deny-loop) > 0; hidden when all-clear. Also drives document.title.
+  const alarmStrip = el("div", {
+    "data-testid": "board-alarm-strip",
+    role: "status",
+    "aria-live": "polite",
+    style: [
+      "display: none;",
+      "align-items: center;",
+      "gap: var(--sp-3);",
+      "padding: var(--sp-2) var(--sp-3);",
+      "border-radius: var(--r-1);",
+      "border: 1px solid var(--sev-blocking);",
+      "background: color-mix(in srgb, var(--sev-blocking) 14%, var(--surface));",
+      "font-family: ui-monospace, SFMono-Regular, Menlo, monospace;",
+      "font-size: var(--fs-sm);",
+      "flex-wrap: wrap;",
+    ].join(" "),
+  });
+
+  const alarmTitle = el("span", {
+    style: "font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--sev-blocking); flex: 0 0 auto;",
+  }, "⚠ FLEET ALARM");
+
+  /**
+   * Build a labelled count chip. Returns the chip + a setter that updates the
+   * number and hides the chip when zero.
+   * @param {string} label
+   * @param {string} testid
+   * @param {string} color
+   */
+  function makeCountChip(label, testid, color) {
+    const numEl = el("span", { style: `font-weight: 700; color: ${color};` }, "0");
+    const chip = el(
+      "span",
+      {
+        "data-testid": testid,
+        style: "display: none; align-items: center; gap: 4px; flex: 0 0 auto; color: var(--text-muted);",
+      },
+      numEl,
+      el("span", { style: "text-transform: uppercase; letter-spacing: 0.3px; font-size: var(--fs-xs);" }, label),
+    );
+    return {
+      chip,
+      set(n) {
+        numEl.textContent = String(n);
+        chip.style.display = n > 0 ? "inline-flex" : "none";
+      },
+    };
+  }
+
+  const cBlocked = makeCountChip("blocked", "alarm-count-blocked", "var(--sev-blocking)");
+  const cDead = makeCountChip("dead", "alarm-count-dead", "var(--sev-blocking)");
+  const cDeny = makeCountChip("deny-loop", "alarm-count-denyloop", "var(--sev-major)");
+  const cStale = makeCountChip("stale", "alarm-count-stale", "var(--stale-stale)");
+  const cUngov = makeCountChip("ungoverned", "alarm-count-ungoverned", "var(--sev-major)");
+
+  alarmStrip.appendChild(alarmTitle);
+  alarmStrip.appendChild(cBlocked.chip);
+  alarmStrip.appendChild(cDead.chip);
+  alarmStrip.appendChild(cDeny.chip);
+  alarmStrip.appendChild(cStale.chip);
+  alarmStrip.appendChild(cUngov.chip);
+
+  // Original document title, restored when all-clear.
+  const _baseTitle = document.title;
+
+  /**
+   * Recompute the aggregate alarm from current per-lane indicator state. Counts:
+   *   BLOCKED   — governor deny-loop OR blocked state (the BLOCKED pill set)
+   *   STALE     — lanes flagged stale
+   *   UNGOVERNED— running + governed === false
+   *   DEAD      — liveness === "dead"
+   *   DENY-LOOP — consecutive_denies ≥ threshold
+   * CRITICAL = dead + blocked + deny-loop. The strip shows + title gets an (N)
+   * prefix iff CRITICAL > 0; otherwise the strip hides and the title is restored.
+   */
+  function recomputeAlarm() {
+    let blocked = 0, dead = 0, deny = 0, stale = 0, ungov = 0;
+    for (const short of Object.keys(rowRefs)) {
+      const refs = rowRefs[short];
+      if (blockedLanes.has(short)) blocked++;
+      if (staleLanes.has(short)) stale++;
+      if (String(refs.liveness || "").toLowerCase() === "dead") dead++;
+      if ((Number(refs.denies) || 0) >= DENY_LOOP_THRESHOLD) deny++;
+      if (refs.governed === false && isRunningState(refs.state)) ungov++;
+    }
+    cBlocked.set(blocked);
+    cDead.set(dead);
+    cDeny.set(deny);
+    cStale.set(stale);
+    cUngov.set(ungov);
+
+    const critical = dead + blocked + deny;
+    alarmStrip.style.display = critical > 0 ? "flex" : "none";
+    document.title = critical > 0 ? `(${critical}) ${_baseTitle}` : _baseTitle;
+  }
+
+  // --- alert banner (polls GET /api/v1/alerts) ---
+  const alertBanner = createAlertBanner({ onNavigate: navigate });
+  document.body.appendChild(alertBanner.element);
+
+  async function pollAlerts() {
+    if (!alive) return;
+    try {
+      const resp = await authedFetch("/api/v1/alerts");
+      if (!alive) return;
+      if (!resp.ok) return;
+      const json = await resp.json();
+      const alerts = json && Array.isArray(json.alerts) ? json.alerts : [];
+      alertBanner.update(alerts);
+    } catch (_) {
+      /* transient — next poll retries */
+    }
+  }
 
   // --- terminal drawer seam (Task 3.3) ---
   // Single-drawer invariant: only one terminal drawer may be open at a time.
@@ -912,6 +1198,7 @@ export async function render(root, _params) {
       "data-testid": "board-page",
     },
     missionHeader,
+    alarmStrip,
     rowsContainer,
   );
   root.appendChild(page);
@@ -943,6 +1230,21 @@ export async function render(root, _params) {
     const refs = rowRefs[short];
     if (!refs) return;
     paintUngoverned(refs.ungovChip, { state: refs.state, governed: refs.governed });
+    // Liveness pill (DEAD/EXITED) rides the same narrative payload as governance,
+    // so re-paint it on every frame too.
+    paintLiveness(refs.livePill, refs.liveness);
+    recomputeAlarm();
+  }
+
+  /**
+   * Re-paint one lane's DENY-LOOP badge from its current consecutive_denies
+   * (sourced from /api/v1/lanes/stale governor_blocked). Distinct from BLOCKED.
+   * @param {string} short
+   */
+  function reevaluateDenyLoop(short) {
+    const refs = rowRefs[short];
+    if (!refs) return;
+    paintDenyLoop(refs.denyBadge, refs.denies);
   }
 
   // --- narrative: initial paint, then SSE ---
@@ -1048,12 +1350,31 @@ export async function render(root, _params) {
     blockedLanes = new Set(governorBlocked.map((g) => String(g.lane)));
     // Rebuild the staleData map for the modal.
     staleData = Object.fromEntries(list.map((s) => [String(s.lane), s]));
-    for (const short of Object.keys(rowRefs)) reevaluatePill(short);
+    // Capture consecutive_denies per lane for the DENY-LOOP badge + alarm.
+    // Reset every lane's deny count first, then set the lanes reported.
+    for (const short of Object.keys(rowRefs)) rowRefs[short].denies = 0;
+    for (const g of governorBlocked) {
+      const refs = rowRefs[String(g.lane)];
+      if (refs) refs.denies = Number(g.consecutive_denies) || 0;
+    }
+    for (const short of Object.keys(rowRefs)) {
+      reevaluatePill(short);
+      reevaluateDenyLoop(short);
+    }
+    recomputeAlarm();
     // Keep the modal fresh if it is already open (content may change).
     staleModal.update(list);
   }
   pollStale();
   const staleTimer = setInterval(pollStale, 30_000);
+
+  // --- alert banner: initial fetch + poll on the board's ~30s cadence ---
+  pollAlerts();
+  const alertTimer = setInterval(pollAlerts, 30_000);
+
+  // Initial alarm paint (rows start all-clear; this hides the strip + keeps the
+  // base title until the first indicator arrives).
+  recomputeAlarm();
 
   // --- cleanup (grid teardown contract) ---
   return function cleanup() {
@@ -1063,6 +1384,12 @@ export async function render(root, _params) {
     try { es.close(); } catch (_) { /* ignore */ }
     // 2. Stop the stale poll timer.
     clearInterval(staleTimer);
+    // 2b. Stop the alert poll timer + tear down the alert banner; unsubscribe
+    //     the kill-switch control-mode listener; restore the document title.
+    clearInterval(alertTimer);
+    try { unsubKillControl(); } catch (_) { /* ignore */ }
+    try { alertBanner.cleanup(); } catch (_) { /* ignore */ }
+    try { document.title = _baseTitle; } catch (_) { /* ignore */ }
     // 3. Dispose any open terminal drawer (Task 3.3 seam).
     if (disposeTerminalDrawer) {
       try { disposeTerminalDrawer(); } catch (_) { /* ignore */ }

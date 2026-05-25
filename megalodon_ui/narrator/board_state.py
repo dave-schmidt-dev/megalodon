@@ -84,6 +84,18 @@ class LaneRow:
     # with ``LaneSession.governed``'s own False default. (The board's running-state
     # guard prevents this default from false-flagging idle lanes.)
     governed: bool = False
+    # LIVENESS of the lane's live process (Wave-3 CRITICAL fix). Derived from the
+    # live ``LaneSession`` (``running`` / ``exited_rc``) by ``_derive_liveness``:
+    #   "running" — session.running True and exited_rc is None (alive).
+    #   "exited"  — exited_rc == 0 (clean exit).
+    #   "dead"    — exited_rc not in (None, 0) (crashed / nonzero exit).
+    #   "unknown" — no live session for the lane / attributes unreadable.
+    # Distinct from ``governed`` (provenance) and from the deny-loop ``governor-
+    # blocked`` alarm. Defaults "unknown" (fail toward not-asserting-health): a
+    # lane with no supplied session has no positive proof it is alive. The async
+    # wrapper supplies real per-lane values from the live sessions; the board's
+    # DEAD pill renders only on the strict "dead" value.
+    liveness: str = "unknown"
     digest_text: str | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -91,7 +103,7 @@ class LaneRow:
 
         Returns:
             Dict with keys: lane, lane_name, state, last, now, goal, tokens,
-            narrator_ok, governed.
+            narrator_ok, governed, liveness.
         """
         return {
             "lane": self.lane,
@@ -103,6 +115,7 @@ class LaneRow:
             "tokens": self.tokens,
             "narrator_ok": self.narrator_ok,
             "governed": self.governed,
+            "liveness": self.liveness,
         }
 
 
@@ -135,6 +148,45 @@ def _parse_utc(raw: str | None) -> datetime | None:
         return dt if dt.tzinfo is not None else None
     except (ValueError, AttributeError):
         return None
+
+
+def _derive_liveness(session: Any) -> str:
+    """Map a live ``LaneSession`` (or None) to a board liveness string.
+
+    Reads ``session.running`` / ``session.exited_rc`` DEFENSIVELY — a fake or
+    partial session object in tests may lack either attribute, in which case we
+    fail toward ``"unknown"`` rather than asserting a health we cannot back.
+
+    Mapping (mirrors ``LaneRow.liveness`` doc):
+      * ``"running"`` — ``running`` truthy AND ``exited_rc`` is None.
+      * ``"exited"``  — ``exited_rc == 0`` (clean exit).
+      * ``"dead"``    — ``exited_rc`` not in ``(None, 0)`` (crashed / nonzero).
+      * ``"unknown"`` — no session, or attributes are missing / unreadable.
+
+    Args:
+        session: The lane's live ``LaneSession`` or None.
+
+    Returns:
+        One of ``"running" | "exited" | "dead" | "unknown"``.
+    """
+    if session is None:
+        return "unknown"
+    # Use a sentinel so a *present* exited_rc=None is distinguished from a lane
+    # whose session object simply lacks the attribute (→ unknown).
+    _MISSING = object()
+    rc = getattr(session, "exited_rc", _MISSING)
+    running = getattr(session, "running", _MISSING)
+    if rc is _MISSING and running is _MISSING:
+        return "unknown"
+    if rc is not _MISSING and rc is not None:
+        try:
+            return "exited" if int(rc) == 0 else "dead"
+        except (TypeError, ValueError):
+            return "unknown"
+    # rc is None (or missing); fall back to the running flag.
+    if running is _MISSING:
+        return "unknown"
+    return "running" if running else "unknown"
 
 
 def _pick_latest(
@@ -260,6 +312,7 @@ def assemble_lane_rows(
     doc_order: dict[str, int],
     status_rows: list[dict[str, Any]] | None = None,
     governed_by_lane: dict[str, bool] | None = None,
+    liveness_by_lane: dict[str, str] | None = None,
 ) -> dict[str, LaneRow]:
     """Assemble one ``LaneRow`` per lane — pure, no I/O.
 
@@ -294,6 +347,12 @@ def assemble_lane_rows(
     # proof it was spawned under the governor. The async wrapper supplies real
     # per-lane values from the live sessions.
     governed_map = governed_by_lane or {}
+
+    # Liveness per lane (Wave-3 CRITICAL fix). Absent ⇒ default "unknown" (fail
+    # toward not-asserting-health): a lane with no supplied liveness has no
+    # positive proof it is alive. The async wrapper supplies real per-lane values
+    # derived from the live sessions via ``_derive_liveness``.
+    liveness_map = liveness_by_lane or {}
 
     for cfg in lane_cfgs:
         short = cfg.short
@@ -377,6 +436,7 @@ def assemble_lane_rows(
             tokens=tokens,
             narrator_ok=False,
             governed=governed_map.get(short, False),
+            liveness=liveness_map.get(short, "unknown"),
             digest_text=None,  # set by build_lane_rows after this call
         )
 
@@ -663,6 +723,17 @@ async def build_lane_rows(
         if getattr(cfg, "short", None)
     }
 
+    # Liveness per lane (Wave-3 CRITICAL fix): surface each live session's
+    # running/exited state so a dead (crashed) lane is visible immediately rather
+    # than waiting ~15 min for the STATUS-stale heuristic. Mirrors how
+    # ``governed`` is plumbed — read defensively via ``_derive_liveness`` so a
+    # fake/partial session in tests degrades to "unknown" instead of raising.
+    liveness_by_lane = {
+        cfg.short: _derive_liveness(sessions.get(cfg.short))
+        for cfg in lane_cfgs
+        if getattr(cfg, "short", None)
+    }
+
     rows = assemble_lane_rows(
         tasks_fe,
         lane_cfgs,
@@ -670,6 +741,7 @@ async def build_lane_rows(
         doc_order,
         status_rows=status_rows,
         governed_by_lane=governed_by_lane,
+        liveness_by_lane=liveness_by_lane,
     )
 
     # Attach digest_text to rows that have a digest (internal, for the scheduler).

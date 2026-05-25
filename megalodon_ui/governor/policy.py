@@ -32,6 +32,7 @@ import os
 import re
 import shlex
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -97,6 +98,21 @@ def canary_command() -> str:
 
 # Tools that touch nothing (no fs/exec/network) — always allowed.
 _INERT_TOOLS = frozenset({"TodoWrite", "AskUserQuestion", "ExitPlanMode"})
+
+# Inert/safe control tools that legitimately reach the FINAL (genuinely-unknown)
+# branch of :func:`decide`. The default for an unknown tool is now DENY
+# (fail-closed: a fabricated MCP tool carrying a destructive payload must not be
+# allowed-by-default), so this allowlist is the carve-out for the handful of
+# control tools that touch nothing — no filesystem, no exec, no network — yet
+# are not native tool families. They are checked BEFORE the unknown-tool deny
+# and return an allow with a LOUD WARN so a genuinely-new tool that happens to
+# land here is still surfaced for explicit classification rather than silently
+# trusted. Kept in sync with (a superset of) _INERT_TOOLS so that if the early
+# _INERT_TOOLS short-circuit is ever removed these still fail safe to allow.
+#   TodoWrite       — writes the agent's in-memory todo list only (no fs/exec).
+#   AskUserQuestion — surfaces a question to the operator (no side effects).
+#   ExitPlanMode    — a mode-transition control signal (no side effects).
+_INERT_ALLOWED_TOOLS = frozenset({"TodoWrite", "AskUserQuestion", "ExitPlanMode"})
 
 # Subagent-spawning tools — a spawned subagent could run OUTSIDE the governor.
 _SPAWN_TOOLS = frozenset({"Task", "Agent"})
@@ -1031,19 +1047,67 @@ def _decide_write(tool_input: dict, *, project_dir: Path) -> Decision:
     return _adjudicate_write_target(path, project_dir=project_dir)
 
 
+# Committed WebFetch/WebSearch host allowlist. Resolved relative to THIS
+# module's directory (megalodon_ui/governor/) so it is found both under the
+# package import and under the bare-interpreter standalone shim (which puts
+# that same directory on sys.path[0]). Module-level so tests can monkeypatch it.
+_HOSTS_FILE = Path(__file__).resolve().parent / "governor-hosts.txt"
+
+
+@lru_cache(maxsize=1)
+def _load_host_allowlist() -> frozenset[str]:
+    """Load the committed host allowlist from :data:`_HOSTS_FILE`.
+
+    One host per line; blank lines and ``#`` comments ignored; each host is
+    lowercased and stripped. Cached per-process (the file is committed and does
+    not change at runtime). A MISSING / unreadable file yields the empty set —
+    i.e. deny-all — preserving the conservative default. Tests clear the cache
+    (``_load_host_allowlist.cache_clear()``) after monkeypatching ``_HOSTS_FILE``.
+    """
+    try:
+        text = _HOSTS_FILE.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return frozenset()
+    hosts: set[str] = set()
+    for line in text.splitlines():
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        hosts.add(entry.lower())
+    return frozenset(hosts)
+
+
+def _host_allowed(host: str, hosts: frozenset[str] | set[str]) -> bool:
+    """True if ``host`` is an exact match for, or a subdomain of, an allow entry.
+
+    Subdomain matching is dot-anchored: ``raw.github.com`` is admitted by a
+    ``github.com`` rule, but ``evilgithub.com`` is NOT (suffix check requires a
+    leading ``.`` so it cannot be gamed by a sibling registrable domain).
+    """
+    host = host.lower()
+    for allowed in hosts:
+        if host == allowed or host.endswith("." + allowed):
+            return True
+    return False
+
+
 def decide_webfetch(url: str, *, allowlist: set[str] | None = None) -> Decision:
     """Adjudicate a WebFetch/WebSearch URL against a host allowlist.
 
-    ``allowlist`` defaults to ``None`` ⇒ deny-all (no committed hosts file yet;
-    that arrives in a later task). Exposed as a standalone, testable hook.
+    ``allowlist`` is the set of permitted hosts (exact or parent-domain). When
+    ``None`` the committed :func:`_load_host_allowlist` set is used; a missing
+    hosts file there yields deny-all. A URL whose hostname exactly matches, or
+    is a subdomain of, an allowlisted host is allowed; everything else (incl. a
+    malformed URL with no parseable host) is denied. Exposed as a standalone,
+    testable hook.
     """
-    hosts = allowlist or set()
+    hosts = allowlist if allowlist is not None else _load_host_allowlist()
     try:
         parsed = urlparse(url)
         host = parsed.hostname or ""
     except (ValueError, AttributeError):
         host = ""
-    if host and host in hosts:
+    if host and _host_allowed(host, hosts):
         return _allow(f"host on allowlist: {host}", "network-host-ok")
     return _deny(f"host not on allowlist: {host or url!r}", "network-host")
 
@@ -1102,12 +1166,27 @@ def decide(
 
         if tool_name in _NETWORK_TOOLS:
             url = tin.get("url") or tin.get("query") or ""
+            # allowlist=None ⇒ use the committed governor-hosts.txt set (deny-all
+            # if that file is missing). The set is cached per-process.
             return decide_webfetch(url, allowlist=None)
 
-        # Genuinely-unknown future tool: allow, but flag for classification.
-        return _allow(
-            f"WARN unknown tool {tool_name!r} — allowed by default, classify it",
-            "unknown-tool-warn",
+        # Inert/safe control tools that legitimately reach this branch: allow,
+        # but keep the LOUD WARN so a genuinely-new tool is still surfaced for
+        # classification. Checked BEFORE the unknown-tool deny.
+        if tool_name in _INERT_ALLOWED_TOOLS:
+            return _allow(
+                f"WARN inert control tool {tool_name!r} — allowed by allowlist, "
+                f"classify it",
+                "inert-tool",
+            )
+
+        # Genuinely-unknown future tool: DENY (fail-closed). A fabricated MCP
+        # tool carrying a destructive payload must not be allowed-by-default; the
+        # safe control tools that reach here are carved out above.
+        return _deny(
+            f"unknown tool {tool_name!r} denied by default — classify it, then "
+            f"add to an allowlist if safe",
+            "unknown-tool-deny",
         )
     except Exception as exc:  # noqa: BLE001 — fail closed on ANY error
         return _deny(f"governor-error: {exc}", "governor-error")

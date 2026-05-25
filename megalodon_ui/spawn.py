@@ -32,6 +32,40 @@ from megalodon_ui.mission_config.schema import MissionConfig
 
 _log = logging.getLogger(__name__)
 
+# Watchdog pid-file directory (B1). Mirrors ``watchdog.daemon.PID_DIR`` — kept as
+# a separate module-level constant rather than importing daemon to avoid coupling
+# the spawner to the watchdog package at import time. The watchdog's
+# ``_read_pid(lane.name)`` reads ``<PID_DIR>/<lane_name>.pid``; we write/remove
+# the same file keyed by the LONG lane name so S1 (process-alive) can fire.
+PID_DIR = Path.home() / ".megalodon-pids"
+
+
+def _write_pid_file(lane_name: str, pid: int) -> None:
+    """Write ``<PID_DIR>/<lane_name>.pid`` for the watchdog S1 detector (B1).
+
+    Best-effort: a missing dir is created; any OSError is swallowed (the pid
+    file is a watchdog optimisation, not load-bearing for spawn). No-op when
+    ``lane_name`` is empty (a bare/test LaneSession).
+    """
+    if not lane_name:
+        return
+    try:
+        PID_DIR.mkdir(parents=True, exist_ok=True)
+        (PID_DIR / f"{lane_name}.pid").write_text(f"{pid}\n", encoding="utf-8")
+    except OSError:
+        _log.debug("spawn: could not write pid file for lane %s", lane_name)
+
+
+def _remove_pid_file(lane_name: str) -> None:
+    """Remove ``<PID_DIR>/<lane_name>.pid`` on kill/cleanup (B1). Idempotent."""
+    if not lane_name:
+        return
+    try:
+        (PID_DIR / f"{lane_name}.pid").unlink(missing_ok=True)
+    except OSError:
+        _log.debug("spawn: could not remove pid file for lane %s", lane_name)
+
+
 # Session-id discovery polling parameters (Task 3.3 / PM-6).
 # Module-level so tests can monkey-patch them without 5-second waits.
 _SESSION_DISCOVERY_TIMEOUT: float = 5.0
@@ -171,6 +205,13 @@ class LaneSession:
     argv: list[str]
     env: dict[str, str]
     stream_log: Path
+    # Long lane name (e.g. "AUDIT"); the tmux session ``name`` is ``lane-<short>``.
+    # Carried so the spawner can key ``~/.megalodon-pids/<lane_name>.pid`` to
+    # match the watchdog's ``_read_pid(lane.name)`` (B1: pid file written on
+    # spawn so the S1 process-alive detector has a pid to probe). Defaults "" so
+    # any test constructing a bare LaneSession stays valid; the pid-file write is
+    # skipped when empty.
+    lane_name: str = ""
     session_id: str | None = None
     running: bool = False
     # Governance PROVENANCE of the LIVE process (Task 2.5). True only when the
@@ -333,6 +374,7 @@ class FleetSpawner:
                         argv=argv,
                         env=env,
                         stream_log=stream_log,
+                        lane_name=lane_cfg.name,
                         running=True,
                         governed=reattach_governed,
                     )
@@ -346,6 +388,13 @@ class FleetSpawner:
                     self.sessions[short] = ls
                     reattached.add(short)
                     _log.info("reattached existing session %s", session_name)
+                    # B1: refresh the watchdog pid file for the reattached pane
+                    # (server restart) so S1 keeps a valid pid to probe.
+                    _reattach_pid = await tmux.display_message_pane_pid(
+                        self.socket, session_name
+                    )
+                    if _reattach_pid is not None:
+                        _write_pid_file(lane_cfg.name, _reattach_pid)
                     # Idempotent re-pipe: only wire if no active pipe (Task 3.1).
                     pipe_active = await tmux.display_message_pane_pipe(
                         self.socket, session_name
@@ -413,6 +462,7 @@ class FleetSpawner:
                 argv=argv,
                 env=env,
                 stream_log=self.mission_dir / ".fleet" / f"{short}.stream.log",
+                lane_name=lane_cfg.name,
                 governed=bool(_gov_kw),
             )
             if lane_cfg.live_repl and lane_cfg.initial_prompt:
@@ -467,6 +517,9 @@ class FleetSpawner:
             await asyncio.gather(*kill_tasks, return_exceptions=True)
         for s in self.sessions.values():
             s.running = False
+            # B1: remove the watchdog pid file on teardown so a stale pid does
+            # not make S1 probe an unrelated/recycled process after shutdown.
+            _remove_pid_file(s.lane_name)
 
     def get(self, lane: str) -> LaneSession:
         """Return the LaneSession for the given short lane code."""
@@ -671,6 +724,14 @@ class FleetSpawner:
         # this lane's session as one to kill (the tmux session is already real).
         session.running = True
         spawned.append(session)
+        # B1: write the watchdog pid file now the pane is live. tmux reports the
+        # pane child's pid via ``#{pane_pid}``; that is the meaningful liveness
+        # target for the S1 process-alive detector. Best-effort — a None pid
+        # (query failed) leaves the watchdog to fall back to STATUS-stale / tmux
+        # has-session, exactly as before this change.
+        pane_pid = await tmux.display_message_pane_pid(self.socket, session.name)
+        if pane_pid is not None:
+            _write_pid_file(session.lane_name, pane_pid)
         # Governance PROVENANCE marker (Task 2.5): the process is now live and
         # was born with `session.argv`, so `session.governed` is authoritative.
         # Write the fingerprinted marker when governed, else remove any stale one
