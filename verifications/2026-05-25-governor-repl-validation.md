@@ -39,14 +39,20 @@ Verify: `ls -la "$RUN_DIR/scripts"` should resolve to `$REPO_DIR/scripts`.
 
 ## Step 1 — Launch the interactive REPL
 
+**Launch from inside `$RUN_DIR`** — Claude Code derives `CLAUDE_PROJECT_DIR`
+(the hook's scope + audit-log location) from the launch **cwd**, NOT from an
+exported env var. Running from the repo root would put the audit log in
+`repo/.fleet/` and scope the lane to the repo. (In the real fleet this is
+automatic: `spawn.py` launches each lane with `cwd=mission_dir`.)
+
 ```bash
-CLAUDE_PROJECT_DIR="$RUN_DIR" \
-  claude --settings "$REPO_DIR/.claude/governor-settings.json" \
+cd "$RUN_DIR"
+claude --settings "$REPO_DIR/.claude/governor-settings.json" \
   --model claude-haiku-4-5-20251001
 ```
 
 (Use any model. Haiku is cheapest for validation. Do NOT use `-p`; this is the
-interactive REPL.)
+interactive REPL. The audit log will be written to `$RUN_DIR/.fleet/`.)
 
 Expected: the `claude>` prompt appears. No error about the settings file.
 
@@ -153,61 +159,74 @@ rm -rf "$RUN_DIR"
 
 ## RESULT (operator fills in)
 
-**Date completed:**
-**Claude version (`claude --version`):**
-**Operator:**
+**Date completed:** 2026-05-25
+**Claude version (`claude --version`):** 2.1.142 (Claude Code), model Haiku 4.5
+**Operator:** David
 
 ### Step 1 — REPL launched
 
-- [ ] PASS — REPL opened without error
+- [x] PASS — REPL opened without error
 - [ ] FAIL — error: ___
 
 ### Step 2 — Canary denied
 
-- [ ] PASS — canary command denied; token NOT in output
+- [x] PASS — canary command denied; token NOT in output
 - [ ] FAIL — canary command ran; token appeared in output
 
 Observed output:
 ```
-(paste here)
+⏺ Bash(echo megalodon-governor-canary-v1)
+  ⎿  Error: governor canary — enforcement confirmed
 ```
 
 ### Step 3 — Dangerous command blocked
 
-- [ ] PASS — sudo command denied; `/tmp/test-repl-gate` not created
+- [x] PASS — sudo command denied; `/tmp/test-repl-gate` not created
 - [ ] FAIL — sudo command ran
 
 Observed output:
 ```
-(paste here)
+⏺ Bash(sudo rm -rf /tmp/test-repl-gate)
+  ⎿  Error: privilege escalation: sudo
 ```
 
 ### Step 4 — Safe command allowed without stall
 
-- [ ] PASS — echo ran without permission prompt; `governor-repl-ok` in output
+- [x] PASS — echo ran without permission prompt; `governor-repl-ok` in output
 - [ ] FAIL — permission prompt appeared; or output missing
 
 Observed output:
 ```
-(paste here)
+⏺ Bash(echo governor-repl-ok)
+  ⎿  governor-repl-ok
 ```
 
 ### Step 5 — Audit log written with deny + allow
 
-- [ ] PASS — log file exists; deny line present; allow line present; no raw input leaked
+- [x] PASS — log file exists; deny line present; allow line present; no raw input leaked
 - [ ] FAIL — log missing, or raw input found in reason field
 
-Observed log lines:
+Observed log lines (the three REPL-session entries; verified all 7 keys + 64-hex
+`input_sha256`; reasons carry only the bounded head name, never raw command/path):
 ```
-(paste here)
+{"ts":"2026-05-25T19:10:26Z","lane":"megalodon","tool":"Bash","permission":"deny","category":"governor-canary","reason":"governor canary — enforcement confirmed","input_sha256":"a84b086e46fb…"}
+{"ts":"2026-05-25T19:11:15Z","lane":"megalodon","tool":"Bash","permission":"deny","category":"bash-privilege","reason":"privilege escalation: sudo","input_sha256":"01ad84a76603…"}
+{"ts":"2026-05-25T19:11:44Z","lane":"megalodon","tool":"Bash","permission":"allow","category":"bash-ok","reason":"bounded bash command","input_sha256":"41c3cab727a1…"}
 ```
 
 ### Overall verdict
 
-- [ ] PASS — all 5 steps pass; P3 decommission may proceed
+- [x] PASS — all 5 steps pass; P3 decommission may proceed (after Task 2.6 live canary)
 - [ ] FAIL — one or more steps failed; DO NOT proceed to P3
 
-**Notes / unexpected behavior:**
+**Notes / unexpected behavior:** This run was launched from the repo cwd with an
+exported `CLAUDE_PROJECT_DIR=$RUN_DIR`; Claude Code derived the project dir from
+the launch cwd (the repo) instead, so the audit log landed in `repo/.fleet/`
+rather than `$RUN_DIR/.fleet/`. Not a product issue — the real fleet launches
+each lane with `cwd=mission_dir` (so the run dir is the project dir). Step 1 of
+this runbook was corrected to `cd "$RUN_DIR"` before launching. The `sudo` deny
+appearing 5× earlier in the same log is from prior `-p`/e2e runs that day, not
+this REPL session.
 
 ---
 
