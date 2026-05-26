@@ -55,11 +55,17 @@ jobs:
       # JS unit tier (node:test). Runs the whole ui/tests/unit dir, not just the
       # config loader -- signal_filename_parse (sender_lane parsing) and
       # store_nested_notify have no other coverage anywhere in CI. Node is already
-      # set up above for Playwright; no extra install is needed. The quoted glob
-      # is required because `node --test <dir>` resolves the dir as a module on
-      # Node >=22 instead of discovering test files.
+      # set up above for Playwright; no extra install is needed.
+      #
+      # The glob is SHELL-expanded (unquoted), NOT handed to `node --test` to glob
+      # internally: the test-runner's own glob support is absent on Node 20 (this
+      # runner's pin) and inconsistent across later versions (nodejs/node#50658,
+      # #52191). A *quoted* glob made node receive the literal pattern and fail with
+      # "Could not find '.../ui/tests/unit/**/*.test.js'". Bash expands the unquoted
+      # glob to explicit file paths instead. Tests are flat in ui/tests/unit/; if
+      # nested dirs are added, switch to `find ui/tests/unit -name '*.test.js'`.
       - name: JS unit tests (node:test)
-        run: node --test "ui/tests/unit/**/*.test.js"
+        run: node --test ui/tests/unit/*.test.js
 
       # Use the pyproject `test` extra as the single source of test deps so CI
       # and the local preflight (`uv run --extra test pytest ...`) cannot drift.

@@ -10,6 +10,29 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-26 — CI FIX: blocking gate never actually ran (JS-unit glob on Node 20)
+
+**Meta-finding:** the "Authoritative gate (all green)" recorded below was a **local** result. CI
+had been red for the *entire* R1→R3 campaign — first as 0s *startup* failures (the job-level
+`hashFiles()` bug, fixed in `70881c8`), then, once startup was fixed, the `test` job died at its
+**first** step. No push in the campaign ever had a green CI gate; the green was local only. This is
+exactly the open-loop / gate-not-actually-running blind spot the planning-methodology redesign targets.
+
+- [bug] CI `test` job fails at step "JS unit tests (node:test)": `node --test "ui/tests/unit/**/*.test.js"`
+  → `Could not find '.../ui/tests/unit/**/*.test.js'` (exit 1); all later steps (pytest, lint, vulture,
+  3× chromium e2e) skipped. | files: .github/workflows/test.yml
+  - **Root cause:** the *quoted* glob is handed to `node --test`, whose own glob expansion is absent on
+    Node 20 (CI's pin) and inconsistent across later versions (nodejs/node#50658, #52191). Node received
+    the literal pattern. Local dev (Node 26) expands it internally → masked the bug.
+  - **Fix:** unquote so **bash** expands the glob to explicit file paths before node sees it
+    (`node --test ui/tests/unit/*.test.js`); works on Node 20 and every later version. Reproduced
+    locally (Node 26 quoted-glob passes 67/0; literal-pattern path is what CI hit).
+  - **Note:** this is the first time the full gate runs in CI end-to-end (pytest + chromium e2e never
+    executed on the runner before). Downstream failures may surface and will be fixed as found — CI-green
+    not yet confirmed at the time of this entry.
+
+---
+
 ## 2026-05-26 — UI/Visibility/Safety FIX CAMPAIGN: Re-audit Round 3 + Fix Round 3
 
 **Re-audit Round 3:** 6 blind read-only agents (one per dimension: live-activity, comms,
