@@ -1,3 +1,11 @@
+> ## Task #31 — Closed-loop methodology opt-in (DONE) + standing FREEZE on INV-3
+>
+> **Status (2026-05-26):** Opted in. Seeded `INVARIANTS.md` (INV-1/2/3) + `ledger.yaml`; wired tracked `hooks/pre-push` (best-effort `~/.agent/bin/harvest`; megalodon uses `core.hooksPath=hooks` so `.git/hooks/` would never fire). README convention note added. Harvest pilot: **FROZEN — `INV-3 recurrence=2 >= threshold 2`** (CI-gate-covers-every-project; both `.github/workflows/test.yml` bug entries from 2026-05-26, no resolution checkpoint). INV-1=0 (resolved 2026-05-26), INV-2=0.
+>
+> **Freeze implication:** the next plan touching CI must be a `consolidation` plan (re-enable CI safely + cost guardrails), NOT a feature plan, until INV-3 is resolved with a dated `resolutions:` checkpoint in `ledger.yaml`. INV-2 gate (`test_state_source_of_truth.py`) is still `missing` — open hardening item (mission-status README/MISSION split).
+>
+> ---
+>
 > ## Task #30 — UI/Visibility/Safety FIX CAMPAIGN: Re-audit Round 3 + Fix Round 3 (EXECUTED — all 6 dimensions addressed + verified)
 >
 > **Status (2026-05-26):** Fix Round 3 SHIPPED. Re-audit R3 (6 blind agents, all 6 PARTIAL) → Fix R3 (6 file-partitioned agents + e2e-reconciliation + orchestrator integration) → full authoritative gate green. All R3 findings resolved. Full narrative: HISTORY.md top section.

@@ -10,10 +10,33 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-26 — Closed-loop methodology: opt-in + harvest pilot (FROZEN: INV-3)
+
+Opted megalodon into the closed-loop foundation-freeze methodology. Seeded `INVARIANTS.md`
+(INV-1 mutation gating, INV-2 single-source-of-truth, INV-3 CI-gate-covers-every-project) and
+`ledger.yaml` (INV-1 covered + resolved 2026-05-26; INV-2 missing; INV-3 covered). Wired a tracked
+`hooks/pre-push` (megalodon uses `core.hooksPath=hooks`, so `.git/hooks/` would never fire) that runs
+`~/.agent/bin/harvest` best-effort on push. Convention note added to `README.md`.
+
+**Pilot verdict: FROZEN — `INV-3 recurrence=2 >= threshold 2`.** This is correct: the two
+`[bug]` entries below (Actions cost blowout; CI gate never actually ran) both touch
+`.github/workflows/test.yml`, which is in INV-3's `area`, both dated 2026-05-26, and there is no
+INV-3 resolution checkpoint — so both count. INV-1 = 0 (resolved 2026-05-26; same-day recurrences are
+excluded by the resolution cutoff), INV-2 = 0 (no matching entries yet). The freeze means the next
+megalodon plan touching CI must be a `consolidation` plan (re-enable CI safely + cost guardrails),
+not a feature plan, until INV-3 is resolved with a dated checkpoint.
+
+**Parser note (reality vs. plan):** the harvest HISTORY parser is single-line — it reads `files:`/`inv:`
+on the same physical line as `[bug]`. The two pre-existing bug entries wrapped `files:` onto a
+continuation line, so they first parsed as `files: []` and mapped to nothing (false `clear`). Reflowed
+both onto single lines with explicit `inv: INV-3` per the project convention; the verdict then correctly
+flipped to FROZEN. Going forward, bug entries must keep `[bug] ... | files: ... | inv: INV-x` on one line.
+
+---
+
 ## 2026-05-26 — CI DISABLED (cost): paused Actions until this work is done
 
-- [bug] Actions spend ran to **$1,031** for May (15,168 macОS min × $0.062 = **$940 / 91%**, plus
-  15,179 Linux min = $91); 100% megalodon, all May 22→26. | files: .github/workflows/test.yml
+- [bug] Actions spend ran to **$1,031** for May (15,168 macОS min × $0.062 = **$940 / 91%**, plus 15,179 Linux min = $91); 100% megalodon, all May 22→26. | files: .github/workflows/test.yml | inv: INV-3
   - **Root cause:** a `[ubuntu-latest, macos-latest]` matrix (macOS = 10× price) amplified by runaway
     runs (Wave 1-4 each *cancelled* after 9-12h; macOS leg hung under `fail-fast: false`) and
     fire-hose triggers (`push`+`pull_request` on `branches: ["**"]`, no `concurrency` cancel-in-progress).
@@ -34,9 +57,7 @@ had been red for the *entire* R1→R3 campaign — first as 0s *startup* failure
 **first** step. No push in the campaign ever had a green CI gate; the green was local only. This is
 exactly the open-loop / gate-not-actually-running blind spot the planning-methodology redesign targets.
 
-- [bug] CI `test` job fails at step "JS unit tests (node:test)": `node --test "ui/tests/unit/**/*.test.js"`
-  → `Could not find '.../ui/tests/unit/**/*.test.js'` (exit 1); all later steps (pytest, lint, vulture,
-  3× chromium e2e) skipped. | files: .github/workflows/test.yml
+- [bug] CI `test` job fails at step "JS unit tests (node:test)": `node --test "ui/tests/unit/**/*.test.js"` → `Could not find '.../ui/tests/unit/**/*.test.js'` (exit 1); all later steps (pytest, lint, vulture, 3× chromium e2e) skipped. | files: .github/workflows/test.yml | inv: INV-3
   - **Root cause:** the *quoted* glob is handed to `node --test`, whose own glob expansion is absent on
     Node 20 (CI's pin) and inconsistent across later versions (nodejs/node#50658, #52191). Node received
     the literal pattern. Local dev (Node 26) expands it internally → masked the bug.

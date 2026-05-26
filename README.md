@@ -639,3 +639,9 @@ When mission deliverables are complete:
 - **v3 (2026-05-15 20:37 EDT):** Atomic mkdir claim; stale-row reclamation; Mission status; pre-claim duplicate check; mandatory scratch; early-proceed in race resolution.
 - **v2 (2026-05-15 20:22 EDT):** Auto lane assignment; Rule 0 loop-keepalive.
 - **v1 (2026-05-15 20:17 EDT):** Initial protocol; manual lane assignment.
+
+---
+
+## Closed-loop convention
+
+Commit convention: Conventional Commits (`fix:` for remediation). HISTORY bug entries use `[bug] ... | files: ... | inv: INV-x`.

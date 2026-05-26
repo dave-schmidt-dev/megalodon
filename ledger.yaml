@@ -1,0 +1,7 @@
+# megalodon ledger — minimal machine state. NO `freeze` field (computed on read).
+invariants:
+  INV-1: {gate_test_status: covered}    # test_csrf_canonical_routes.py landed this session
+  INV-2: {gate_test_status: missing}    # no read==write test yet (the mission-status finding)
+  INV-3: {gate_test_status: covered}    # chromium-mutations now CI-gated
+resolutions:
+  INV-1: {resolved_at_date: "2026-05-26", note: "Fix R3 server-enforced gating"}

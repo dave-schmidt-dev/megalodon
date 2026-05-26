@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# best-effort closed-loop harvest on push (bypassable with --no-verify)
+~/.agent/bin/harvest --repo "$(git rev-parse --show-toplevel)" || true
