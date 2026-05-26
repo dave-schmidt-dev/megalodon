@@ -47,7 +47,7 @@ control-mode gating authoritative; auto-recovery default-OFF+bounded). Comms/Liv
 - Safety: `DELETE /api/v1/fleet` + legacy mutation POSTs lack the `X-CSRF-Token` check (SameSite=Strict-mitigated, not blocking).
 - Coverage/CI: JS unit tier (10 files) not run by CI (only 1 of 10 via npm script); webkit-board genuinely flaky (seedNarrative→SSE timing race; chromium 100% stable).
 
-**Fix Round 2 `3b1f916` (4 file-disjoint agents, SHIPPED):** closed the four PARTIAL findings + the
+**Fix Round 2 `422caaa` (4 file-disjoint agents, SHIPPED):** closed the four PARTIAL findings + the
 bugs the re-audit found in the R1 fixes:
 - SEC sender-bind: line-anchored binder (`_owning_lane_on_line` + `_STATUS_LINE_LANE_RE` anchored on line START `^\|`) in BOTH `server.py` and `activity_wall.py`; precedence orch-label → span → line-fallback → **fail-closed `LANE-UNKNOWN`+`from_unverified`**. Forged `claimed_from` is never authoritative. Curl-proofed: a `[SIG from=LANE-A]` after a `LANE-C` row's closing pipe → `from_lane=LANE-C, claimed_from=LANE-A, from_unverified=true`.
 - Live status-note collision: every event carries a unique `status-note-<idx>` in `id`/`payload.id`/`payload.filename`; FE keys id-first (`id||filename`). Comms-FE renders a `⚠ unverified` badge (row + drawer) on `from_unverified`.
