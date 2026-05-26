@@ -176,12 +176,18 @@ test.describe("activity-wall fidelity: real finding event renders a row", () => 
     const token = readUiToken(testInfo);
     const fixtureRoot = fixtureRootForProject(testInfo);
 
+    // The activity wall now auto-opens on mount when no preference is stored.
+    // This test drives the open toggle explicitly, so pin the preference CLOSED
+    // before the SPA boots; the toggle-to-open below then behaves as written.
+    await page.addInitScript(() => {
+      try { localStorage.setItem('megalodon.activityWall.open', '0'); } catch (_) { /* ignore */ }
+    });
     // Authenticate so the cookie-gated activity-wall snapshot/SSE endpoints work.
     await page.goto(`/#t=${token}`);
     await expect(page).toHaveURL("/", { timeout: 10_000 });
 
-    // The board does NOT auto-mount the activity wall — wait for the board page,
-    // then open the wall via the toggle before asserting on the list.
+    // Wait for the board page, then open the wall via the toggle (default-open
+    // is pinned off above) before asserting on the list.
     await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
     await page.locator('[data-testid="board-activity-toggle"]').click();
 

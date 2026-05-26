@@ -10,6 +10,67 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-25 (PM/EVE) — UI/Visibility/Safety FIX CAMPAIGN (orchestrated, subagent-driven)
+
+**Why:** after the governor migration shipped, the operator reported that multi-hour runs
+still left no trustworthy UI — couldn't see what agents do, communicate, their goals, or
+progress, and couldn't trust autonomous+safe operation. Mandate: fan out waves of subagents
+to FIND (adversarially, empirically) and FIX the visibility/UI/autonomy/safety defects, then
+re-run the whole audit and **iterate audit→fix until clean on all 6 dimensions**.
+
+**Fix waves shipped to `main`:**
+- **Wave 1 `6b82ba6`** — usable board: first-load auth race, blank board (baseline from `/api/status`), silent queue data-loss (request_id collisions).
+- **Wave 2 `a5bfba4`** — comms: unified 3 signal channels (files + STATUS `[SIG]` tokens + signal-type findings) into one live list; new `/coordination` view (who's-working-what, claims & contention, handoffs); SECURITY `_defang_sig_text` for SIG-token injection.
+- **Wave 3 `7efb4b6`** — autonomy/safety: lane liveness→DEAD/EXITED pill; PID files + auto-started lane-health watchdog; `GET /api/v1/alerts`; per-lane `consecutive_denies`; governor fail-closed on unknown tools (inert allowlist) + WebFetch host allowlist (`governor-hosts.txt`); REAL control-mode gating (read-only default); kill-switch; bounded default-OFF auto-recovery supervisor.
+- **Wave 4 `c8153a3`** — cleanup/coverage: real-tmux test tier unlocked (scripts/ symlink fixture); dead `dashboard.js` removed; config-driven lane/phase maps; shared `signal_grammar.py`; atomic_close.py id hardening; fake-mode session persistence; live-SSE xfail re-diagnosed (httpx ASGITransport buffering, not the emitter).
+
+**Re-audit Round 1 (6 blind adversarial agents) → Fix Round 1 `d55784c`:** the four green waves
+still had real defects in every dimension, incl. TWO security holes a `chromium-board`-only gate
+missed. Fixed + verified against the FULL Playwright matrix + isolated tier + deterministic
+security sweeps:
+- SEC: governor fail-open on Bash write/exfil heads (`cp ~/.ssh/id_rsa`, `tee`, `ln -s`, `truncate`, `touch`, `mkdir`, `mv` → now DENY; in-scope still allowed; floors non-overridable).
+- SEC: auth gate inverted to DENY-BY-DEFAULT (was allowlist leaving `/state`/`/config`/`/findings`/`/events`/mutations open + CSRF token handed out unauth).
+- SEC: signal `[SIG from=X]` bound to the owning STATUS row (anti-spoof: `claimed_from`/`from_unverified`).
+- board honors STATUS `working:<id>` unconditionally (no more completed-task-as-goal / IDLE-while-working / narrator dependency).
+- signals live on ALL 3 channels (activity-wall emits finding + STATUS-note as `type:signal`).
+- activity-wall heartbeat watchdog + snapshot backfill (SSE blip no longer silently drops events).
+- reauth modal + v92 paste-token modal made NON-modal (`show()` not `showModal()`) so a 401 doesn't brick the SPA; data pages migrated to `authedFetch`.
+- CI made functional (was 0-green in ~48 runs: dropped never-scheduling macOS job, bounded Playwright); dead SR-3 subscriber-lock test fixed; ~20 e2e specs reconciled to the tightened gate.
+- Result: pytest 1473 / chromium matrix 118-0 / governor+auth security sweeps PASS / ruff+vulture clean.
+
+**Re-audit Round 2 (6 blind agents):** **Goals/progress: MET. UI integrity: MET.** No blocking
+security holes remain (governor passed a brutal blind sweep; auth deny-by-default on all 26 routes;
+control-mode gating authoritative; auto-recovery default-OFF+bounded). Comms/Live/Safety/Coverage
+**PARTIAL** with bounded findings, incl. bugs in the R1 fixes themselves:
+- Comms: sender-spoof BYPASS (token after the row's closing `|` escapes the anchor → falls back to spoofed `claimed_from`); `from_unverified` computed but never rendered; live status-note events collide on a constant key (all but last dropped).
+- Live: pipeline excellent when open, but wall ships CLOSED (default-open helper is dead code) and its toggle is buried under the alert-banner stack (z-1500) whenever a lane is stale; ~16s to surface a disconnect.
+- Safety: `DELETE /api/v1/fleet` + legacy mutation POSTs lack the `X-CSRF-Token` check (SameSite=Strict-mitigated, not blocking).
+- Coverage/CI: JS unit tier (10 files) not run by CI (only 1 of 10 via npm script); webkit-board genuinely flaky (seedNarrative→SSE timing race; chromium 100% stable).
+
+**Fix Round 2 `3b1f916` (4 file-disjoint agents, SHIPPED):** closed the four PARTIAL findings + the
+bugs the re-audit found in the R1 fixes:
+- SEC sender-bind: line-anchored binder (`_owning_lane_on_line` + `_STATUS_LINE_LANE_RE` anchored on line START `^\|`) in BOTH `server.py` and `activity_wall.py`; precedence orch-label → span → line-fallback → **fail-closed `LANE-UNKNOWN`+`from_unverified`**. Forged `claimed_from` is never authoritative. Curl-proofed: a `[SIG from=LANE-A]` after a `LANE-C` row's closing pipe → `from_lane=LANE-C, claimed_from=LANE-A, from_unverified=true`.
+- Live status-note collision: every event carries a unique `status-note-<idx>` in `id`/`payload.id`/`payload.filename`; FE keys id-first (`id||filename`). Comms-FE renders a `⚠ unverified` badge (row + drawer) on `from_unverified`.
+- SEC CSRF (defense-in-depth): `_csrf_or_403` on `DELETE /api/v1/fleet` + 10 legacy mutation POSTs. Curl-proofed: no token → 403, valid → 200.
+- Live front-door: alert-banner converted from a fixed right-overlay to an in-flow element below the header (structurally can't cover toggle/nav/kill-switch); activity-wall default-OPEN (only explicit `'0'` suppresses); disconnect surfaces in ~2.5s via a dedicated timer alongside the heartbeat watchdog; board right-gutter + panel-top anchoring on open.
+- Coverage/CI: full `node --test ui/tests/unit/**` (10 files / 61 tests) wired into CI; webkit-board de-flaked via `republishUntil` + token-wait in `_helpers.ts`.
+- **Authoritative gate (all green):** pytest non-isolated **1480/0** · chromium matrix **127/0/7** (clean, no contention) · isolated real-tmux tier **15/0** (SR-3) · `node --test` **61/0** · ruff + vulture clean · governor deny/allow sweep 6/6+4/4 · auth-gate curl sweep (public 200, `/api/**` 401, `DELETE /fleet` 401). webkit-board 92/1 — the 1 is the documented `tasks_page:97` load-contention flake (passes in isolation; non-blocking in CI).
+- **Combined security+quality review: no blocking issues.** Three NON-BLOCKING items routed to the Round-3 backlog (below).
+
+**Round-3 backlog (from the R2 review — non-blocking, deferred to a possible Round 3):**
+1. **CSRF parity gap** — R2 protected the legacy POST aliases but the canonical `/api/v1/{signal,reclaim,challenge,mission-status,inject-task}`, `/api/v1/lane/{lane}/followup`, `/api/lanes/{lane}/reclaim` still lack `_csrf_or_403`. SameSite=Strict-mitigated (defense-in-depth inconsistency, not an auth bypass). Apply `_csrf_or_403` uniformly.
+2. **Anti-spoof depth limit** — line-binding defeats the trailing-pipe/in-cell vector, but an attacker with DIRECT STATUS.md write can forge a whole well-formed foreign row (attributed with no unverified flag). Root cause: no per-lane STATUS file ownership. Separate hardening item, never in R2 scope.
+3. Add dedicated negative 403 tests for the 10 newly CSRF-protected endpoints (happy-path covered; missing-token path not).
+
+**Stop point:** per operator directive, work paused after Fix Round 2 was committed + pushed + docs updated. **Re-audit Round 3 (6 blind agents → iterate until all 6 MET) deferred to next session if pursued.**
+
+**Regression-test posture:** every fix wave is TDD/subagent-driven with per-wave review + a full
+integrated gate (pytest non-isolated, isolated/real-tmux, full Playwright matrix, ruff, vulture,
+deterministic security curl/governor sweeps). Process lesson logged: gating only `chromium-board`
+hid a UI-bricking regression + whole red e2e projects — the authoritative gate now runs the full matrix.
+
+---
+
 ## 2026-05-25 (PM) — Phase 5: governor-migration documentation pass (Task 5.1)
 
 **What:** Reconciled the docs to the implemented governor-hook reality (no code change).

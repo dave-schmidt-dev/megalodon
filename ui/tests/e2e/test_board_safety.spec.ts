@@ -19,9 +19,16 @@
 // test does not actually tear down the shared worker server.
 
 import { test, expect, Page } from '@playwright/test';
-import { readUiToken } from './_helpers';
+import { readUiToken, republishUntil } from './_helpers';
 
 async function gotoBoard(page: Page, token: string): Promise<void> {
+  // The activity wall now auto-opens on mount (default-open). Its fixed panel
+  // sits top-right and would overlap the header controls this spec exercises
+  // (kill-switch). This spec is about safety controls, not the wall, so pin the
+  // wall CLOSED before the SPA boots to keep the header controls clickable.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('megalodon.activityWall.open', '0'); } catch (_) { /* ignore */ }
+  });
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
@@ -116,17 +123,28 @@ test.describe('Wave 3: board safety UI', () => {
     await stubAlerts(page, []);
     await gotoBoard(page, token);
 
-    await seedNarrative(page, { C: laneC({ liveness: 'dead' }) });
     const dead = page.locator('[data-testid="board-liveness-C"]');
+    // Re-publish until the board's narrative SSE subscription is live and the
+    // DEAD pill renders (closes the seed→subscribe race; see republishUntil).
+    await republishUntil(
+      () => seedNarrative(page, { C: laneC({ liveness: 'dead' }) }),
+      async () => (await dead.isVisible()) && (await dead.textContent())?.trim() === 'DEAD',
+    );
     await expect(dead).toBeVisible({ timeout: 8_000 });
     await expect(dead).toHaveText('DEAD');
 
     // Flip to "exited" → muted EXITED pill.
-    await seedNarrative(page, { C: laneC({ liveness: 'exited' }) });
+    await republishUntil(
+      () => seedNarrative(page, { C: laneC({ liveness: 'exited' }) }),
+      async () => (await dead.textContent())?.trim() === 'EXITED',
+    );
     await expect(dead).toHaveText('EXITED', { timeout: 8_000 });
 
     // Flip to "running" → pill hidden.
-    await seedNarrative(page, { C: laneC({ liveness: 'running' }) });
+    await republishUntil(
+      () => seedNarrative(page, { C: laneC({ liveness: 'running' }) }),
+      async () => !(await dead.isVisible()),
+    );
     await expect(dead).not.toBeVisible({ timeout: 8_000 });
   });
 

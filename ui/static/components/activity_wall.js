@@ -74,6 +74,13 @@ const MAX_DOM_ROWS = 500;
 const HEARTBEAT_GRACE_MULTIPLIER = 2.5;
 const DEFAULT_HEARTBEAT_SECONDS = 15;
 
+// Disconnect-latency fix: a dead feed must LOOK dead within a couple seconds,
+// not after the full heartbeat grace (2.5 × 15s ≈ 37s). The heartbeat watchdog
+// still owns the heavier reconnect+backfill at the longer grace, but a separate
+// short timer flips the VISIBLE "Disconnected — retrying" state quickly so a
+// frozen feed is never mistaken for "quiet". Reset on every byte of traffic.
+const DISCONNECT_SURFACE_MS = 2_500;
+
 // I3: how close to the top counts as "at the top" for auto-scroll. A small
 // slack absorbs sub-pixel rounding and a reader sitting on the newest row.
 const NEAR_TOP_PX = 8;
@@ -105,6 +112,20 @@ export function activityWallShouldDefaultOpen() {
 
 function _persistOpenState(open) {
   try { localStorage.setItem(AW_OPEN_KEY, open ? '1' : '0'); } catch (_) { /* ignore */ }
+}
+
+/**
+ * Persist the operator's open/closed choice (I1). Exported so board.js — the
+ * only code that can distinguish an explicit toggle-CLOSE from a navigate-away
+ * teardown — can record a deliberate close. The component persists only "open"
+ * on mount (see cleanup() note), so without this an operator who closes the
+ * wall would see it re-open every mount. board.js calls
+ * persistActivityWallOpenState(false) on toggle-close.
+ *
+ * @param {boolean} open
+ */
+export function persistActivityWallOpenState(open) {
+  _persistOpenState(open);
 }
 
 /** Filter chip labels → event type values (null = "All") */
@@ -536,6 +557,10 @@ export function createActivityWall({ container }) {
   // snapshot backfill to fill the gap the browser's silent auto-reconnect left.
   /** @type {ReturnType<typeof setTimeout>|null} */
   let heartbeatTimer = null;
+  // Short timer that surfaces the visible "disconnected" state quickly (see
+  // DISCONNECT_SURFACE_MS) — independent of the longer heartbeat/reconnect grace.
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let disconnectSurfaceTimer = null;
   let needsBackfillOnOpen = false;
   /** @type {() => void} */
   let offReauth = () => {};
@@ -911,6 +936,34 @@ export function createActivityWall({ container }) {
     }
   }
 
+  function _clearDisconnectSurfaceTimer() {
+    if (disconnectSurfaceTimer !== null) {
+      clearTimeout(disconnectSurfaceTimer);
+      disconnectSurfaceTimer = null;
+    }
+  }
+
+  /**
+   * (Re)arm the short disconnect-surface timer. If no traffic arrives within
+   * DISCONNECT_SURFACE_MS the feed is presumed silently stalled, so flip the
+   * VISIBLE state to disconnected promptly — well before the longer heartbeat
+   * watchdog forces the reconnect+backfill. Only touches the status bar; the
+   * heartbeat watchdog still owns the reconnect. Reset on every byte (open +
+   * every message/keepalive).
+   */
+  function _armDisconnectSurfaceTimer() {
+    _clearDisconnectSurfaceTimer();
+    if (disposed) return;
+    disconnectSurfaceTimer = setTimeout(() => {
+      if (disposed) return;
+      // Only surface; do not tear down. If the stream is actually alive the
+      // next byte re-arms and setConnState('connected') will hide this again.
+      if (statusBar.dataset.state !== 'disconnected') {
+        setConnState('disconnected');
+      }
+    }, DISCONNECT_SURFACE_MS);
+  }
+
   /**
    * (Re)arm the liveness watchdog (bug R5). Called on open and on every SSE
    * message — any received byte resets the clock. If the grace window elapses
@@ -919,6 +972,10 @@ export function createActivityWall({ container }) {
    * backfills the gap via fetchSnapshot().
    */
   function _armHeartbeatWatchdog() {
+    // Any traffic also re-arms the short disconnect-surface timer (they share
+    // "reset on every byte" semantics): a live stream keeps the visible state
+    // green; silence flips it to disconnected within DISCONNECT_SURFACE_MS.
+    _armDisconnectSurfaceTimer();
     _clearHeartbeatTimer();
     if (disposed) return;
     const cfg = store.get('config') || {};
@@ -944,6 +1001,7 @@ export function createActivityWall({ container }) {
     if (disposed) return;
     _clearReconnectTimer();
     _clearHeartbeatTimer();
+    _clearDisconnectSurfaceTimer();
     setConnState('disconnected');
     const delay = Math.min(reconnectDelay, RECONNECT_MAX_MS);
     reconnectTimer = setTimeout(async () => {
@@ -1051,6 +1109,7 @@ export function createActivityWall({ container }) {
     // only "open" on mount and default to open (see activityWallShouldDefaultOpen).
     _clearReconnectTimer();
     _clearHeartbeatTimer();
+    _clearDisconnectSurfaceTimer();
     try { offReauth(); } catch (_) {}
     if (es) {
       try { es.close(); } catch (_) {}

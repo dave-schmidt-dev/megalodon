@@ -44,6 +44,13 @@ test.describe('Tasks page — kanban by phase (T3.9)', () => {
     await expect(execCol.locator('[data-testid^="task-card-"]').first()).toBeVisible();
   });
 
+  // ------------------------------------------- case 1b: root testid parity
+  test('tasks page exposes a tasks-page root testid (instrumentation parity)', async ({ page }) => {
+    // Matches the *-page convention of board/findings/etc. so harnesses can
+    // assert "on the tasks page" the same way they assert "on the board".
+    await expect(page.locator('[data-testid="tasks-page"]')).toBeVisible({ timeout: 10_000 });
+  });
+
   // ------------------------------------------------------------------ case 2
   test('card click opens detail drawer; ESC closes it', async ({ page }) => {
     // Click the first visible task card.

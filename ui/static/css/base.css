@@ -318,6 +318,21 @@ body {
 .signals-source--status-note { color: var(--sev-minor); }
 .signals-source--finding { color: var(--sev-major); }
 
+/* ---------- Anti-spoof "unverified sender" badge ---------------------------- */
+/* Shown when the BE flags a signal `from_unverified` — i.e. a `[SIG from=X]`
+ * token was found in a row that isn't X's (forged / unverifiable sender). The
+ * operator must SEE that the sender couldn't be verified, so this badge is high
+ * contrast (the blocking severity color). Hover/tooltip carries the claimed
+ * sender. */
+.signals-unverified-badge {
+  background: var(--sev-blocking);
+  border: 1px solid var(--sev-blocking);
+  color: var(--bg);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
 /* ---------- Coordination page ----------------------------------------------- */
 .coordination-page .card { padding: var(--sp-3, 12px); }
 .coordination-page [data-testid^="coordination-claim-"][data-contested="true"] {

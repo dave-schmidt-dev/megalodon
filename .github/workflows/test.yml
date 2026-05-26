@@ -52,6 +52,15 @@ jobs:
         if: hashFiles('package-lock.json') != ''
         run: npm ci
 
+      # JS unit tier (node:test). Runs the whole ui/tests/unit dir, not just the
+      # config loader -- signal_filename_parse (sender_lane parsing) and
+      # store_nested_notify have no other coverage anywhere in CI. Node is already
+      # set up above for Playwright; no extra install is needed. The quoted glob
+      # is required because `node --test <dir>` resolves the dir as a module on
+      # Node >=22 instead of discovering test files.
+      - name: JS unit tests (node:test)
+        run: node --test "ui/tests/unit/**/*.test.js"
+
       # Use the pyproject `test` extra as the single source of test deps so CI
       # and the local preflight (`uv run --extra test pytest ...`) cannot drift.
       # A hand-maintained `--with` list previously dropped freezegun, breaking

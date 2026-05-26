@@ -65,10 +65,15 @@ async function mountWallWithSnapshot(page: Page, testInfo: TestInfo, events: unk
   });
 
   const token = readUiToken(testInfo);
+  // Activity wall now auto-opens on mount (default-open). This spec toggles it
+  // open explicitly, so pin the preference CLOSED before the SPA boots.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('megalodon.activityWall.open', '0'); } catch (_) { /* ignore */ }
+  });
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
-  // Open the wall via the board toggle (it is not auto-mounted).
+  // Open the wall via the board toggle (default-open is pinned off above).
   await page.locator('[data-testid="board-activity-toggle"]').click();
   await expect(page.locator('[data-testid="activity-wall-root"]')).toBeVisible({ timeout: 5_000 });
 }

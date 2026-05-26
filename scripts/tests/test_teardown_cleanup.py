@@ -221,6 +221,8 @@ async def test_http_teardown_cleans_approval_rules(tmp_path: Path, monkeypatch):
                 json={"token": TOKEN},
             )
             assert auth_resp.status_code == 200
+            # DELETE /api/v1/fleet is now CSRF-protected; attach the token.
+            client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
 
             # Call DELETE /api/v1/fleet with the session cookie
             delete_resp = await client.delete(
@@ -264,6 +266,8 @@ async def test_http_teardown_cleans_inject_logs(tmp_path: Path, monkeypatch):
                 json={"token": TOKEN},
             )
             assert auth_resp.status_code == 200
+            # DELETE /api/v1/fleet is now CSRF-protected; attach the token.
+            client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
 
             # Call DELETE
             delete_resp = await client.delete(
@@ -314,6 +318,8 @@ async def test_http_teardown_cleans_both_artifacts(tmp_path: Path, monkeypatch):
                 json={"token": TOKEN},
             )
             assert auth_resp.status_code == 200
+            # DELETE /api/v1/fleet is now CSRF-protected; attach the token.
+            client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
 
             # Delete
             delete_resp = await client.delete(
@@ -354,6 +360,8 @@ async def test_http_teardown_idempotent(tmp_path: Path, monkeypatch):
                 json={"token": TOKEN},
             )
             assert auth_resp.status_code == 200
+            # DELETE /api/v1/fleet is now CSRF-protected; attach the token.
+            client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
 
             # First delete
             delete_resp1 = await client.delete(
@@ -401,6 +409,8 @@ async def test_http_teardown_preserves_other_files(tmp_path: Path, monkeypatch):
                 json={"token": TOKEN},
             )
             assert auth_resp.status_code == 200
+            # DELETE /api/v1/fleet is now CSRF-protected; attach the token.
+            client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
 
             # Delete
             delete_resp = await client.delete(

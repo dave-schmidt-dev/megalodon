@@ -126,6 +126,35 @@ _STATUS_ROW_LANE_RE = re.compile(
 #: Orchestrator-origin sender labels (server-written tokens; trusted).
 _ORCH_SENDER_LABELS = frozenset({"ORCHESTRATOR", "ORCH", "LANE-ORCH"})
 
+# A STATUS table LINE's leading lane cell: ``| <lane> | ...`` — NOT anchored on
+# the row's closing pipe. Mirrors server.py ``_STATUS_LINE_LANE_RE`` so a forged
+# ``[SIG ...]`` token appended AFTER the row's closing ``|`` still binds to the
+# owning lane (anti-spoof, trailing-pipe bypass).
+_STATUS_LINE_LANE_RE = re.compile(r"^\|\s*(?P<lane>[A-Z][A-Z0-9\- ]*?)\s*\|")
+
+
+def _owning_lane_on_line(text: str, pos: int) -> str | None:
+    """Owning lane of the STATUS table LINE that offset *pos* sits on.
+
+    Mirrors server.py ``_owning_lane_on_line``: binds a token to the lane named
+    in the first cell of its physical line (a line starting with ``|``), so an
+    attacker appending a forged ``[SIG ...]`` token AFTER the row's closing
+    ``|`` cannot escape sender binding. ``None`` if the line is not a table line
+    or names no lane (header row).
+    """
+    line_start = text.rfind("\n", 0, pos) + 1
+    line_end = text.find("\n", pos)
+    if line_end == -1:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    m = _STATUS_LINE_LANE_RE.match(line)
+    if not m:
+        return None
+    lane_label = (m.group("lane") or "").strip()
+    if lane_label.lower() == "lane":  # header row
+        return None
+    return lane_label
+
 
 def _parse_lane_from_filename(name: str) -> str | None:
     """Extract single-letter lane short from a finding/signal filename stem.
@@ -588,13 +617,19 @@ class ActivityWall:
             return None
 
         events: list[dict] = []
-        for m in _SIG_TOKEN_RE.finditer(text):
+        for idx, m in enumerate(_SIG_TOKEN_RE.finditer(text)):
             from_raw = (m.group(1) or "").strip()
             to_raw = (m.group(2) or "").strip()
             sig_text = (m.group(3) or "").strip()
             claimed_from = _normalize_lane_label(from_raw, "LANE-UNKNOWN")
             to_lane = _normalize_lane_label(to_raw, "LANE-ALL")
+            # Prefer the precise closing-pipe-anchored span; fall back to the
+            # lane named on the token's physical line so a forged token appended
+            # AFTER the row's closing ``|`` (which breaks the span anchor) still
+            # binds (anti-spoof, trailing-pipe bypass). Mirrors server.py.
             owning_label = _owning_lane_for(m.start())
+            if owning_label is None:
+                owning_label = _owning_lane_on_line(text, m.start())
             owning_lane = (
                 _normalize_lane_label(owning_label, "LANE-UNKNOWN")
                 if owning_label is not None
@@ -604,7 +639,9 @@ class ActivityWall:
             if from_raw.upper() in _ORCH_SENDER_LABELS:
                 from_lane = "LANE-ORCH"
             elif owning_lane is None:
-                from_lane = claimed_from
+                # Token on NO recognizable STATUS line — claimed sender is
+                # attacker-controllable; fail closed, never trust it.
+                from_lane = "LANE-UNKNOWN"
                 from_unverified = True
             else:
                 from_lane = owning_lane
@@ -616,14 +653,22 @@ class ActivityWall:
             # STATUS.md with the same tokens does not re-emit, but a genuinely new
             # token (different text/target) does.
             identity = f"{from_lane}|{to_lane}|{sig_text}"
+            # Unique per-token id so concurrent status-note signals don't collide
+            # on the FE (which keys live signals on ``filename || id``). The
+            # ordinal index keeps it stable across re-polls of the same file yet
+            # distinct across different tokens. ``filename`` carries the same
+            # unique value (server.py contract: ``status-note-<idx>``).
+            note_id = f"status-note-{idx}"
             events.append(
                 {
                     "type": "signal",
+                    "id": note_id,
                     "lane": from_lane,
                     "ts": ts,
                     "summary": f"{from_lane}→{to_lane}: {topic}"[:200],
                     "payload": {
-                        "filename": "status-note",
+                        "id": note_id,
+                        "filename": note_id,
                         "from_lane": from_lane,
                         "claimed_from": claimed_from,
                         "from_unverified": from_unverified,

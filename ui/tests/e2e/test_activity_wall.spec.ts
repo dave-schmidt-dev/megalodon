@@ -62,13 +62,19 @@ function writeFixtureSignal(
  */
 async function authenticateAndGotoGrid(page: Page, testInfo: TestInfo) {
   const token = readUiToken(testInfo);
+  // Activity wall now auto-opens on mount when no preference is stored. This
+  // spec drives the open TOGGLE explicitly, so pin the preference CLOSED before
+  // the SPA boots; the toggle-to-open below then behaves as written.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('megalodon.activityWall.open', '0'); } catch (_) { /* ignore */ }
+  });
   // Pass the token in the URL hash — index.html's auth bootstrap exchanges it.
   await page.goto(`/#t=${token}`);
   // Wait for hash to be stripped (auth bootstrap calls history.replaceState).
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   // Wait for the board page to render.
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
-  // The board does NOT auto-mount the activity wall — open it via the toggle.
+  // Default-open is pinned off above — open the wall via the toggle.
   await page.locator('[data-testid="board-activity-toggle"]').click();
   // Activity wall root is present once the component mounts.
   await expect(page.locator('[data-testid="activity-wall-root"]')).toBeVisible({ timeout: 5_000 });

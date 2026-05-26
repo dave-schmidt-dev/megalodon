@@ -75,18 +75,22 @@ async function authenticateAndGotoGrid(
   testInfo: import('@playwright/test').TestInfo,
 ): Promise<void> {
   const token = readUiToken(testInfo);
+  // Activity wall now auto-opens on mount when no preference is stored. This
+  // helper drives the open TOGGLE explicitly, so pin the preference CLOSED
+  // before the SPA boots; the toggle-to-open below then behaves as written.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('megalodon.activityWall.open', '0'); } catch (_) { /* ignore */ }
+  });
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
   // The chromium-board project runs every board spec sequentially against ONE
   // shared server (workers:1), so STATUS-STALE alert banners raised by earlier
-  // specs can still be on screen. The banner stack is a fixed, top-right
-  // overlay (alert_banner.js: position:fixed; z-index:1500) that can sit over
-  // the activity toggle and intercept its click. Dismiss any present banners
-  // first so the toggle is reachable. (In the product the operator dismisses
-  // them the same way — this is not a layout bug.)
+  // specs can still be on screen. The banner stack is now an IN-FLOW element
+  // (front-door fix) that no longer overlaps the activity toggle, but dismissing
+  // any present banners first keeps the page tidy and is harmless.
   await dismissAlertBanners(page);
-  // The board does NOT auto-mount the activity wall — open it via the toggle.
+  // Open the activity wall via the toggle (default-open is pinned off above).
   await page.locator('[data-testid="board-activity-toggle"]').click();
   await expect(page.locator('[data-testid="activity-wall-root"]')).toBeVisible({ timeout: 5_000 });
 }

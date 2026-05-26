@@ -81,21 +81,33 @@ function alertKey(a) {
  * }}
  */
 export function createAlertBanner({ onNavigate } = {}) {
-  // Pinned top-right stack. data-board-modal so the board's cleanup sweep can
-  // remove it if the page is torn down without an explicit cleanup() call.
+  // IN-FLOW stack (front-door fix). Previously this was a body-level
+  // `position: fixed; top: 64px; right: 12px` overlay, which physically covered
+  // and intercepted pointer events on the header bar — the `activity ▸` toggle
+  // (the only control that opens the activity wall), the `mission` /
+  // `approval-rules` nav links, and the `board-kill-switch`. A right-aligned
+  // fixed overlay covers right-aligned header controls at ANY top offset, so we
+  // render the stack in normal document flow instead: the caller (board.js)
+  // inserts it BELOW the header controls (after the mission header / alarm
+  // strip), where it can never overlap them. Cards stay clickable (they
+  // deep-link to lanes); they simply sit in the content column rather than
+  // floating over the chrome.
+  //
+  // data-board-modal so the board's cleanup sweep can remove it if the page is
+  // torn down without an explicit cleanup() call.
   const stack = el("div", {
     "data-testid": "alert-banner-stack",
     "data-board-modal": "true",
     style: [
-      "position: fixed;",
-      "top: 64px;",
-      "right: var(--sp-3, 12px);",
-      "z-index: 1500;",
       "display: flex;",
       "flex-direction: column;",
       "gap: var(--sp-2, 8px);",
-      "max-width: 360px;",
-      "pointer-events: none;",
+      "width: 100%;",
+      "max-width: 480px;",
+      "margin-left: auto;", // right-align the stack within the content column
+      // pointer-events: auto on the container is fine now — it occupies its own
+      // flow box and never overlaps the header. Cards remain individually
+      // clickable.
     ].join(" "),
   });
 

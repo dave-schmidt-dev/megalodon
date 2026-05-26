@@ -14,6 +14,13 @@ import { readUiToken } from './_helpers';
 
 async function authenticateAndGotoBoard(page: Page, testInfo: TestInfo): Promise<void> {
   const token = readUiToken(testInfo);
+  // The activity wall now AUTO-OPENS on board mount when no preference is stored
+  // (default-open). This spec drives the open/close TOGGLE explicitly, so pin
+  // the preference to CLOSED before the SPA boots; the toggle-to-open flow below
+  // then behaves as written.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('megalodon.activityWall.open', '0'); } catch (_) { /* ignore */ }
+  });
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
@@ -46,6 +53,15 @@ test('activity wall: shows a disconnected/reconnecting state when the SSE drops'
 });
 
 test('activity wall: recovers to connected + hides status when the SSE is restored', async ({ page }, testInfo) => {
+  // The recovery path waits out the component's capped exponential reconnect
+  // backoff (activity_wall.js _scheduleReconnect: 500ms doubling to a 30s cap).
+  // While the SSE is blocked the delay climbs, so after restoring the stream the
+  // next reconnect attempt can be several seconds out — on WebKit's slower
+  // fetch+EventSource handshake this regularly exceeded the original 15s wait
+  // (the dominant non-seed webkit-board flake here). Give the recovery a budget
+  // that comfortably covers a backed-off reconnect without bumping into the
+  // default 30s per-test cap (earlier setup waits already consume ~16s).
+  test.setTimeout(45_000);
   // Start by aborting the SSE, then later allow it through to prove recovery.
   let blockSse = true;
   await page.route('**/api/v1/activity-wall', async (route) => {
@@ -64,7 +80,8 @@ test('activity wall: recovers to connected + hides status when the SSE is restor
   await expect(status).toBeVisible({ timeout: 8_000 });
 
   // Restore the stream; the capped backoff reconnect must re-open and the
-  // status bar must hide (connected).
+  // status bar must hide (connected). Allow up to the 30s backoff cap plus the
+  // re-open handshake so a backed-off WebKit reconnect is not raced.
   blockSse = false;
-  await expect(status).toBeHidden({ timeout: 15_000 });
+  await expect(status).toBeHidden({ timeout: 33_000 });
 });

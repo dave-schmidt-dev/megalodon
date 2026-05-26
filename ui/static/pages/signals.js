@@ -289,6 +289,20 @@ export async function render(root, _params) {
       cls: "mono text-muted signals-drawer__topic",
       text: ` · ${parsed.topic}`,
     }));
+    // Anti-spoof: mirror the row's unverified warning in the drawer header.
+    if (sig.from_unverified) {
+      const claimed = String(sig.claimed_from || parsed.sender_lane || "?");
+      drawerTitle.appendChild(el("span", {
+        cls: "signals-unverified-badge badge",
+        testid: "signals-drawer-unverified-badge",
+        text: "⚠ unverified",
+        attrs: {
+          "data-claimed-from": claimed,
+          "aria-label": `Unverified sender; claimed: ${claimed}`,
+          title: `Unverified sender — claimed: ${claimed}`,
+        },
+      }));
+    }
 
     // Populate body — textContent only; body is plain markdown text from server.
     clearChildren(drawerBody);
@@ -440,6 +454,24 @@ export async function render(root, _params) {
         });
 
         row.appendChild(sender);
+        // Anti-spoof (FE comms fix #2): a forged/unverifiable [SIG from=X] (the
+        // token claimed a sender that doesn't own the row it was found in) is
+        // flagged by the BE as `from_unverified`. Surface a clear warning badge
+        // right next to the (claimed) sender so the operator can SEE that the
+        // sender could not be verified. textContent only — zero innerHTML.
+        if (sig.from_unverified) {
+          const claimed = String(sig.claimed_from || parsed.sender_lane || "?");
+          row.appendChild(el("span", {
+            cls: "signals-unverified-badge badge",
+            testid: "signal-unverified-badge",
+            text: "⚠ unverified",
+            attrs: {
+              "data-claimed-from": claimed,
+              "aria-label": `Unverified sender; claimed: ${claimed}`,
+              title: `Unverified sender — claimed: ${claimed}`,
+            },
+          }));
+        }
         row.appendChild(arrow);
         row.appendChild(receiver);
         row.appendChild(dot);
@@ -500,14 +532,19 @@ export async function render(root, _params) {
   function ingestEvent(ev) {
     if (!ev || ev.type !== "signal") return;
     const p = ev.payload || {};
-    // Key on filename, falling back to the payload id for finding/status-note
-    // signals that have no on-disk file. Skip only if BOTH are absent.
-    const key = p.filename || p.id || "";
+    // Dedup key (FE comms fix #1): prefer the per-signal `id` when present, then
+    // fall back to `filename`. status-note / finding signals carry a UNIQUE `id`
+    // (the BE used to emit a CONSTANT `filename:"status-note"`, so two distinct
+    // live status-notes collided and only one rendered). File signals have no
+    // `id`, so they key on their (already-unique) filename. Skip only if BOTH
+    // are absent.
+    const key = p.id || p.filename || "";
     if (!key) return;
     const sig = {
-      // Keep `filename` populated (UI rows / read-state / dedupe use it). For
-      // id-only signals the id is a stable synthetic filename.
-      filename: p.filename || p.id || "",
+      // Keep `filename` populated (UI rows / read-state use it). For id-bearing
+      // signals (status-note/finding) the id is the stable per-row identity, so
+      // prefer it so two distinct status-notes get distinct row keys.
+      filename: p.id || p.filename || "",
       id: p.id || "",
       from_lane: p.from_lane || "",
       to_lane: p.to_lane || "",
@@ -521,6 +558,9 @@ export async function render(root, _params) {
       // as the drawer body when no fuller body is known.
       body: p.excerpt || p.body || "",
       source: p.source || "file",
+      // Anti-spoof (FE comms fix #2): surfaced as a warning badge on the row.
+      from_unverified: p.from_unverified === true,
+      claimed_from: p.claimed_from || "",
     };
     liveByFilename.set(key, sig);
   }

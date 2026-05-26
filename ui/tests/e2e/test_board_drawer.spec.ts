@@ -18,6 +18,13 @@ import { readUiToken } from './_helpers';
 // ---------------------------------------------------------------------------
 
 async function authenticateAndGotoBoard(page: Page, token: string): Promise<void> {
+  // The activity wall now auto-opens on mount (default-open). Its fixed right-
+  // side panel overlaps the terminal DRAWER (also a right-side overlay) that
+  // this spec exercises. This spec is about the terminal drawer, not the wall,
+  // so pin the wall CLOSED before the SPA boots.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('megalodon.activityWall.open', '0'); } catch (_) { /* ignore */ }
+  });
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });

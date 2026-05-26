@@ -417,6 +417,12 @@ function renderNonCanonicalPanel(rows, expanded, onToggle) {
  * @returns {Promise<() => void>} cleanup
  */
 export async function render(root, _params) {
+  // Root test sentinel, matching the *-page convention of board/findings/etc.
+  // (test-instrumentation parity). Set on the mount root once; it survives the
+  // child-clearing rerender() below. The page renders directly into `root`
+  // rather than a wrapper, so the testid lives on root itself.
+  root.setAttribute("data-testid", "tasks-page");
+
   // Loading skeleton
   const skeleton = el("div", { class: "loading-skeleton", text: "Loading tasks…" });
   root.appendChild(skeleton);

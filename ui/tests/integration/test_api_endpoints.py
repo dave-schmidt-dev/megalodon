@@ -34,8 +34,13 @@ def _auth_all(async_client_with_lifespan):
     Mint a session and attach the cookie before each test so the existing
     endpoint-behavior assertions exercise the handler (not the 401 gate). The
     gate itself is covered by test_auth_gate_enumerates_all_routes.py.
+
+    Mutation POSTs (e.g. /api/mission/flip) are now CSRF-protected
+    (defense-in-depth); attach the token as a default header too.
     """
     authenticate(async_client_with_lifespan)
+    ctx = async_client_with_lifespan._transport.app.state.megalodon
+    async_client_with_lifespan.headers["X-CSRF-Token"] = ctx.csrf_token
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"

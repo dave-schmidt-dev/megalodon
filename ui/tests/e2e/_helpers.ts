@@ -17,9 +17,59 @@
 // can ignore the async machinery.
 
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 
 import { expect, Locator, Page, TestInfo } from '@playwright/test';
+
+/**
+ * Re-publish a seeded narrative frame until the board's narrative-stream SSE
+ * subscription is live and the frame actually lands.
+ *
+ * Why this is the de-flake (the dominant webkit-board failure): the fake
+ * endpoint (server.py:3020) merges the payload into `narrative_cache` AND
+ * publishes the frame to `narrative_hub`. But NarrativeHub.publish() fans out
+ * ONLY to queues subscribed *at publish time* — there is no last-frame replay on
+ * subscribe (narrator/hub.py). The board reads the cache exactly once at mount
+ * (board.js applyFrame(initial)) and thereafter re-renders only from live SSE
+ * frames. So a single seed POST that fires in the window between "board-page
+ * visible" (what the spec helpers wait on) and "the board's EventSource
+ * handshake completed + registered on the hub" publishes to ZERO subscribers and
+ * is silently lost; the row keeps the fixture's warm-up content. WebKit's slower
+ * EventSource handshake lands inside that window far more often than Chromium —
+ * hence "stable on chromium, flaky on webkit".
+ *
+ * `republishUntil` takes the spec's own one-shot `seedNarrative` (or any async
+ * publish fn) and a `probe` that resolves truthy once the seeded frame is
+ * visibly rendered. It calls the publish fn, then re-publishes on a short
+ * interval until `probe` passes or the deadline elapses. Re-publishing is
+ * idempotent (each POST re-merges the same payload and re-emits the full cache),
+ * so once the board is subscribed the next emit renders the frame. This is
+ * test-only and product-neutral: it changes no behaviour and weakens no
+ * assertion — the spec still asserts the real rendered condition afterwards.
+ * If the deadline elapses it simply returns, letting the spec's own `expect()`
+ * report the genuine failure with its normal diagnostics.
+ */
+export async function republishUntil(
+  publish: () => Promise<void>,
+  probe: () => Promise<boolean | undefined>,
+  { timeout = 8_000, interval = 300 }: { timeout?: number; interval?: number } = {},
+): Promise<void> {
+  await publish();
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    let ok: boolean | undefined = false;
+    try {
+      ok = await probe();
+    } catch {
+      ok = false;
+    }
+    if (ok) return;
+    if (Date.now() >= deadline) return;
+    await new Promise((r) => setTimeout(r, interval));
+    await publish();
+  }
+}
 
 // Mirrors the `fixtures` object in playwright.config.ts. Update both if you
 // add a project.
@@ -48,9 +98,56 @@ export function fixtureRootForProject(testInfo: TestInfo): string {
   return path.join('/tmp/m', label);
 }
 
+/**
+ * Read `.fleet/ui.token` for the project's fixture, waiting for the file to
+ * exist if it is not yet present.
+ *
+ * Why the wait: Playwright's `webServer` gate only proves the TCP listener is
+ * accepting connections (the fd is bound in __main__.py step 6, BEFORE uvicorn
+ * starts serving and BEFORE the bearer token is written in step 9). The token
+ * is written to disk a short moment after the port opens, so a spec that reads
+ * the token the instant the server is "ready" can lose the race and hit
+ * `ENOENT: .fleet/ui.token`. This was the dominant webkit-board flake: the
+ * WebKit browser launch path hits the helper at a slightly different phase of
+ * server startup than chromium, so on WebKit the read frequently outran the
+ * write while chromium happened to read after it (hence "stable on chromium").
+ *
+ * This is a test-only, additive wait: it changes no product behaviour and no
+ * assertion — it just blocks until the token the server is about to write is
+ * actually on disk, then returns it verbatim. Kept synchronous so the ~38
+ * existing `const token = readUiToken(testInfo)` call sites need no change.
+ * The bounded retry uses a sync sleep (sleep(1) subprocess) to avoid a busy
+ * spin; total budget is generous but finite so a genuinely-down server still
+ * fails loudly rather than hanging.
+ */
 export function readUiToken(testInfo: TestInfo): string {
   const tokenPath = path.join(fixtureRootForProject(testInfo), '.fleet', 'ui.token');
-  return readFileSync(tokenPath, 'utf-8').trim();
+  const deadline = Date.now() + 15_000; // generous: server token-write lags port-open by ms, not seconds
+  for (;;) {
+    try {
+      const tok = readFileSync(tokenPath, 'utf-8').trim();
+      if (tok.length > 0) return tok;
+      // File exists but is empty (atomic write briefly observable mid-rename) — retry.
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+      // Not written yet — fall through to the wait below.
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `readUiToken: ${tokenPath} not present/non-empty after 15s; ` +
+        `the webServer never wrote its bearer token (server failed to start?)`,
+      );
+    }
+    // Sync 100ms pause without a busy-spin; node:test/Playwright helpers run in
+    // worker processes so blocking here only stalls this one spec's setup.
+    try {
+      execFileSync('sleep', ['0.1'], { stdio: 'ignore' });
+    } catch {
+      // sleep unavailable (unlikely on CI ubuntu/macOS); fall back to a short busy wait.
+      const until = Date.now() + 100;
+      while (Date.now() < until) { /* spin */ }
+    }
+  }
 }
 
 /**

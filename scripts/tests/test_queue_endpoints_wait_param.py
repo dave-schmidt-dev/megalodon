@@ -64,6 +64,9 @@ async def async_client(tmp_path, monkeypatch):
             client.cookies.set(
                 "mui_session", app.state.megalodon.session_store.create()
             )
+            # Mutation POSTs are now CSRF-protected (defense-in-depth); attach the
+            # token as a default header so every request carries it.
+            client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
             yield client, mission
 
 

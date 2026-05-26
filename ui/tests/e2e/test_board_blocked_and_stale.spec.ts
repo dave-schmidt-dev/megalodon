@@ -18,13 +18,20 @@
 //   to / → assert NO board-stale-modal in the DOM.
 
 import { test, expect, Page } from '@playwright/test';
-import { readUiToken } from './_helpers';
+import { readUiToken, republishUntil } from './_helpers';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
 async function authenticateAndGotoBoard(page: Page, token: string): Promise<void> {
+  // The activity wall now auto-opens on mount (default-open). Its fixed right-
+  // side panel can overlap row controls / the stale modal this spec exercises.
+  // This spec is about blocked/stale pills + modal, not the wall, so pin the
+  // wall CLOSED before the SPA boots (the init script also covers the reload).
+  await page.addInitScript(() => {
+    try { localStorage.setItem('megalodon.activityWall.open', '0'); } catch (_) { /* ignore */ }
+  });
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
@@ -110,7 +117,9 @@ test.describe('CR-4: task-blocked pill (state=blocked → BLOCKED pill)', () => 
     await authenticateAndGotoBoard(page, token);
 
     // Seed lane A with state: "blocked" (as the backend now emits for blocked tasks).
-    await seedNarrative(page, {
+    // Re-publish until the board's narrative SSE subscription is live and the
+    // BLOCKED pill renders (closes the seed→subscribe race; see republishUntil).
+    const blockedFrame = {
       A: {
         lane: 'A',
         lane_name: 'agent-a',
@@ -121,7 +130,11 @@ test.describe('CR-4: task-blocked pill (state=blocked → BLOCKED pill)', () => 
         tokens: null,
         narrator_ok: true,
       },
-    });
+    };
+    await republishUntil(
+      () => seedNarrative(page, blockedFrame),
+      async () => (await page.locator('[data-testid="board-pill-A"]').textContent())?.trim() === 'BLOCKED',
+    );
 
     // pill must be BLOCKED — task-blocked is the new source (CR-4).
     await expect(page.locator('[data-testid="board-pill-A"]'))
@@ -138,18 +151,21 @@ test.describe('CR-4: task-blocked pill (state=blocked → BLOCKED pill)', () => 
     await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 
     // Seed lane A with state: "blocked".
-    await seedNarrative(page, {
-      A: {
-        lane: 'A',
-        lane_name: 'agent-a',
-        state: 'blocked',
-        last: null,
-        now: null,
-        goal: 'blocked-goal',
-        tokens: null,
-        narrator_ok: true,
-      },
-    });
+    await republishUntil(
+      () => seedNarrative(page, {
+        A: {
+          lane: 'A',
+          lane_name: 'agent-a',
+          state: 'blocked',
+          last: null,
+          now: null,
+          goal: 'blocked-goal',
+          tokens: null,
+          narrator_ok: true,
+        },
+      }),
+      async () => (await page.locator('[data-testid="board-pill-A"]').textContent())?.trim() === 'BLOCKED',
+    );
 
     // BLOCKED wins over STALE (BLOCKED > STALE in pill precedence).
     await expect(page.locator('[data-testid="board-pill-A"]'))

@@ -50,7 +50,11 @@ import { loadConfig } from "../js/config.js";
 import { mountPage } from "../js/app.js";
 import { authedFetch, probeReauthOn401 } from "../js/auth.js";
 import { createTerminalPane } from "../components/terminal_pane.js";
-import { createActivityWall } from "../components/activity_wall.js";
+import {
+  createActivityWall,
+  activityWallShouldDefaultOpen,
+  persistActivityWallOpenState,
+} from "../components/activity_wall.js";
 import { StaleModal } from "../components/stale_modal.js";
 import { showConfirmModal } from "../components/confirm_modal.js";
 import { createAlertBanner } from "../components/alert_banner.js";
@@ -814,6 +818,11 @@ export async function render(root, _params) {
    */
   let activityPanel = null;
 
+  /** Record an explicit operator close so the wall stays closed next mount (I1). */
+  function _persistActivityWallClosed() {
+    try { persistActivityWallOpenState(false); } catch (_) { /* ignore */ }
+  }
+
   /** Dispose the activity panel if open (cleanup SSE then remove element). */
   function _closeActivityPanel() {
     if (!activityPanel) return;
@@ -822,10 +831,108 @@ export async function render(root, _params) {
       activityPanel.element.parentNode.removeChild(activityPanel.element);
     }
     activityPanel = null;
+    // Release the right gutter reserved for the open panel (see _openActivityPanel).
+    try { page.style.paddingRight = ""; } catch (_) { /* ignore */ }
+  }
+
+  /**
+   * Open the activity-wall panel (mount the wall + SSE). No-op if already open.
+   * Extracted from the toggle's onclick so it can be invoked both on click AND
+   * programmatically on mount (I1: honour the persisted "default open" choice).
+   * Persists "open" via the component's own mount-time persistence.
+   */
+  function _openActivityPanel() {
+    if (activityPanel) return;
+
+    // Close button (built before panelEl so it can be passed to el()).
+    const closeBtn = el("button", {
+      type: "button",
+      class: "button",
+      "data-testid": "board-activity-close",
+      title: "Close activity wall.",
+      style: "flex: 0 0 auto;",
+    }, "× close");
+    closeBtn.addEventListener("click", _closeActivityPanel);
+
+    // Panel header.
+    const panelHeader = el(
+      "div",
+      {
+        class: "row",
+        style: [
+          "gap: var(--sp-2);",
+          "align-items: center;",
+          "padding: var(--sp-2) var(--sp-3);",
+          "border-bottom: 1px solid var(--border);",
+          "background: var(--surface-2);",
+          "flex: 0 0 auto;",
+        ].join(" "),
+      },
+      el("span", {
+        class: "mono",
+        style: "flex: 1 1 auto; font-size: var(--fs-sm); color: var(--text);",
+      }, "Activity wall"),
+      closeBtn,
+    );
+
+    // Panel container — gives the wall a scrollable sized box mirroring grid.js.
+    const panelEl = el(
+      "div",
+      {
+        "data-testid": "board-activity-panel",
+        style: [
+          "display: flex;",
+          "flex-direction: column;",
+          "width: 320px;",
+          "min-width: 280px;",
+          "max-width: 340px;",
+          "height: calc(100vh - 180px);",
+          "max-height: 900px;",
+          "border: 1px solid var(--border);",
+          "border-radius: var(--r-1);",
+          "background: var(--surface);",
+          "position: fixed;",
+          // `top` is set dynamically below to sit BELOW the mission-header row,
+          // so the auto-opened panel never covers the activity toggle / kill-
+          // switch / nav (front-door fix). Fallback 96px = header(56)+nav(40).
+          "top: 96px;",
+          "right: var(--sp-3, 12px);",
+          "z-index: 100;",
+          "overflow: hidden;",
+        ].join(" "),
+      },
+      panelHeader,
+    );
+
+    // Mount the wall component into the panel.
+    const aw = createActivityWall({ container: panelEl });
+    panelEl.appendChild(aw.element);
+
+    document.body.appendChild(panelEl);
+    activityPanel = { element: panelEl, aw };
+
+    // Front-door fix: anchor the panel's top to the BOTTOM of the mission-header
+    // row so the fixed panel never overlaps the activity toggle / kill-switch
+    // (both right-aligned in missionHeader) or the nav above it. Without this,
+    // an auto-opened panel at a fixed top-right would intercept clicks on those
+    // controls exactly like the old alert-banner overlay did.
+    try {
+      const r = missionHeader.getBoundingClientRect();
+      const top = Math.max(96, Math.round(r.bottom) + 8);
+      panelEl.style.top = `${top}px`;
+      panelEl.style.height = `calc(100vh - ${top + 24}px)`;
+    } catch (_) { /* keep the static fallback top */ }
+
+    // The panel is a fixed top-right overlay; without reserving space it would
+    // sit OVER the right edge of every lane row and intercept clicks on the
+    // row's right-aligned controls (terminal toggle, STALE pill). Reserve a
+    // right gutter on the board page so the rows reflow narrower and their
+    // controls stay left of (and clickable beside) the panel. Removed on close.
+    try { page.style.paddingRight = "352px"; } catch (_) { /* ignore */ }
   }
 
   // Activity toggle button — placed in the header, built before missionHeader so
-  // the onclick closure can reference _closeActivityPanel / activityPanel.
+  // the onclick closure can reference _closeActivityPanel / _openActivityPanel.
   const activityToggleBtn = el("button", {
     type: "button",
     class: "button",
@@ -833,73 +940,15 @@ export async function render(root, _params) {
     title: "Toggle activity wall.",
     onclick: () => {
       if (activityPanel) {
+        // Closing via the toggle is an explicit operator choice — persist it so
+        // the wall stays closed next mount (I1). The component only persists
+        // "open" on mount; it cannot tell a toggle-close from a navigate-away
+        // teardown, so board.js records the explicit close here.
+        _persistActivityWallClosed();
         _closeActivityPanel();
         return;
       }
-
-      // Close button (built before panelEl so it can be passed to el()).
-      const closeBtn = el("button", {
-        type: "button",
-        class: "button",
-        "data-testid": "board-activity-close",
-        title: "Close activity wall.",
-        style: "flex: 0 0 auto;",
-      }, "× close");
-      closeBtn.addEventListener("click", _closeActivityPanel);
-
-      // Panel header.
-      const panelHeader = el(
-        "div",
-        {
-          class: "row",
-          style: [
-            "gap: var(--sp-2);",
-            "align-items: center;",
-            "padding: var(--sp-2) var(--sp-3);",
-            "border-bottom: 1px solid var(--border);",
-            "background: var(--surface-2);",
-            "flex: 0 0 auto;",
-          ].join(" "),
-        },
-        el("span", {
-          class: "mono",
-          style: "flex: 1 1 auto; font-size: var(--fs-sm); color: var(--text);",
-        }, "Activity wall"),
-        closeBtn,
-      );
-
-      // Panel container — gives the wall a scrollable sized box mirroring grid.js.
-      const panelEl = el(
-        "div",
-        {
-          "data-testid": "board-activity-panel",
-          style: [
-            "display: flex;",
-            "flex-direction: column;",
-            "width: 320px;",
-            "min-width: 280px;",
-            "max-width: 340px;",
-            "height: calc(100vh - 180px);",
-            "max-height: 900px;",
-            "border: 1px solid var(--border);",
-            "border-radius: var(--r-1);",
-            "background: var(--surface);",
-            "position: fixed;",
-            "top: 90px;",
-            "right: var(--sp-3, 12px);",
-            "z-index: 100;",
-            "overflow: hidden;",
-          ].join(" "),
-        },
-        panelHeader,
-      );
-
-      // Mount the wall component into the panel.
-      const aw = createActivityWall({ container: panelEl });
-      panelEl.appendChild(aw.element);
-
-      document.body.appendChild(panelEl);
-      activityPanel = { element: panelEl, aw };
+      _openActivityPanel();
     },
   }, "activity ▸");
 
@@ -1081,8 +1130,13 @@ export async function render(root, _params) {
   }
 
   // --- alert banner (polls GET /api/v1/alerts) ---
+  // Front-door fix: the banner stack renders IN-FLOW inside the board page,
+  // inserted below the mission-header controls + alarm strip (see page
+  // composition), NOT as a body-level fixed overlay. The old fixed
+  // top-right overlay physically covered and intercepted clicks on the
+  // `activity ▸` toggle, the mission/approval-rules nav links, and the
+  // kill-switch. An in-flow stack can never overlap the header chrome.
   const alertBanner = createAlertBanner({ onNavigate: navigate });
-  document.body.appendChild(alertBanner.element);
 
   async function pollAlerts() {
     if (!alive) return;
@@ -1231,9 +1285,19 @@ export async function render(root, _params) {
     },
     missionHeader,
     alarmStrip,
+    alertBanner.element,
     rowsContainer,
   );
   root.appendChild(page);
+
+  // I1: honour the persisted open/closed choice. The activity wall is the
+  // "see what agents are doing" surface; default to OPEN when no preference is
+  // stored, and re-open it on mount whenever the operator's last choice was
+  // open (or unset). Closing it via the toggle persists "closed" so it stays
+  // closed next mount. This uses the same open path the toggle uses.
+  if (activityWallShouldDefaultOpen()) {
+    _openActivityPanel();
+  }
 
   /**
    * Re-paint one lane's pill using current blocked/stale sets + narrative state.

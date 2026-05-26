@@ -133,3 +133,79 @@ test.describe('coordination view', () => {
     await expect(page.locator('[data-testid="nav-approval-rules"]')).toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// FE comms fix #2 — anti-spoof "unverified" badge on recent-handoff rows.
+//
+// The BE flags a forged/unverifiable `[SIG from=X]` with from_unverified:true
+// and reports what the token claimed in `claimed_from`. Previously no page read
+// these, so a forged sender was presented as authoritative. The coordination
+// recent-signals row now shows a "⚠ unverified" badge carrying the claimed
+// sender.
+// ---------------------------------------------------------------------------
+
+const COORDINATION_UNVERIFIED_PAYLOAD = {
+  lanes: [],
+  claims: [],
+  signals_recent: [
+    {
+      filename: 'status-note-0',
+      from_lane: 'LANE-B',        // authoritative owning lane
+      claimed_from: 'LANE-A',     // what the [SIG from=X] token claimed
+      from_unverified: true,
+      to_lane: 'LANE-C',
+      to: 'LANE-C',
+      topic: 'forged-handoff',
+      utc: '',
+      kind: 'SIGNAL',
+      body: 'A forged sender token claimed LANE-A.',
+      source: 'status-note',
+    },
+    {
+      filename: 'LANE-A-to-LANE-B-clean-handoff-2026-05-25T18-49Z.md',
+      from_lane: 'LANE-A',
+      claimed_from: 'LANE-A',
+      from_unverified: false,
+      to_lane: 'LANE-B',
+      to: 'LANE-B',
+      topic: 'clean-handoff',
+      utc: '2026-05-25T18-49Z',
+      kind: 'SIGNAL',
+      body: 'A verified handoff.',
+      source: 'file',
+    },
+  ],
+};
+
+test.describe('coordination view: anti-spoof badge', () => {
+  test('a from_unverified handoff shows the ⚠ unverified badge with the claimed sender; a verified one does not', async ({ page }, testInfo: TestInfo) => {
+    await page.route('**/api/v1/coordination', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(COORDINATION_UNVERIFIED_PAYLOAD),
+      });
+    });
+    const token = readUiToken(testInfo);
+    await page.goto(`/#t=${token}`);
+    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+    await page.goto('/coordination');
+    await expect(page.locator('[data-testid="coordination-page"]')).toBeVisible({ timeout: 10_000 });
+
+    // Exactly one signal row carries the unverified badge (the forged one).
+    const badges = page.locator('[data-testid="coordination-signal-unverified-badge"]');
+    await expect(badges).toHaveCount(1, { timeout: 8_000 });
+    await expect(badges.first()).toHaveText(/unverified/);
+    await expect(badges.first()).toHaveAttribute('data-claimed-from', 'LANE-A');
+    await expect(badges.first()).toHaveAttribute('title', /LANE-A/);
+
+    // The forged row's drawer also mirrors the badge.
+    const forgedRow = page.locator('[data-signal-filename="status-note-0"]');
+    await expect(forgedRow).toBeVisible();
+    await forgedRow.click();
+    await expect(page.locator('[data-testid="coordination-drawer"]')).toBeVisible({ timeout: 5_000 });
+    await expect(
+      page.locator('[data-testid="coordination-drawer-unverified-badge"]'),
+    ).toBeVisible();
+  });
+});

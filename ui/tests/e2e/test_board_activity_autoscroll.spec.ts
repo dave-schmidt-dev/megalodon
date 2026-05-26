@@ -30,6 +30,11 @@ function writeFinding(fixtureRoot: string, filename: string, lane: string): void
 
 async function authAndGotoBoard(page: Page, testInfo: TestInfo): Promise<void> {
   const token = readUiToken(testInfo);
+  // Activity wall now auto-opens on mount (default-open). This spec toggles it
+  // open explicitly, so pin the preference CLOSED before the SPA boots.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('megalodon.activityWall.open', '0'); } catch (_) { /* ignore */ }
+  });
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });

@@ -109,6 +109,9 @@ async def authed_teardown_client(
         ) as client:
             exch = await client.post("/api/v1/auth/exchange", json={"token": token})
             assert exch.status_code == 200, exch.text
+            # DELETE /api/v1/fleet is now CSRF-protected (defense-in-depth);
+            # attach the token as a default header for the happy-path tests.
+            client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
             yield client, app, spawner, fleet
 
 
@@ -182,3 +185,54 @@ async def test_delete_fleet_without_cookie_returns_401(fix_medium: Path, monkeyp
     assert resp.status_code == 401
     # ui.token MUST still exist — auth failed, no destructive action ran.
     assert (fleet / "ui.token").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_fleet_without_csrf_header_returns_403(authed_teardown_client):
+    """Cookie present but NO X-CSRF-Token → 403, and NO destructive action.
+
+    SECURITY (defense-in-depth): the kill-switch is cookie-gated, but a bare
+    cookie is replayable cross-site. The CSRF header (which a browser will not
+    auto-attach cross-origin) is mandatory.
+    """
+    client, app, spawner, fleet = authed_teardown_client
+    # Drop the default CSRF header the fixture set.
+    client.headers.pop("X-CSRF-Token", None)
+
+    with patch("megalodon_ui.server.tmux.kill_server", new=AsyncMock(return_value=0)):
+        resp = await client.delete("/api/v1/fleet")
+
+    assert resp.status_code == 403, resp.text
+    # Fail-closed: artifacts untouched, no shutdown requested.
+    assert (fleet / "ui.token").exists()
+    assert (fleet / "tmux.sock").exists()
+    assert (fleet / "dashboard.url").exists()
+    assert getattr(app.state, "shutdown_requested", False) is not True
+
+
+@pytest.mark.asyncio
+async def test_delete_fleet_with_wrong_csrf_header_returns_403(authed_teardown_client):
+    """Cookie present but a MISMATCHED X-CSRF-Token → 403 (timing-safe compare)."""
+    client, app, spawner, fleet = authed_teardown_client
+    client.headers["X-CSRF-Token"] = "not-the-real-token"
+
+    with patch("megalodon_ui.server.tmux.kill_server", new=AsyncMock(return_value=0)):
+        resp = await client.delete("/api/v1/fleet")
+
+    assert resp.status_code == 403, resp.text
+    assert (fleet / "ui.token").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_fleet_with_valid_csrf_header_succeeds(authed_teardown_client):
+    """Cookie + valid X-CSRF-Token → 200 and the teardown runs (control case)."""
+    client, app, spawner, fleet = authed_teardown_client
+    # Fixture already set a valid header; assert the happy path explicitly here.
+    assert client.headers.get("X-CSRF-Token") == app.state.megalodon.csrf_token
+
+    with patch("megalodon_ui.server.tmux.kill_server", new=AsyncMock(return_value=0)):
+        resp = await client.delete("/api/v1/fleet")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "shutdown"}
+    assert not (fleet / "ui.token").exists()

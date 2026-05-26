@@ -22,7 +22,7 @@
 // itself is covered by test_board_stale.spec.ts.
 
 import { test, expect, Page } from '@playwright/test';
-import { readUiToken } from './_helpers';
+import { readUiToken, republishUntil } from './_helpers';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -45,6 +45,14 @@ async function authenticateAndGotoBoard(page: Page, token: string): Promise<void
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+}
+
+/** True once board-row-<short> renders text containing `needle`. Used as the
+ *  republishUntil probe so the seed is re-emitted until the board's SSE
+ *  subscription is live and the frame lands. */
+async function rowContains(page: Page, short: string, needle: string): Promise<boolean> {
+  const txt = await page.locator(`[data-testid="board-row-${short}"]`).textContent();
+  return !!txt && txt.includes(needle);
 }
 
 /** Read the CSRF token from the page's meta tag. */
@@ -102,7 +110,7 @@ test.describe('board narrative: rows render Last/Now/Goal/tokens + pill', () => 
     await authenticateAndGotoBoard(page, token);
 
     // Distinct payloads per lane. A claimed → RUNNING; B/C → IDLE.
-    await seedNarrative(page, {
+    const frame1 = {
       A: payload({
         lane: 'A',
         lane_name: 'agent-a',
@@ -134,7 +142,13 @@ test.describe('board narrative: rows render Last/Now/Goal/tokens + pill', () => 
         tokens: null,
         narrator_ok: true,
       }),
-    });
+    };
+    // Re-publish until the board's narrative SSE subscription is live and the
+    // frame renders (closes the seed→subscribe race; see republishUntil).
+    await republishUntil(
+      () => seedNarrative(page, frame1),
+      () => rowContains(page, 'A', 'A-LAST-shipped-auth'),
+    );
 
     // ---- Lane A: claimed → RUNNING, phrase preferred over desc -------------
     const rowA = page.locator('[data-testid="board-row-A"]');
@@ -192,7 +206,7 @@ test.describe('board narrative: Last column phrase-or-desc (OQ1)', () => {
     await stubNoStaleLanes(page);
     await authenticateAndGotoBoard(page, token);
 
-    await seedNarrative(page, {
+    const frame1b = {
       // Lane A: last has a narrator phrase → phrase shown, desc NOT shown.
       A: payload({
         lane: 'A',
@@ -219,7 +233,11 @@ test.describe('board narrative: Last column phrase-or-desc (OQ1)', () => {
         tokens: 200,
         narrator_ok: true,
       }),
-    });
+    };
+    await republishUntil(
+      () => seedNarrative(page, frame1b),
+      () => rowContains(page, 'A', 'A-LAST-finished-wiring-the-banner'),
+    );
 
     // Lane A: narrator phrase wins; deterministic desc is NOT shown.
     const rowA = page.locator('[data-testid="board-row-A"]');
@@ -268,17 +286,20 @@ test.describe('board narrative: long Now phrase does not overflow the page', () 
       'P1-B-draft-filed-findings/agent-011f-B-P1-v10-refactor-scope-2026-05-25T01-42Z.md-' +
       'a-very-long-unbroken-path-segment-that-must-be-clipped-not-widen-the-whole-layout-xxxxxxxxxxxxxxxxxxxx';
 
-    await seedNarrative(page, {
-      A: payload({
-        lane: 'A',
-        lane_name: 'agent-a',
-        state: 'claimed',
-        now: { task_id: 'P1-B', desc: longPhrase, phrase: longPhrase },
-        goal: 'A-GOAL',
-        tokens: 1,
-        narrator_ok: true,
+    await republishUntil(
+      () => seedNarrative(page, {
+        A: payload({
+          lane: 'A',
+          lane_name: 'agent-a',
+          state: 'claimed',
+          now: { task_id: 'P1-B', desc: longPhrase, phrase: longPhrase },
+          goal: 'A-GOAL',
+          tokens: 1,
+          narrator_ok: true,
+        }),
       }),
-    });
+      () => rowContains(page, 'A', 'P1-B-draft-filed-findings'),
+    );
 
     const rowA = page.locator('[data-testid="board-row-A"]');
     await expect(rowA).toContainText('P1-B-draft-filed-findings', { timeout: 8_000 });
@@ -314,21 +335,29 @@ test.describe('board narrative: narrator-status-dot reflects narrator_ok', () =>
     await authenticateAndGotoBoard(page, token);
 
     const dot = page.locator('[data-testid="narrator-status-dot"]');
+    const dotIs = async (v: string): Promise<boolean> =>
+      (await dot.getAttribute('data-narrator')) === v;
 
     // Frame with lane B narrator_ok=false → dot must go offline.
-    await seedNarrative(page, {
-      A: payload({ lane: 'A', lane_name: 'agent-a', state: 'open', narrator_ok: true }),
-      B: payload({ lane: 'B', lane_name: 'agent-b', state: 'open', narrator_ok: false }),
-      C: payload({ lane: 'C', lane_name: 'agent-c', state: 'open', narrator_ok: true }),
-    });
+    await republishUntil(
+      () => seedNarrative(page, {
+        A: payload({ lane: 'A', lane_name: 'agent-a', state: 'open', narrator_ok: true }),
+        B: payload({ lane: 'B', lane_name: 'agent-b', state: 'open', narrator_ok: false }),
+        C: payload({ lane: 'C', lane_name: 'agent-c', state: 'open', narrator_ok: true }),
+      }),
+      () => dotIs('offline'),
+    );
     await expect(dot).toHaveAttribute('data-narrator', 'offline', { timeout: 8_000 });
 
     // All-ok frame → dot must return to ok.
-    await seedNarrative(page, {
-      A: payload({ lane: 'A', lane_name: 'agent-a', state: 'open', narrator_ok: true }),
-      B: payload({ lane: 'B', lane_name: 'agent-b', state: 'open', narrator_ok: true }),
-      C: payload({ lane: 'C', lane_name: 'agent-c', state: 'open', narrator_ok: true }),
-    });
+    await republishUntil(
+      () => seedNarrative(page, {
+        A: payload({ lane: 'A', lane_name: 'agent-a', state: 'open', narrator_ok: true }),
+        B: payload({ lane: 'B', lane_name: 'agent-b', state: 'open', narrator_ok: true }),
+        C: payload({ lane: 'C', lane_name: 'agent-c', state: 'open', narrator_ok: true }),
+      }),
+      () => dotIs('ok'),
+    );
     await expect(dot).toHaveAttribute('data-narrator', 'ok', { timeout: 8_000 });
   });
 

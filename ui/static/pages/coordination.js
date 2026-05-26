@@ -117,7 +117,17 @@ function signalFields(sig) {
       if (m) utc = utc || m[4];
     }
   }
-  return { from_lane: from || "?", to_lane: to || "?", topic: topic || base || "?", utc };
+  return {
+    from_lane: from || "?",
+    to_lane: to || "?",
+    topic: topic || base || "?",
+    utc,
+    // Anti-spoof: pass through the BE's forged-sender flags. `from_unverified`
+    // is set when a `[SIG from=X]` token was found in a row that isn't X's;
+    // `claimed_from` is what the token claimed (vs the authoritative from_lane).
+    from_unverified: sig.from_unverified === true,
+    claimed_from: sig.claimed_from || "",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +235,17 @@ export async function render(root, _params) {
     drawerTitle.appendChild(el("span", { style: "color: var(--text-muted);" }, " → "));
     drawerTitle.appendChild(el("span", { class: "lane-chip" }, f.to_lane));
     drawerTitle.appendChild(el("span", { class: "mono text-muted", style: "margin-left: 6px;" }, `· ${f.topic}`));
+    if (f.from_unverified) {
+      const claimed = f.claimed_from || f.from_lane || "?";
+      drawerTitle.appendChild(el("span", {
+        class: "signals-unverified-badge badge",
+        "data-testid": "coordination-drawer-unverified-badge",
+        "data-claimed-from": claimed,
+        "aria-label": `Unverified sender; claimed: ${claimed}`,
+        title: `Unverified sender — claimed: ${claimed}`,
+        style: "margin-left: 6px;",
+      }, "⚠ unverified"));
+    }
     clearNode(drawerBody);
     const body = String(sig.body || sig.excerpt || "");
     if (body.trim()) {
@@ -391,6 +412,18 @@ export async function render(root, _params) {
         title: `Open signal: ${sig.filename || f.topic}`,
       },
         el("span", { class: "lane-chip", style: "flex: 0 0 auto;" }, f.from_lane),
+        // Anti-spoof badge: when the BE flags the sender unverifiable, show a
+        // clear warning next to the (claimed) sender. textContent only.
+        f.from_unverified
+          ? el("span", {
+              class: "signals-unverified-badge badge",
+              "data-testid": "coordination-signal-unverified-badge",
+              "data-claimed-from": f.claimed_from || f.from_lane || "?",
+              "aria-label": `Unverified sender; claimed: ${f.claimed_from || f.from_lane || "?"}`,
+              title: `Unverified sender — claimed: ${f.claimed_from || f.from_lane || "?"}`,
+              style: "flex: 0 0 auto;",
+            }, "⚠ unverified")
+          : null,
         el("span", { class: "text-muted", style: "flex: 0 0 auto;" }, "→"),
         el("span", { class: "lane-chip", style: "flex: 0 0 auto;" }, f.to_lane),
         el("span", {

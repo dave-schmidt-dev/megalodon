@@ -1146,6 +1146,41 @@ _STATUS_ROW_LANE_RE = re.compile(
 #: row's lane. These are trusted (server-written) and keep their claimed sender.
 _ORCH_SENDER_LABELS = frozenset({"ORCHESTRATOR", "ORCH", "LANE-ORCH"})
 
+#: A STATUS table LINE's leading lane cell: ``| <lane> | ...``. Unlike
+#: ``_STATUS_ROW_LANE_RE`` this is NOT anchored on the row's closing pipe, so it
+#: still binds the owning lane when an attacker appends trailing text (e.g. a
+#: forged ``[SIG ...]`` token) AFTER the row's closing ``|`` — defeating the
+#: closing-pipe anchor that the span-based binder relies on (anti-spoof).
+_STATUS_LINE_LANE_RE = re.compile(r"^\|\s*(?P<lane>[A-Z][A-Z0-9\- ]*?)\s*\|")
+
+
+def _owning_lane_on_line(text: str, pos: int) -> str | None:
+    """Return the owning lane of the STATUS table LINE that offset *pos* sits on.
+
+    SECURITY (anti-spoof, trailing-pipe bypass): the span-based binder anchors
+    each row on its closing ``\\|\\s*$``. An agent can append a forged
+    ``[SIG from=LANE-A ...]`` token AFTER its OWN row's closing ``|`` — the row
+    regex then fails to match the line at all, the token falls in no owning
+    span, and the caller would otherwise fall back to the attacker-claimed
+    sender. This binds the token to the lane named in the FIRST cell of the
+    physical line it sits on (a line beginning with ``|``), regardless of any
+    trailing junk that breaks the closing-pipe anchor. Returns ``None`` if the
+    line is not a STATUS table line (does not start with ``|``) or names no lane
+    (e.g. the header/separator row).
+    """
+    line_start = text.rfind("\n", 0, pos) + 1
+    line_end = text.find("\n", pos)
+    if line_end == -1:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    m = _STATUS_LINE_LANE_RE.match(line)
+    if not m:
+        return None
+    lane_label = (m.group("lane") or "").strip()
+    if lane_label.lower() == "lane":  # header row
+        return None
+    return lane_label
+
 
 def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
     """Parse `[SIG ...]` tokens out of STATUS.md notes (``source:"status-note"``).
@@ -1201,7 +1236,14 @@ def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
         claimed_from = _normalize_lane_label(from_raw, "LANE-UNKNOWN")
         to_lane = _normalize_lane_label(to_raw, "LANE-ALL")
 
+        # Bind the sender to the lane that physically owns the token. Prefer the
+        # precise closing-pipe-anchored span; fall back to the lane named on the
+        # token's physical line so an attacker appending the token AFTER the
+        # row's closing ``|`` (which breaks the span anchor) cannot escape
+        # binding (anti-spoof, trailing-pipe bypass).
         owning_label = _owning_lane_for(m.start())
+        if owning_label is None:
+            owning_label = _owning_lane_on_line(text, m.start())
         owning_lane = (
             _normalize_lane_label(owning_label, "LANE-UNKNOWN")
             if owning_label is not None
@@ -1214,8 +1256,10 @@ def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
             # into the target's row). Trusted — keep the orchestrator sender.
             from_lane = "LANE-ORCH"
         elif owning_lane is None:
-            # Loose token not inside a recognizable row — cannot bind; flag it.
-            from_lane = claimed_from
+            # Token sits on NO recognizable STATUS table line (loose prose).
+            # The claimed sender is attacker-controllable and MUST NOT be
+            # presented as authoritative — fail closed to LANE-UNKNOWN.
+            from_lane = "LANE-UNKNOWN"
             from_unverified = True
         else:
             # Authoritative: the sender IS the owning row's lane. If the claimed
@@ -2486,6 +2530,24 @@ class ApprovalRuleBody(BaseModel):
 
 def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
+    def _csrf_or_403(request: Request) -> JSONResponse | None:
+        """Timing-safe ``X-CSRF-Token`` check; ``None`` if OK, 403 response if not.
+
+        SECURITY (defense-in-depth): destructive / mutating endpoints are
+        cookie-gated, but a cookie alone is replayable cross-site. Requiring a
+        header the browser will not auto-attach cross-origin (and matching it in
+        constant time against ``ctx.csrf_token``) blocks CSRF. Shared by the
+        kill-switch and legacy mutation POSTs so the check is identical to the
+        endpoints that already inline it.
+        """
+        csrf = request.headers.get("X-CSRF-Token", "")
+        if not csrf or not secrets.compare_digest(csrf, ctx.csrf_token):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token missing or invalid"},
+            )
+        return None
+
     @app.post("/api/v1/auth/exchange")
     async def post_auth_exchange(req: Request) -> Response:
         """Validate bearer token against ``.fleet/ui.token``; mint a session cookie.
@@ -2884,7 +2946,13 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
         After the response is sent, the surrounding lifespan sees
         ``app.state.shutdown_requested = True`` and the uvicorn process exits 0.
+
+        CSRF-protected via ``X-CSRF-Token`` (the kill-switch is the most
+        destructive endpoint; a bare cookie is replayable cross-site).
         """
+        denied = _csrf_or_403(request)
+        if denied is not None:
+            return denied
         fleet_dir = ctx.mission_dir / ".fleet"
         socket = fleet_dir / "tmux.sock"
         try:
@@ -3035,6 +3103,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     @app.post("/api/tasks")
     async def post_task(req: Request):
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         kind = body.get("kind", "").upper()
         target = body.get("target_finding", "")
@@ -3082,6 +3153,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     @app.post("/api/lanes/{lane}/signal")
     async def post_signal(lane: str, req: Request):
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         try:
             primitives.validate_signal(body)
@@ -3153,6 +3227,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     @app.post("/api/mission/flip")
     async def post_flip(req: Request):
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         from_phase = str(body.get("from", "")).strip()
         to_phase = str(body.get("to", "")).strip()
@@ -3169,14 +3246,21 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     # Helper to call other handlers from /api/v1/* aliases.
     class _FakeReq:
-        def __init__(self, body):
+        def __init__(self, body, headers=None):
             self._body = body
+            # Forward the ORIGINAL request's headers so a delegated handler's
+            # CSRF check (X-CSRF-Token) still sees the real header. Empty mapping
+            # when no original is supplied.
+            self.headers = headers if headers is not None else {}
 
         async def json(self):
             return self._body
 
     def _make_req_with_body(_original, body):
-        return _FakeReq(body)
+        # Carry through the original request's headers (the v1 alias receives a
+        # real Request; the delegated legacy handler must still see X-CSRF-Token).
+        headers = getattr(_original, "headers", None)
+        return _FakeReq(body, headers=headers)
 
     # ----- canonical /api/v1/* surface per ui/api-contract.md -----
     # TEST P3-E is aligning the integration tests to use these per the
@@ -3879,7 +3963,12 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         Default: 202 + Location: /api/v1/queue/<rid> (async, poll for outcome).
         ``?wait=true``: block up to ~5s for resolution and return the final
         status directly (200 applied / 409 rejected / 202 still-pending).
+
+        CSRF-protected via ``X-CSRF-Token``.
         """
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         lane = str(body.get("lane", "")).strip()
         task_id = str(body.get("task_id", "")).strip()
@@ -3891,7 +3980,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     @app.post("/api/v1/task/done")
     async def post_v1_task_done(req: Request):  # noqa: ANN201
-        """Mark a task done via the queue. ``?wait=true`` for sync."""
+        """Mark a task done via the queue. ``?wait=true`` for sync. CSRF-protected."""
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         lane = str(body.get("lane", "")).strip()
         task_id = str(body.get("task_id", "")).strip()
@@ -3903,7 +3995,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     @app.post("/api/v1/status/update")
     async def post_v1_status_update(req: Request):  # noqa: ANN201
-        """Update a lane row in STATUS.md via the queue. ``?wait=true`` for sync."""
+        """Update a lane row in STATUS.md via the queue. ``?wait=true`` for sync. CSRF-protected."""
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         lane = str(body.get("lane", "")).strip()
         agent = str(body.get("agent", "")).strip()
@@ -3921,7 +4016,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     @app.post("/api/v1/history/append")
     async def post_v1_history_append(req: Request):  # noqa: ANN201
-        """Append a completion entry to HISTORY.md via the queue. ``?wait=true`` for sync."""
+        """Append a completion entry to HISTORY.md via the queue. ``?wait=true`` for sync. CSRF-protected."""
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         lane = str(body.get("lane", "")).strip()
         agent = str(body.get("agent", "")).strip()
@@ -3945,7 +4043,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     @app.post("/api/v1/mission-event")
     async def post_v1_mission_event(req: Request):  # noqa: ANN201
-        """Append an event to .mission-events via the queue. ``?wait=true`` for sync."""
+        """Append an event to .mission-events via the queue. ``?wait=true`` for sync. CSRF-protected."""
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         lane = str(body.get("lane", "")).strip()
         agent = str(body.get("agent", "")).strip()
@@ -3976,7 +4077,11 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         what's new since the last iteration.
 
         Returns 202 on append, 404 for unknown lane, 422 for empty message.
+        CSRF-protected via ``X-CSRF-Token``.
         """
+        denied = _csrf_or_403(request)
+        if denied is not None:
+            return denied
         spawner = getattr(app.state, "spawner", None)
         if spawner is None or lane not in spawner.sessions:
             return JSONResponse(

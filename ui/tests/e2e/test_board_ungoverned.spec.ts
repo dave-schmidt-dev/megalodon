@@ -20,7 +20,7 @@
 // Test 4 — running→governed transition hides the indicator.
 
 import { test, expect, Page } from '@playwright/test';
-import { readUiToken } from './_helpers';
+import { readUiToken, republishUntil } from './_helpers';
 
 async function authenticateAndGotoBoard(page: Page, token: string): Promise<void> {
   await page.goto(`/#t=${token}`);
@@ -64,6 +64,14 @@ async function stubNoStaleLanes(page: Page): Promise<void> {
   });
 }
 
+/** True once board-pill-<short> renders exactly `text` (republishUntil probe).
+ *  Re-publishing the seed until the pill reflects the frame closes the
+ *  seed→SSE-subscribe race (see republishUntil in _helpers.ts). */
+async function pillIs(page: Page, short: string, text: string): Promise<boolean> {
+  const t = await page.locator(`[data-testid="board-pill-${short}"]`).textContent();
+  return (t ?? '').trim() === text;
+}
+
 /** Row payload for lane C in a given state + governance. */
 function laneC(state: string, governed: boolean): Record<string, unknown> {
   return {
@@ -104,7 +112,10 @@ test.describe('§3.3: UNGOVERNED board indicator', () => {
     await stubNoStaleLanes(page);
     await authenticateAndGotoBoard(page, token);
 
-    await seedNarrative(page, { C: laneC('running', false) });
+    await republishUntil(
+      () => seedNarrative(page, { C: laneC('running', false) }),
+      () => pillIs(page, 'C', 'RUNNING'),
+    );
 
     // Pill is RUNNING (governance is orthogonal — does not change the pill).
     await expect(page.locator('[data-testid="board-pill-C"]'))
@@ -119,7 +130,10 @@ test.describe('§3.3: UNGOVERNED board indicator', () => {
     await stubNoStaleLanes(page);
     await authenticateAndGotoBoard(page, token);
 
-    await seedNarrative(page, { C: laneC('running', true) });
+    await republishUntil(
+      () => seedNarrative(page, { C: laneC('running', true) }),
+      () => pillIs(page, 'C', 'RUNNING'),
+    );
 
     await expect(page.locator('[data-testid="board-pill-C"]'))
       .toHaveText('RUNNING', { timeout: 8_000 });
@@ -133,7 +147,10 @@ test.describe('§3.3: UNGOVERNED board indicator', () => {
     await authenticateAndGotoBoard(page, token);
 
     // "done" is not in the running set; governed:false must NOT flag it.
-    await seedNarrative(page, { C: laneC('done', false) });
+    await republishUntil(
+      () => seedNarrative(page, { C: laneC('done', false) }),
+      () => pillIs(page, 'C', 'IDLE'),
+    );
 
     await expect(page.locator('[data-testid="board-pill-C"]'))
       .toHaveText('IDLE', { timeout: 8_000 });
@@ -147,12 +164,20 @@ test.describe('§3.3: UNGOVERNED board indicator', () => {
     await authenticateAndGotoBoard(page, token);
 
     // First frame: running + ungoverned → visible.
-    await seedNarrative(page, { C: laneC('running', false) });
+    await republishUntil(
+      () => seedNarrative(page, { C: laneC('running', false) }),
+      () => page.locator('[data-testid="board-ungoverned-C"]').isVisible(),
+    );
     await expect(page.locator('[data-testid="board-ungoverned-C"]'))
       .toBeVisible({ timeout: 8_000 });
 
     // Later frame: lane becomes governed (still running) → indicator disappears.
-    await seedNarrative(page, { C: laneC('running', true) });
+    // Probe on the pill (still RUNNING) so re-publish drives the transition;
+    // the assertion below is the real check that the chip then hides.
+    await republishUntil(
+      () => seedNarrative(page, { C: laneC('running', true) }),
+      async () => !(await page.locator('[data-testid="board-ungoverned-C"]').isVisible()),
+    );
     await expect(page.locator('[data-testid="board-ungoverned-C"]'))
       .not.toBeVisible({ timeout: 8_000 });
   });
