@@ -31,7 +31,7 @@ const BYTE_LIMIT = 16384;
 const SEND_DEBOUNCE_MS = 6000;
 
 // ---------------------------------------------------------------------------
-// DOM helpers (same pattern as grid.js / dashboard.js)
+// DOM helpers (same pattern as board.js)
 // ---------------------------------------------------------------------------
 
 /**
@@ -394,8 +394,13 @@ function buildInjectForm(short) {
   textarea.addEventListener("input", updateCount);
 
   async function handleSend() {
-    // Read-only safety: refuse to act even if the button is reached.
-    if (!control) {
+    // Read-only safety: refuse to act even if the button is reached. Re-read the
+    // live control-mode at action time via controlEnabled() — the single source
+    // of truth — rather than the `control` closure var, mirroring board.js
+    // handleKill / the restart-loop handler. The closure var still drives the
+    // button's disabled/visual posture (updateCount/applyControl); this guard is
+    // the authoritative last-line check and avoids any stale-closure risk.
+    if (!controlEnabled()) {
       showToast("Read-only mode — enable Control mode to inject", "error");
       return;
     }

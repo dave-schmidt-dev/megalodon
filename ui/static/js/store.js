@@ -441,7 +441,25 @@ export const store = new Store();
 /**
  * Whether the operator is in CONTROL mode (state-changing actions allowed).
  * READ-ONLY is the safe default. This is the single read every action affordance
- * (inject, restart-loop, kill-switch) must consult before enabling itself.
+ * (inject, restart-loop, kill-switch) must consult before enabling itself, and
+ * should be re-read at action time (not cached in a closure) so there is one
+ * source of truth and no stale-toggle risk.
+ *
+ * SCOPE — control mode is a CLIENT-SIDE UX SAFETY AFFORDANCE, NOT A SERVER-SIDE
+ * AUTHORIZATION BOUNDARY. Its sole purpose is to prevent ACCIDENTAL destructive
+ * actions (a stray click injecting into a lane, killing the fleet, restarting a
+ * loop) by defaulting the UI to read-only and requiring an explicit toggle. It
+ * is NOT a permission/security control:
+ *   - The state lives in localStorage and on document.body — fully attacker- and
+ *     operator-mutable from the client; it never reaches the server.
+ *   - The mutating endpoints (inject / restart-loop / kill / phase-flip, etc.)
+ *     are protected SERVER-SIDE by the session cookie + CSRF token. THAT is the
+ *     real authorization boundary.
+ *   - An authenticated operator can perform any of these actions regardless of
+ *     the toggle's state (e.g. via curl, or by flipping the toggle on). Flipping
+ *     it off does NOT revoke anyone's ability to act — it only re-arms the
+ *     accidental-click guard in this UI.
+ * Do not treat this flag as a substitute for backend auth.
  * @returns {boolean}
  */
 export function controlEnabled() {

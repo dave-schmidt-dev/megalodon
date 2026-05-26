@@ -34,6 +34,43 @@ def _lifespan_test_mode(monkeypatch):
 FIXTURE_SRC = Path(__file__).parent / "fixtures" / "minimal_mission"
 QUEUE_FIXTURE_SRC = Path(__file__).parent / "fixtures" / "queue_mission"
 
+# Repo root: conftest.py lives at <repo>/scripts/tests/conftest.py.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_SCRIPTS = REPO_ROOT / "scripts"
+
+
+def link_governor_scripts(mission_dir: Path) -> Path:
+    """Wire the run-dir ``scripts/`` symlink the governor preflight requires.
+
+    The spawn path runs ``preflight_governor`` (and the canary self-test) before
+    any lane starts whenever the governor is enabled — which is the default
+    (``governor_enabled`` defaults to True). Preflight resolves the PreToolUse
+    hook through ``<mission_dir>/scripts/governor_hook.py``; production creates
+    that path via ``new_run.sh``'s ``ln -sfn ../../scripts <run>/scripts``.
+
+    Test mission dirs are scaffolded under throwaway tmp paths and never run
+    ``new_run.sh``, so the symlink is absent and preflight raises
+    ``GovernorPreflightError`` (wiring.py:331) before tmux is ever touched. This
+    helper recreates the link so real-tmux tests exercise the genuine spawn
+    path (preflight + canary self-test included) against the repo's real
+    ``scripts/`` shim. Production uses a relative target (``../../scripts``);
+    tmp mission dirs live outside the repo tree, so we point at the absolute
+    repo ``scripts/`` instead — same resolved target, valid from any location.
+
+    Idempotent: an existing matching symlink is left in place.
+
+    Args:
+        mission_dir: the run/mission directory (== ``$CLAUDE_PROJECT_DIR``).
+
+    Returns:
+        The created ``<mission_dir>/scripts`` symlink path.
+    """
+    link = mission_dir / "scripts"
+    if link.is_symlink() or link.exists():
+        return link
+    link.symlink_to(REPO_SCRIPTS, target_is_directory=True)
+    return link
+
 
 @pytest.fixture
 def mission_dir(tmp_path: Path) -> Path:
@@ -83,12 +120,28 @@ def short_mission_dir():
     ``tmp_path`` is too long, so a mission dir derived from it pushes the socket
     over the limit. Rooting the mission under a short ``/tmp`` dir keeps it well
     under 104 bytes.
+
+    The run-dir ``scripts/`` symlink the governor preflight requires is wired up
+    front (see :func:`link_governor_scripts`) so real-tmux tests reach tmux
+    instead of dying in ``preflight_governor`` with ``GovernorPreflightError``.
     """
     d = Path(tempfile.mkdtemp(prefix="mgld-m-", dir="/tmp"))
+    link_governor_scripts(d)
     try:
         yield d
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture
+def governor_scripts_link():
+    """Return the :func:`link_governor_scripts` helper for ``tmp_path`` tests.
+
+    ``short_mission_dir`` wires the symlink itself, but real-tmux tests that
+    build their mission dir straight from ``tmp_path`` (rather than the short
+    fixture) call this to satisfy the same governor preflight precondition.
+    """
+    return link_governor_scripts
 
 
 @pytest.fixture

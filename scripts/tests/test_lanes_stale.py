@@ -428,6 +428,47 @@ async def test_governor_blocked_excluded_from_stale(tmp_path, monkeypatch):
         assert a_block["deny_count"] == _GOVERNOR_BLOCK_DENY_COUNT
 
 
+@pytest.mark.asyncio
+async def test_governor_blocked_seam_consecutive_denies_over_wire(
+    tmp_path, monkeypatch
+):
+    """Seam: deny-log → GET /api/v1/lanes/stale → governor_blocked w/ full fields.
+
+    The board's BLOCKED pill reads ``governor_blocked[].consecutive_denies``
+    (added in Wave 3). The unit tests above prove ``_compute_governor_blocked``
+    computes it, but nothing pinned that it survives the HTTP boundary intact —
+    that the endpoint actually serializes ``consecutive_denies`` (and the
+    sibling ``deny_count`` / ``window_seconds`` / ``last_category`` /
+    ``last_reason``) into the JSON the board consumes. This exercises the real
+    endpoint (no mock of the computation) end to end: write >= DENY_COUNT trailing
+    denies inside the 60 s window for lane A, hit ``/api/v1/lanes/stale``, and
+    assert A is reported ``governor_blocked`` with every field the board needs.
+    """
+    now = _now_utc()
+    mission_dir = _make_mission(tmp_path, {"A": _utc_iso(now)})
+    deny_n = _GOVERNOR_BLOCK_DENY_COUNT + 1  # 6 trailing denies, no allow → run==6
+    _write_governor_log(mission_dir, _deny_entries("A", deny_n, age_seconds=10.0))
+
+    async for client, _ in _make_client(tmp_path, mission_dir, monkeypatch):
+        resp = await client.get("/api/v1/lanes/stale")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        blocked = {e["lane"]: e for e in data["governor_blocked"]}
+        assert "A" in blocked, f"A should be governor_blocked over the wire: {data}"
+        a = blocked["A"]
+        # consecutive_denies is the Wave 3 field the board's BLOCKED pill reads;
+        # 6 trailing denies with no intervening allow → run of 6.
+        assert a["consecutive_denies"] == deny_n, a
+        # Sibling fields the board surface also depends on must come through too.
+        assert a["deny_count"] == deny_n, a
+        assert a["window_seconds"] == _GOVERNOR_BLOCK_WINDOW_SECONDS, a
+        assert a["last_category"] == "outside-mission", a
+        assert a["last_reason"] == f"deny #{deny_n - 1}", a
+        # And it must NOT also be reported as merely silent/stale.
+        assert "A" not in {e["lane"] for e in data["stale_lanes"]}, data
+
+
 # ---------------------------------------------------------------------------
 # Test 8: consecutive_denies — trailing deny run since last allow (contract §3)
 # ---------------------------------------------------------------------------

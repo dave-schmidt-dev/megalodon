@@ -43,7 +43,15 @@ from .mission_config.schema import MissionConfig
 from .mission_config.regex_builder import (
     build_task_line_re,
     build_status_row_re,
-    build_phase_header_re,
+)
+from .signal_grammar import (
+    # Re-exported under their historical private names so external callers
+    # (e.g. scripts/tests/test_signal_channels.py) keep importing them from
+    # ``megalodon_ui.server``. server.py itself routes through
+    # ``parse_signal_filename`` rather than touching the compiled patterns.
+    SIGNAL_FILENAME_RE as _SIGNAL_FILENAME_RE,  # noqa: F401
+    SIGNAL_FILENAME_LEGACY_RE as _SIGNAL_FILENAME_LEGACY_RE,  # noqa: F401
+    parse_signal_filename,
 )
 from .constants import (
     API_CHALLENGE,
@@ -442,7 +450,6 @@ class MissionContext:
     mission_config: MissionConfig = field(default=None)  # type: ignore[assignment]
     status_row_re: re.Pattern = field(default=None)  # type: ignore[assignment]
     task_line_re: re.Pattern = field(default=None)  # type: ignore[assignment]
-    phase_header_re: re.Pattern = field(default=None)  # type: ignore[assignment]
     session_store: "auth.SessionStore" = field(default=None)  # type: ignore[assignment]
 
 
@@ -952,22 +959,11 @@ def parse_tasks_fe_shape(
 
 
 # Signals — `<mission>/signals/LANE-<FROM>-to-LANE-<TO>-<topic>-<UTC>.md`.
-# Canonical filename grammar (FROZEN WIRE CONTRACT §A): from-lane, to-lane,
-# topic (slug), and a filesystem-safe dash-form UTC anchored at the end. The
-# body is markdown free-form. FE consumer ui/static/pages/signals.js reads
-# sig.from_lane, sig.to, sig.utc, sig.topic, sig.kind.
-#
-# NOTE: a *copy* of the canonical regex lives in activity_wall.py
-# (``_SIGNAL_FILENAME_RE``) to avoid an import cycle (server imports
-# ActivityWall). Keep the two in sync if the grammar changes.
-_SIGNAL_FILENAME_RE = re.compile(
-    r"^(?P<from_lane>LANE-[A-Z0-9]+)-to-(?P<to_lane>LANE-[A-Z0-9]+)-"
-    r"(?P<topic>.+)-(?P<utc>\d{4}-\d{2}-\d{2}T\d{2}-\d{2}(?:-\d{2})?Z)$"
-)
-# Legacy fallback (no separate utc segment): topic = remainder, utc = "".
-_SIGNAL_FILENAME_LEGACY_RE = re.compile(
-    r"^(?P<from_lane>LANE-[A-Z0-9]+)-to-(?P<to_lane>LANE-[A-Z0-9]+)-(?P<rest>.+)$"
-)
+# The canonical + legacy filename grammar (FROZEN WIRE CONTRACT §A) lives in the
+# leaf module ``signal_grammar`` so server.py and activity_wall.py share ONE
+# copy (no drift, no import cycle). ``_SIGNAL_FILENAME_RE`` /
+# ``_SIGNAL_FILENAME_LEGACY_RE`` are imported above; ``parse_signal_filename``
+# is the convenience helper.
 
 # `[SIG from=X to=Y text="..." cite=...]` token embedded in STATUS.md notes.
 _SIG_TOKEN_RE = re.compile(
@@ -1007,6 +1003,34 @@ def _slugify(text: str, default: str = "note") -> str:
     return slug or default
 
 
+def _normalize_lane_label(raw: str, default: str) -> str:
+    """Normalize a lane label to the canonical ``LANE-<X>`` form.
+
+    Used to keep the ``source:"finding"`` and ``source:"status-note"`` channels
+    visually consistent with ``source:"file"`` signals (whose grammar always
+    produces ``LANE-<X>`` from/to). Rules:
+
+      * empty / whitespace → ``default`` (e.g. ``LANE-UNKNOWN`` / ``LANE-ALL``),
+      * already ``LANE-`` prefixed → kept verbatim (uppercased),
+      * ``ORCHESTRATOR`` → ``ORCH`` (the canonical orchestrator short),
+      * a bare lane short matching ``[A-Z0-9]+`` → prefixed with ``LANE-``.
+
+    Tolerant by design: any value that would NOT yield a canonical
+    ``LANE-[A-Z0-9]+`` token (e.g. ``all-lanes``, multi-word labels) is returned
+    uppercased-as-is so unrecognizable frontmatter is never mangled.
+    """
+    short = (raw or "").strip().upper()
+    if not short:
+        return default
+    if short.startswith("LANE-"):
+        return short
+    if short == "ORCHESTRATOR":
+        short = "ORCH"
+    if re.fullmatch(r"[A-Z0-9]+", short):
+        return f"LANE-{short}"
+    return short
+
+
 def _mtime_iso(path: Path) -> str:
     """Best-effort ISO-8601 UTC mtime of *path*; "" on failure."""
     try:
@@ -1043,23 +1067,14 @@ def _parse_file_signals(signals_dir: Path) -> list[dict[str, Any]]:
                 continue
         except OSError:
             continue
-        stem = p.name[:-3]  # strip ".md"
-        from_lane = to_lane = topic = utc = ""
-        m = _SIGNAL_FILENAME_RE.match(stem)
-        if m:
-            from_lane = m.group("from_lane")
-            to_lane = m.group("to_lane")
-            topic = m.group("topic")
-            utc = m.group("utc")
-        else:
-            legacy = _SIGNAL_FILENAME_LEGACY_RE.match(stem)
-            if not legacy:
-                # Not a signal file (README / stray) — skip silently.
-                continue
-            from_lane = legacy.group("from_lane")
-            to_lane = legacy.group("to_lane")
-            topic = legacy.group("rest")
-            utc = ""
+        parsed = parse_signal_filename(p.name)
+        if parsed is None:
+            # Not a signal file (README / stray) — skip silently.
+            continue
+        from_lane = parsed["from_lane"]
+        to_lane = parsed["to_lane"]
+        topic = parsed["topic"]
+        utc = parsed["utc"]
         rec: dict[str, Any] = {
             "filename": p.name,
             "from_lane": from_lane,
@@ -1096,14 +1111,8 @@ def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
         sig_text = (m.group(3) or "").strip()
         cite = (m.group(4) or "").strip()
         # Normalize lane labels to LANE-<X> with a non-empty short.
-        from_short = from_raw.upper() or "UNKNOWN"
-        if from_short == "ORCHESTRATOR":
-            from_short = "ORCH"
-        to_short = to_raw.upper() or "ALL"
-        from_lane = (
-            from_short if from_short.startswith("LANE-") else f"LANE-{from_short}"
-        )
-        to_lane = to_short if to_short.startswith("LANE-") else f"LANE-{to_short}"
+        from_lane = _normalize_lane_label(from_raw, "LANE-UNKNOWN")
+        to_lane = _normalize_lane_label(to_raw, "LANE-ALL")
         topic = _slugify(" ".join(sig_text.split()[:5]))
         body = sig_text + (f" (cite: {cite})" if cite else "")
         out.append(
@@ -1146,16 +1155,22 @@ def _parse_finding_signals(mission_dir: Path) -> list[dict[str, Any]]:
         if not fm:
             continue
         # from/to from frontmatter if present, else file lane / "ALL".
-        from_lane = str(
+        # Normalize to the canonical LANE-<X> form so finding-source signals
+        # render consistently with file/status-note signals (NIT, Wave 2
+        # review). Tolerant: unrecognizable labels (e.g. "all-lanes") pass
+        # through uppercased-as-is.
+        from_raw = str(
             fm.get("from-lane")
             or fm.get("from_lane")
             or fm.get("agent")
             or fm.get("lane")
-            or "UNKNOWN"
+            or ""
         ).strip()
-        to_lane = str(
-            fm.get("to-lane") or fm.get("to_lane") or fm.get("addressed-to") or "ALL"
+        to_raw = str(
+            fm.get("to-lane") or fm.get("to_lane") or fm.get("addressed-to") or ""
         ).strip()
+        from_lane = _normalize_lane_label(from_raw, "LANE-UNKNOWN")
+        to_lane = _normalize_lane_label(to_raw, "LANE-ALL")
         topic = _slugify(str(fm.get("signal-type", "note")))
         body = ""
         try:
@@ -1809,7 +1824,6 @@ def make_app(
         mission_config=mc,
         status_row_re=build_status_row_re(mc),
         task_line_re=build_task_line_re(mc),
-        phase_header_re=build_phase_header_re(mc),
         session_store=auth.SessionStore(),
     )
 
@@ -1849,18 +1863,27 @@ def make_app(
         if fake_spawner:
             from .spawn_fake import FakeFleetSpawner
 
-            # Test-only persistence seam (Task D6): the fake branch normally
-            # keeps an in-memory SessionStore (path=None) to preserve the D2
-            # WR-3 invariant and the fixtures-pollution guard for the normal
-            # suite. The restart-reconnect e2e (PW-3) needs persisted+hashed
-            # sessions WITHOUT a real tmux fleet, so it opts in by setting
-            # MEGALODON_FAKE_SESSIONS_PATH to a sessions.json path. When unset
-            # (the default for every other test) behavior is unchanged: pure
-            # in-memory, nothing written. This NEVER affects the live or
-            # test-mode branches.
+            # Fake/demo session persistence (Wave 4 A2 seam). The fake branch
+            # now persists sessions to disk by DEFAULT — like the live branch —
+            # so an operator restarting a demo is not bricked with a dead
+            # cookie (the prior in-memory-only default invalidated the session
+            # on every restart). The default path mirrors live:
+            # <mission>/.fleet/sessions.json. MEGALODON_FAKE_SESSIONS_PATH still
+            # overrides the location (the restart-reconnect e2e PW-3 uses it to
+            # point at a tmp file). This NEVER affects the live branch or
+            # test-mode (MEGALODON_LIFESPAN_TEST_MODE=1), which never reach here.
+            #
+            # Pollution note: fake-spawner test runs use a tmp_path / copied
+            # tmpdir mission (see ui/tests/integration/conftest.py and the e2e
+            # playwright config's prepareFixture), so writing sessions.json
+            # under that mission's .fleet/ does not touch tracked fixtures.
             _fake_sessions_path = os.environ.get("MEGALODON_FAKE_SESSIONS_PATH")
-            if _fake_sessions_path:
-                ctx.session_store = auth.SessionStore(path=Path(_fake_sessions_path))
+            _sessions_path = (
+                Path(_fake_sessions_path)
+                if _fake_sessions_path
+                else mission_dir / ".fleet" / "sessions.json"
+            )
+            ctx.session_store = auth.SessionStore(path=_sessions_path)
 
             fake_spawner_obj = FakeFleetSpawner(
                 mission_dir,
@@ -2061,6 +2084,12 @@ def make_app(
                 return {short: _dl(sess) for short, sess in spawner.sessions.items()}
 
             def _live_consecutive_denies() -> dict[str, int]:
+                # NOTE: the deny-loop recovery trigger inherits
+                # _compute_governor_blocked's 5-denies-in-60s window gate — only
+                # lanes already flagged window-blocked surface a consecutive_denies
+                # count here, so a SLOW deny-loop (denies spread beyond the 60s
+                # window) won't trip recovery. Liveness-"dead" recovery is on a
+                # separate path (_live_liveness) and is unaffected.
                 blocked = _compute_governor_blocked(mission_dir)
                 return {
                     lane: info.get("consecutive_denies", 0)

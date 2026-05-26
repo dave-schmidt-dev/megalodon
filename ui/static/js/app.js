@@ -13,6 +13,7 @@
 
 import { store } from "./store.js";
 import { whenAuthReady } from "./auth.js";
+import { loadConfig } from "./config.js";
 
 const ROUTES = [
   { pattern: /^\/$/, loader: () => import("../pages/board.js"), params: () => ({}) },
@@ -191,6 +192,88 @@ function attachControlToggle() {
   reflectFromStore();
 }
 
+/**
+ * Extract a phase NAME from a config.phases entry. Entries may be plain strings
+ * ("PHASE-PLAN") or objects ({ name: "PHASE-PLAN", ... }).
+ * @param {string|{name?: string}} entry
+ * @returns {string}
+ */
+function phaseName(entry) {
+  if (entry == null) return "";
+  if (typeof entry === "string") return entry.trim();
+  return String(entry.name || "").trim();
+}
+
+/**
+ * Derive a short display label for a phase segment from its full name. Mirrors
+ * the abbreviations baked into the static strip in index.html (PHASE-PLAN→PLAN,
+ * PHASE-OPERATOR-ACCEPTANCE→OP-ACK). Unknown phases show their full name so a
+ * custom mission's phases are still legible.
+ * @param {string} name
+ * @returns {string}
+ */
+function phaseLabel(name) {
+  const n = String(name || "").toUpperCase();
+  if (n === "PHASE-OPERATOR-ACCEPTANCE" || n === "OPERATOR-ACCEPTANCE") return "OP-ACK";
+  if (n.startsWith("PHASE-")) return n.slice("PHASE-".length);
+  return n;
+}
+
+/**
+ * Reconcile the static phase strip (index.html) against the mission's actual
+ * config.phases. The strip ships with the standard 10-phase set as a no-JS
+ * first-paint baseline; this hybrid reconciliation makes it reflect the real
+ * mission once /api/v1/config resolves:
+ *   - Phases declared in config are shown, in config order, at the front.
+ *   - A config phase with no pre-existing <li> gets one created (custom phases).
+ *   - Standard phases absent from config stay in the DOM but are hidden via
+ *     style.display = "none" (so phase-flip targeting still resolves, and the
+ *     no-config / fetch-failure path keeps the full static strip intact).
+ * Graceful fallback: if config is missing/empty/unfetchable, the static strip
+ * is left exactly as authored — no regression to the no-config case.
+ * @param {Array<string|{name?: string}>} phases
+ */
+function reconcilePhaseStrip(phases) {
+  const strip = document.querySelector("ol.phase-strip");
+  if (!strip) return;
+  const names = (Array.isArray(phases) ? phases : []).map(phaseName).filter(Boolean);
+  // No usable config phases → leave the static strip untouched (fallback).
+  if (names.length === 0) return;
+
+  // Index existing <li> segments by their phase name (from the testid).
+  /** @type {Map<string, HTMLElement>} */
+  const existing = new Map();
+  strip.querySelectorAll('li[data-testid^="phase-segment-"]').forEach((li) => {
+    const name = (li.getAttribute("data-testid") || "").replace(/^phase-segment-/, "");
+    if (name) existing.set(name, /** @type {HTMLElement} */ (li));
+  });
+
+  const wanted = new Set(names);
+
+  // Place each config phase in order at the front of the strip, creating any
+  // segment the static strip did not already carry.
+  for (const name of names) {
+    let li = existing.get(name);
+    if (!li) {
+      li = document.createElement("li");
+      li.className = "phase-segment";
+      li.setAttribute("data-testid", `phase-segment-${name}`);
+      li.textContent = phaseLabel(name);
+    } else {
+      li.style.display = "";
+    }
+    // appendChild moves an existing node, so iterating in config order leaves
+    // the strip ordered exactly as config.phases.
+    strip.appendChild(li);
+  }
+
+  // Hide any standard segment not present in this mission's config (kept in the
+  // DOM so phase-flip / aria-current targeting still resolves).
+  for (const [name, li] of existing) {
+    if (!wanted.has(name)) li.style.display = "none";
+  }
+}
+
 function attachPhaseIndicator() {
   const reflect = () => {
     const current = store.get("mission.phase") || "INIT";
@@ -234,6 +317,13 @@ function bootstrap() {
   attachPhaseIndicator();
   attachConnectionIndicator();
   attachRouter();
+  // Reconcile the static phase strip against the mission's real config.phases
+  // once config resolves. Non-fatal: a failure leaves the authored static strip
+  // in place (no regression to the no-config case). Single-flight loadConfig is
+  // shared with the page modules, so this issues no extra network request.
+  loadConfig()
+    .then((config) => reconcilePhaseStrip(config && config.phases))
+    .catch((err) => console.warn("[app] phase-strip reconcile skipped:", err));
 }
 
 if (document.readyState === "loading") {

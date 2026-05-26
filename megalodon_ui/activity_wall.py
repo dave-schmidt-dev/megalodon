@@ -42,6 +42,8 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .signal_grammar import parse_signal_filename
+
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -55,18 +57,10 @@ SUBSCRIBER_QUEUE_MAXLEN: int = 100
 # Pattern: agent-XXXX-L-PPHASE-topic-...-UTC.md (with optional .scratch)
 _FINDING_STEM_RE = re.compile(r"^agent-[A-Za-z0-9]+-([A-Z])(?:-|$)")
 
-# Canonical signal filename grammar (mirrors server.py:_SIGNAL_FILENAME_RE).
-# Kept here as a *local copy* (not imported from server) to avoid an import
-# cycle: server.py imports ActivityWall, so activity_wall must not import
-# server at module load. The two regexes are intentionally identical — if one
-# changes the other must too (see server.py FROZEN WIRE CONTRACT §A).
-_SIGNAL_FILENAME_RE = re.compile(
-    r"^(?P<from_lane>LANE-[A-Z0-9]+)-to-(?P<to_lane>LANE-[A-Z0-9]+)-"
-    r"(?P<topic>.+)-(?P<utc>\d{4}-\d{2}-\d{2}T\d{2}-\d{2}(?:-\d{2})?Z)$"
-)
-_SIGNAL_FILENAME_LEGACY_RE = re.compile(
-    r"^(?P<from_lane>LANE-[A-Z0-9]+)-to-(?P<to_lane>LANE-[A-Z0-9]+)-(?P<rest>.+)$"
-)
+# Canonical signal filename grammar now lives in the shared leaf module
+# ``signal_grammar`` (imported above as ``parse_signal_filename``). It carries
+# no server/activity_wall imports, so importing it here does not create the
+# cycle that previously forced a local regex copy.
 
 # Applier log timestamp: "2026-05-16T22:00:00Z | INFO | ..."
 _APPLIER_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z")
@@ -402,19 +396,12 @@ class ActivityWall:
         """
         stem = path.name[:-3] if path.name.endswith(".md") else path.name
         from_lane = to_lane = topic = utc = ""
-        m = _SIGNAL_FILENAME_RE.match(stem)
-        if m:
-            from_lane = m.group("from_lane")
-            to_lane = m.group("to_lane")
-            topic = m.group("topic")
-            utc = m.group("utc")
-        else:
-            legacy = _SIGNAL_FILENAME_LEGACY_RE.match(stem)
-            if legacy:
-                from_lane = legacy.group("from_lane")
-                to_lane = legacy.group("to_lane")
-                topic = legacy.group("rest")
-                utc = ""
+        parsed = parse_signal_filename(path.name)
+        if parsed is not None:
+            from_lane = parsed["from_lane"]
+            to_lane = parsed["to_lane"]
+            topic = parsed["topic"]
+            utc = parsed["utc"]
 
         excerpt = ""
         try:

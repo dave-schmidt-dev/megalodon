@@ -1,17 +1,25 @@
-"""Task D2 guard tests — session store persistence is LIVE-mode-only.
+"""Session store persistence guard tests.
 
-Design rule WR-3: only the live lifespan branch wires up the disk-backed
-SessionStore.  Test mode (MEGALODON_LIFESPAN_TEST_MODE=1) and fake-spawner
-mode (MEGALODON_FAKE_SPAWNER=1) must NEVER write a sessions.json file.
+Design rule (Task D2, amended Wave 4):
+  * TEST mode (MEGALODON_LIFESPAN_TEST_MODE=1) stays pure in-memory
+    (path=None) — never writes a sessions.json file.
+  * LIVE mode persists to <mission>/.fleet/sessions.json.
+  * FAKE/DEMO mode (MEGALODON_FAKE_SPAWNER=1) ALSO persists by default to
+    <mission>/.fleet/sessions.json (Wave 4 A2 seam) so an operator demo
+    restart reattaches instead of bricking the session cookie.
+    MEGALODON_FAKE_SESSIONS_PATH overrides the location.
 
 Tests
 -----
 1. test_mode_session_store_path_is_none
    — LIFESPAN_TEST_MODE=1: drive an auth exchange, assert ctx.session_store
      has path=None (in-memory) AND no sessions.json written under tmp_path.
-2. fake_spawner_session_store_path_is_none
-   — MEGALODON_FAKE_SPAWNER=1: same assertions for the fake-spawner branch.
-3. test_no_sessions_json_in_fixtures
+2. test_fake_spawner_session_store_persists_by_default
+   — MEGALODON_FAKE_SPAWNER=1 (no override): the store is disk-backed at the
+     mission's .fleet/sessions.json and the file lands after an exchange.
+3. test_fake_spawner_sessions_path_opt_in
+   — MEGALODON_FAKE_SESSIONS_PATH still overrides the persistence location.
+4. test_no_sessions_json_in_fixtures
    — Repo hygiene: glob scripts/tests/fixtures for any sessions.json and
      assert none exist (prevents test pollution from leaking into tracked files).
 
@@ -31,7 +39,7 @@ from httpx import ASGITransport, AsyncClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from megalodon_ui.auth import write_token_atomic
-from megalodon_ui.server import make_app
+from megalodon_ui.server import SESSION_COOKIE_NAME, make_app
 
 TOKEN = "d2-guard-test-token"
 
@@ -128,17 +136,24 @@ async def test_mode_session_store_path_is_none(test_mode_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fake_spawner_session_store_path_is_none(
+async def test_fake_spawner_session_store_persists_by_default(
     fake_spawner_client,
 ) -> None:
-    """MEGALODON_FAKE_SPAWNER=1: session store stays in-memory; no sessions.json written."""
+    """MEGALODON_FAKE_SPAWNER=1 (no override): store persists to .fleet/sessions.json.
+
+    Wave 4 A2 seam: fake/demo mode now persists sessions by DEFAULT (like the
+    live branch) so an operator restart of a demo reattaches the cookie instead
+    of being locked out. The default path mirrors live: <mission>/.fleet/.
+    """
     _client, app, tmp_path = fake_spawner_client
 
     ctx = app.state.megalodon
-    assert ctx.session_store._path is None, (
-        f"expected path=None in fake-spawner mode, got: {ctx.session_store._path}"
+    expected = tmp_path / ".fleet" / "sessions.json"
+    assert ctx.session_store._path == expected, (
+        f"expected fake-spawner default path {expected}, got: {ctx.session_store._path}"
     )
-    _assert_no_sessions_json(tmp_path)
+    # The exchange in the fixture minted + persisted a session.
+    assert expected.exists(), "fake/demo session was not persisted to disk by default"
 
 
 # ---------------------------------------------------------------------------
@@ -153,11 +168,12 @@ async def test_fake_spawner_session_store_path_is_none(
 
 @pytest.mark.asyncio
 async def test_fake_spawner_sessions_path_opt_in(tmp_path: Path, monkeypatch) -> None:
-    """MEGALODON_FAKE_SESSIONS_PATH set → fake branch wires a persistent store.
+    """MEGALODON_FAKE_SESSIONS_PATH set → fake branch uses the OVERRIDE path.
 
-    This is the test-only seam the restart-reconnect e2e (PW-3) relies on. It
-    must NOT change any other branch; the default (env unset) remains path=None,
-    asserted by test_fake_spawner_session_store_path_is_none above.
+    The restart-reconnect e2e (PW-3) relies on this seam to point persistence
+    at a tmp file. Wave 4 made fake mode persist by default
+    (test_fake_spawner_session_store_persists_by_default); this test pins that
+    the env var still overrides the default location.
     """
     monkeypatch.delenv("MEGALODON_LIFESPAN_TEST_MODE", raising=False)
     monkeypatch.setenv("MEGALODON_FAKE_SPAWNER", "1")
@@ -180,6 +196,52 @@ async def test_fake_spawner_sessions_path_opt_in(tmp_path: Path, monkeypatch) ->
             r = await client.post("/api/v1/auth/exchange", json={"token": TOKEN})
             assert r.status_code == 200, f"auth exchange failed: {r.text}"
     assert sessions_path.exists(), "persistent store should have written sessions.json"
+
+
+@pytest.mark.asyncio
+async def test_fake_demo_session_survives_restart_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fake/demo session survives a server restart WITHOUT the env override.
+
+    Wave 4 A2 seam regression guard: mint a cookie in app instance #1 (fake
+    spawner, default persistence), tear the lifespan down, bring up instance #2
+    against the SAME mission dir, and assert the original cookie still
+    authenticates a gated endpoint — i.e. an operator restarting a demo is not
+    locked out. Mirrors scripts/tests/test_session_survives_server_restart.py
+    but exercises the DEFAULT path (no MEGALODON_FAKE_SESSIONS_PATH).
+    """
+    monkeypatch.delenv("MEGALODON_LIFESPAN_TEST_MODE", raising=False)
+    monkeypatch.delenv("MEGALODON_FAKE_SESSIONS_PATH", raising=False)
+    monkeypatch.setenv("MEGALODON_FAKE_SPAWNER", "1")
+    _setup_mission(tmp_path)
+    sessions_path = tmp_path / ".fleet" / "sessions.json"
+
+    # --- App instance #1: mint a session cookie via auth exchange. ----------
+    app1 = make_app(mission_dir=tmp_path)
+    async with app1.router.lifespan_context(app1):
+        async with AsyncClient(
+            transport=ASGITransport(app=app1), base_url="http://test"
+        ) as client1:
+            exch = await client1.post("/api/v1/auth/exchange", json={"token": TOKEN})
+            assert exch.status_code == 200, exch.text
+            cookie_value = client1.cookies.get(SESSION_COOKIE_NAME)
+            assert cookie_value, "no session cookie was set by the exchange"
+    assert sessions_path.exists(), "fake/demo session not persisted by default"
+
+    # --- App instance #2: fresh app reading the persisted file. -------------
+    app2 = make_app(mission_dir=tmp_path)
+    async with app2.router.lifespan_context(app2):
+        async with AsyncClient(
+            transport=ASGITransport(app=app2),
+            base_url="http://test",
+            cookies={SESSION_COOKIE_NAME: cookie_value},
+        ) as client2:
+            r = await client2.get("/api/v1/narrative")
+            assert r.status_code == 200, (
+                "fake/demo session cookie did not survive restart — the "
+                f"operator would be locked out. Got {r.status_code}: {r.text}"
+            )
 
 
 def test_no_sessions_json_in_fixtures() -> None:

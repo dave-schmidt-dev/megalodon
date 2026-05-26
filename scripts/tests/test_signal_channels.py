@@ -150,10 +150,46 @@ def test_parse_signals_finding_source(tmp_path):
     assert len(out) == 1
     rec = out[0]
     assert rec["source"] == "finding"
-    assert rec["from_lane"] == "ORCH"
-    assert rec["to_lane"] == "all-lanes"
+    # Lane labels are normalized to the canonical LANE-<X> form for visual
+    # consistency with file/status-note signals (Wave 4 NIT). A bare short
+    # like "ORCH" gets the LANE- prefix; an unrecognizable multi-word label
+    # like "all-lanes" is left uppercased-as-is (tolerant).
+    assert rec["from_lane"] == "LANE-ORCH"
+    assert rec["to_lane"] == "ALL-LANES"
     assert rec["topic"] == "sig-orch-001"
     assert "Body of the signal finding." in rec["body"]
+
+
+def test_parse_signals_finding_lane_normalization(tmp_path):
+    """Finding-source from/to lanes are normalized to LANE-<X> (Wave 4 NIT).
+
+    A bare short ("D") gains the LANE- prefix; an already-prefixed label
+    ("LANE-C") and "orchestrator" map to their canonical forms.
+    """
+    findings = tmp_path / "findings"
+    findings.mkdir()
+    (findings / "agent-zzzz-D-sig.md").write_text(
+        "---\nsignal-type: NOTE\nfrom-lane: orchestrator\nto-lane: LANE-C\n---\n\nhi\n"
+    )
+    out = parse_signals(tmp_path)
+    assert len(out) == 1
+    rec = out[0]
+    assert rec["source"] == "finding"
+    assert rec["from_lane"] == "LANE-ORCH"  # orchestrator → LANE-ORCH
+    assert rec["to_lane"] == "LANE-C"  # already-prefixed kept verbatim
+
+
+def test_parse_signals_finding_bare_lane_gets_prefix(tmp_path):
+    """A bare lane short in `lane:`/`agent:` frontmatter gets the LANE- prefix."""
+    findings = tmp_path / "findings"
+    findings.mkdir()
+    (findings / "agent-qqqq-B-sig.md").write_text(
+        "---\nsignal-type: ALERT\nagent: B\n---\nbody\n"
+    )
+    out = parse_signals(tmp_path)
+    assert len(out) == 1
+    assert out[0]["from_lane"] == "LANE-B"
+    assert out[0]["to_lane"] == "LANE-ALL"  # default when no to-lane
 
 
 def test_parse_signals_finding_non_signal_ignored(tmp_path):

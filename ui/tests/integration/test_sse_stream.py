@@ -58,13 +58,18 @@ async def test_sse_stream_connects_and_emits(async_client_with_lifespan, fix_med
 @pytest.mark.asyncio
 @pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.server")
 @pytest.mark.xfail(
-    reason="Post-CR-7 lifespan-fixture audit (Task 0.9, 2026-05-17) confirms the "
-    "failure is independent of test-client lifespan wiring: the SSE "
-    "endpoint connects (test_sse_stream_connects_and_emits PASSES) but "
-    "the live status-change event still does not arrive within 10s of a "
-    "fixture STATUS.md touch. Root cause is the BE file-watcher / event "
-    "emitter, not lifespan. Re-audit after v9.2 Task 3.1 lands the "
-    "pipe-pane stream tap, which may supersede this path entirely.",
+    reason="Wave 4 BE audit (2026-05-25) RE-DIAGNOSED the root cause: it is NOT "
+    "the BE file-watcher/emitter. The /api/v1/events generator polls "
+    "STATUS.md mtime every 0.25s and DOES emit `sync` then `status-change` "
+    "after a touch (verified out-of-band: a stream consumed to completion "
+    "yields ['sync', 'status-change']). The real blocker is the TEST "
+    "harness: httpx.ASGITransport buffers the ENTIRE streaming response "
+    "body before exposing any bytes — the first chunk (even the on-connect "
+    "`sync`) does not arrive until the generator's 30s bounded loop ends, "
+    "so the 10s wait_for here always times out. Incremental SSE delivery is "
+    "impossible through ASGITransport; a real fix needs a live ASGI server "
+    "(uvicorn on a socket) harness, which is out of scope for this pass "
+    "(heavier + flake risk). The emitter itself meets MISSION exit-crit #4.",
     strict=True,
 )
 async def test_sse_stream_emits_status_change_on_file_touch(

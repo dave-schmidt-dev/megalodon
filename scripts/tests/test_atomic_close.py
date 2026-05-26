@@ -129,3 +129,23 @@ def test_dry_run_writes_nothing(mission_dir, agent):
     assert res.returncode == 0
     after = (mission_dir / "STATUS.md").read_text(encoding="utf-8")
     assert before == after
+
+
+def test_build_request_id_is_unique_same_second_same_agent():
+    """Robust request-id scheme: no collisions for same-second, same-agent ids.
+
+    Regression guard for the previous token_hex(2) (16-bit) tail, which had a
+    ~256-id birthday bound and could let a colliding request_id silently
+    clobber a prior pending close. The monotonic per-process counter makes
+    within-process collisions impossible regardless of timestamp resolution.
+    """
+    sys.path.insert(0, str(SCRIPT.resolve().parents[1]))
+    from scripts.atomic_close import _build_request_id
+
+    ids = {_build_request_id("agent-abcd") for _ in range(5000)}
+    assert len(ids) == 5000
+    # Shape: ends with the 16-hex (8-byte) entropy tail, has the seq segment.
+    sample = next(iter(ids))
+    assert "-rule10-CLOSE-" in sample
+    tail = sample.rsplit("-", 1)[-1]
+    assert len(tail) == 16 and all(c in "0123456789abcdef" for c in tail)

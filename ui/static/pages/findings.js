@@ -11,9 +11,10 @@
  */
 
 import { API_FINDINGS } from "../js/constants.js";
+import { loadConfig } from "../js/config.js";
 
 // ---------------------------------------------------------------------------
-// DOM helpers (same pattern as grid.js / dashboard.js)
+// DOM helpers (same pattern as board.js / lane_detail.js)
 // ---------------------------------------------------------------------------
 
 /**
@@ -62,6 +63,8 @@ function clearNode(node) {
  * @param {string} filename
  * @returns {{ agent: string, lane: string, phase: string, topic: string, utc: string }}
  */
+export { buildLaneResolver };
+
 export function parseFindingFilename(filename) {
   const out = { agent: "", lane: "", phase: "", topic: "", utc: "" };
   const base = String(filename || "").replace(/\.md$/i, "").replace(/\.scratch$/i, "");
@@ -95,8 +98,12 @@ export function parseFindingFilename(filename) {
   return out;
 }
 
-// Map single-letter lane short codes → canonical lane names.
-const LANE_SHORT_TO_NAME = {
+// Last-resort lane short→name map. Only consulted when /api/v1/config is
+// unavailable (network failure / pre-auth) AND the finding carries no usable
+// lane field. The live source of truth is config.lanes (see buildLaneResolver),
+// so a mission with non-default lanes still resolves correctly. Kept as a
+// fallback so the no-config case never regresses to bare short codes.
+const LANE_SHORT_TO_NAME_FALLBACK = {
   A: "AUDIT",
   B: "ARCHITECT",
   C: "BACKEND",
@@ -105,9 +112,27 @@ const LANE_SHORT_TO_NAME = {
   F: "META",
 };
 
-function laneShortToName(short) {
-  const k = String(short || "").toUpperCase();
-  return LANE_SHORT_TO_NAME[k] || k;
+/**
+ * Build a short-code → lane-name resolver from the loaded config's `lanes`
+ * array (`[{ name, short }]`). Falls back to LANE_SHORT_TO_NAME_FALLBACK for
+ * any short code the config does not define, then to the short code itself.
+ *
+ * @param {{lanes?: Array<{name?: string, short?: string}>}|null} config
+ * @returns {(short: string) => string}
+ */
+function buildLaneResolver(config) {
+  /** @type {Record<string, string>} */
+  const fromConfig = {};
+  const lanes = config && Array.isArray(config.lanes) ? config.lanes : [];
+  for (const lane of lanes) {
+    const short = String((lane && lane.short) || "").toUpperCase();
+    const name = String((lane && lane.name) || "").trim();
+    if (short && name) fromConfig[short] = name;
+  }
+  return function laneShortToName(short) {
+    const k = String(short || "").toUpperCase();
+    return fromConfig[k] || LANE_SHORT_TO_NAME_FALLBACK[k] || k;
+  };
 }
 
 /**
@@ -239,9 +264,10 @@ function buildDrawer(onClose) {
 /**
  * @param {{ filename: string, severity?: string, lane?: string, agent?: string, utc?: string }} meta
  * @param {(meta: object) => void} onClick
+ * @param {(short: string) => string} laneShortToName  config-derived short→name resolver
  * @returns {HTMLElement}
  */
-function buildRow(meta, onClick) {
+function buildRow(meta, onClick, laneShortToName) {
   const parsed = parseFindingFilename(meta.filename);
 
   // Resolve fields: prefer server-supplied over filename-parsed.
@@ -378,16 +404,27 @@ export async function render(root, _params) {
   }
   document.addEventListener("keydown", onKeyDown);
 
-  // Fetch findings.
+  // Fetch findings + config in parallel. Config drives the lane short→name
+  // resolver (single-flight cached). A config failure is non-fatal: the
+  // resolver falls back to the static map so lane names never regress.
   let findings = [];
-  try {
-    const resp = await fetch(API_FINDINGS, { headers: { Accept: "application/json" } });
-    if (resp.ok) {
-      const data = await resp.json();
-      findings = Array.isArray(data.findings) ? data.findings : [];
-    }
-  } catch (err) {
-    console.warn("[findings] fetch failed:", err);
+  /** @type {(short: string) => string} */
+  let laneShortToName = buildLaneResolver(null);
+  const [findingsResult, configResult] = await Promise.allSettled([
+    fetch(API_FINDINGS, { headers: { Accept: "application/json" } }).then((r) =>
+      r.ok ? r.json() : null,
+    ),
+    loadConfig(),
+  ]);
+  if (findingsResult.status === "fulfilled" && findingsResult.value) {
+    findings = Array.isArray(findingsResult.value.findings) ? findingsResult.value.findings : [];
+  } else if (findingsResult.status === "rejected") {
+    console.warn("[findings] fetch failed:", findingsResult.reason);
+  }
+  if (configResult.status === "fulfilled") {
+    laneShortToName = buildLaneResolver(configResult.value);
+  } else {
+    console.warn("[findings] config load failed; using fallback lane names:", configResult.reason);
   }
 
   // Render list.
@@ -429,7 +466,7 @@ export async function render(root, _params) {
             drawer.open({ filename: clickedMeta.filename, body: `Error: ${err && err.message ? err.message : "unknown"}` });
           }
         }
-      }));
+      }, laneShortToName));
     }
   }
 

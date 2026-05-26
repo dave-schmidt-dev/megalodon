@@ -105,7 +105,9 @@ def _stub_resolver(stub_script: Path):
 
 
 @pytest.mark.asyncio
-async def test_real_tmux_start_all_creates_sessions(tmp_path: Path, tmux_socket: Path):
+async def test_real_tmux_start_all_creates_sessions(
+    tmp_path: Path, tmux_socket: Path, governor_scripts_link
+):
     """start_all must create one tmux session per configured lane on the real socket."""
     # Ensure stub harness is executable; if not, skip gracefully
     if not STUB_HARNESS_PATH.exists():
@@ -113,6 +115,11 @@ async def test_real_tmux_start_all_creates_sessions(tmp_path: Path, tmux_socket:
 
     fleet_dir = tmp_path / ".fleet"
     fleet_dir.mkdir(parents=True, exist_ok=True)
+    # Governor preflight (default-enabled) resolves the PreToolUse hook through
+    # <mission>/scripts/governor_hook.py before tmux; new_run.sh makes that
+    # symlink in production, so recreate it here or start_all dies in
+    # preflight_governor (GovernorPreflightError) before spawning anything.
+    governor_scripts_link(tmp_path)
     # Short-path socket (conftest fixture): the deep pytest tmp_path under
     # .fleet/ would exceed the 104-byte sun_path limit (production exits 10).
     socket = tmux_socket

@@ -709,6 +709,30 @@ def test_decide_websearch_uses_committed_allowlist(project_dir):
     _assert_allow(d)
 
 
+def test_decide_websearch_plain_text_query_denied(project_dir):
+    """A PLAIN-TEXT WebSearch query (the normal case) is denied — documents intent.
+
+    ``decide`` routes WebSearch through ``decide_webfetch(tin["query"])``, which
+    feeds the string straight to ``urlparse``. A real search string like
+    ``"how to use asyncio"`` has no scheme/host, so ``urlparse(...).hostname`` is
+    empty and the allowlist check denies it (category ``network-host``). The
+    only WebSearch case that can ALLOW is a query that happens to be shaped like
+    a URL on the host allowlist (see the test above). The sibling test using a
+    URL-shaped query gives false confidence that ordinary searches pass; this
+    pins the actual behavior — the overwhelmingly common plain-text query is
+    DENIED. (If WebSearch should adjudicate by intent rather than by accidental
+    URL shape, that is a deliberate policy change, and this test will flag it.)
+    """
+    policy._load_host_allowlist.cache_clear()
+    d = decide(
+        "WebSearch",
+        {"query": "how to use asyncio"},
+        project_dir=project_dir,
+        lane=LANE,
+    )
+    _assert_deny(d, "network-host")
+
+
 # ---------------------------------------------------------------------------
 # Unknown future tool
 # ---------------------------------------------------------------------------

@@ -64,7 +64,14 @@ jobs:
           pytest scripts/tests ui/tests/integration ui/tests/unit
           -v -m "not isolated"
 
-      - name: Forked isolation pass
+      # The isolated marker gates the real-tmux integration tier (test_real_tmux_spawn,
+      # test_lane_exit_detected_within_5s, test_spawn_tail_realfile,
+      # test_followup_pipe_pane_preserved). These spawn real tmux sessions through the
+      # genuine FleetSpawner path -- including the governor preflight + canary self-test
+      # -- so the run-dir scripts/ symlink the preflight requires is created by the test
+      # fixtures (scripts/tests/conftest.py::link_governor_scripts). tmux is installed
+      # and verified above, so this tier actually executes here (not just collects).
+      - name: Forked isolation pass (incl. real-tmux tier)
         run: >
           uv run --extra test
           pytest --forked -m isolated
@@ -84,6 +91,18 @@ jobs:
       - name: Install Playwright browsers (macOS)
         if: runner.os == 'macOS' && hashFiles('ui/tests/e2e/playwright.config.ts') != ''
         run: npx playwright install chromium
+
+      # Board page e2e gate: the operator-facing board (stale/BLOCKED pills,
+      # lane rows, safety rails). Scoped to the chromium-board project so the
+      # board surface is gated explicitly even if the full multi-project run is
+      # later trimmed. chromium-board sets MEGALODON_FAKE_SPAWNER=1 and uses the
+      # fix-small fixture (see ui/tests/e2e/playwright.config.ts).
+      - name: Playwright board e2e (chromium-board)
+        if: hashFiles('ui/tests/e2e/playwright.config.ts') != ''
+        run: >
+          npx playwright test
+          --config=ui/tests/e2e/playwright.config.ts
+          --project=chromium-board
 
       - name: Playwright e2e tests
         if: hashFiles('ui/tests/e2e/playwright.config.ts') != ''

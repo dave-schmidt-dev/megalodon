@@ -18,9 +18,11 @@ Spec: docs/superpowers/specs/2026-05-16-v9-m3-helper-scripts-design.md
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import secrets
 import sys
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,9 +39,22 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Per-process monotonic counter + CSPRNG entropy, mirroring the robust scheme in
+# megalodon_ui/queue/queue_client.py. The previous token_hex(2) tail (16 bits)
+# was collision-prone for same-second closes by the same agent (birthday bound
+# ~256 ids); a colliding request_id would let a second close silently clobber a
+# prior pending request. The monotonic counter makes within-process collisions
+# impossible and token_hex(8) (64 bits) makes cross-process same-second
+# collisions astronomically unlikely.
+_RID_COUNTER = itertools.count()
+_RID_COUNTER_LOCK = threading.Lock()
+
+
 def _build_request_id(agent: str) -> str:
     stamp = _utc_now().replace(":", "-")
-    return f"{stamp}-{agent}-rule10-CLOSE-{secrets.token_hex(2)}"
+    with _RID_COUNTER_LOCK:
+        seq = next(_RID_COUNTER)
+    return f"{stamp}-{agent}-rule10-CLOSE-{seq:06d}-{secrets.token_hex(8)}"
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:

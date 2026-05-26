@@ -28,12 +28,21 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# ARCHIVED v9 SNAPSHOT — NOT EXECUTED. The live queue client lives in
+# megalodon_ui/queue/queue_client.py (and scripts/_backends/queue_client.py),
+# which use a per-process monotonic counter + token_hex(8) request-id. This
+# token_hex(2) (16-bit) tail is collision-prone and was the source of the
+# Wave-1 data-loss risk class; it is left UNCHANGED here only because this file
+# is a frozen design-doc snapshot that nothing imports. Do not copy this
+# scheme into new code — use the live client's _request_id instead.
 def _request_id(agent: str, target: str, intent: str, utc: str) -> str:
     return f"{utc.replace(':', '-')}-{agent}-{target.replace('.', '_')}-{intent}-{secrets.token_hex(2)}"
 
 
 def _idempotency_key(payload: dict[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -102,8 +111,13 @@ def status_update(
     }
     preconditions = {"required_phase": required_phase} if required_phase else {}
     return submit(
-        mission_dir, agent, lane, "STATUS.md", "STATUS_UPDATE",
-        payload, preconditions=preconditions,
+        mission_dir,
+        agent,
+        lane,
+        "STATUS.md",
+        "STATUS_UPDATE",
+        payload,
+        preconditions=preconditions,
     )
 
 
@@ -117,16 +131,25 @@ def tasks_bracket(
     """Rewrite a TASKS.md bracket prefix for the given task_id."""
     payload = {"task_id": task_id, "new_bracket": new_bracket}
     return submit(
-        mission_dir, agent, lane, "TASKS.md", "TASKS_BRACKET", payload,
+        mission_dir,
+        agent,
+        lane,
+        "TASKS.md",
+        "TASKS_BRACKET",
+        payload,
     )
 
 
-def task_claim(mission_dir: Path | str, agent: str, lane: str, task_id: str, utc: str | None = None) -> str:
+def task_claim(
+    mission_dir: Path | str, agent: str, lane: str, task_id: str, utc: str | None = None
+) -> str:
     bracket = f"[claimed: {agent} @ {utc or utc_now()}]"
     return tasks_bracket(mission_dir, agent, lane, task_id, bracket)
 
 
-def task_done(mission_dir: Path | str, agent: str, lane: str, task_id: str, utc: str | None = None) -> str:
+def task_done(
+    mission_dir: Path | str, agent: str, lane: str, task_id: str, utc: str | None = None
+) -> str:
     bracket = f"[done: {agent} @ {utc or utc_now()}]"
     return tasks_bracket(mission_dir, agent, lane, task_id, bracket)
 
@@ -147,7 +170,12 @@ def history_append(
     line = f"{utc or utc_now()} | {agent} | {lane} | {task_id} | {finding_path} | {severity}"
     payload = {"line": line}
     return submit(
-        mission_dir, agent, lane, "HISTORY.md", "HISTORY_APPEND", payload,
+        mission_dir,
+        agent,
+        lane,
+        "HISTORY.md",
+        "HISTORY_APPEND",
+        payload,
     )
 
 
@@ -160,7 +188,12 @@ def mission_event(
     """Append a line to .mission-events."""
     payload = {"line": line}
     return submit(
-        mission_dir, agent, lane, ".mission-events", "MISSION_EVENT_APPEND", payload,
+        mission_dir,
+        agent,
+        lane,
+        ".mission-events",
+        "MISSION_EVENT_APPEND",
+        payload,
     )
 
 
@@ -173,7 +206,12 @@ def claim_dir_create(
     """Create claims/<task_id>/ with owner.txt set to the calling agent."""
     payload = {"task_id": task_id, "owner_agent": agent, "owner_lane": lane}
     return submit(
-        mission_dir, agent, lane, f"claims/{task_id}", "CLAIM_DIR_CREATE", payload,
+        mission_dir,
+        agent,
+        lane,
+        f"claims/{task_id}",
+        "CLAIM_DIR_CREATE",
+        payload,
     )
 
 
@@ -186,16 +224,24 @@ def claim_dir_done(
     """Mark claims/<task_id>/done — only owner may do this."""
     payload = {"task_id": task_id, "agent": agent}
     return submit(
-        mission_dir, agent, lane, f"claims/{task_id}/done", "CLAIM_DIR_DONE", payload,
+        mission_dir,
+        agent,
+        lane,
+        f"claims/{task_id}/done",
+        "CLAIM_DIR_DONE",
+        payload,
     )
 
 
 # ---- low-effort poll helper for the rare worker that needs to wait ----
 
 
-def wait_until_applied(mission_dir: Path | str, request_id: str, timeout_seconds: float = 30.0) -> str:
+def wait_until_applied(
+    mission_dir: Path | str, request_id: str, timeout_seconds: float = 30.0
+) -> str:
     """Block until request_id moves out of pending. Returns 'applied' or 'rejected'."""
     import time
+
     mission = Path(mission_dir)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -250,13 +296,20 @@ if __name__ == "__main__":
     common = dict(mission_dir=args.mission_dir, agent=args.agent, lane=args.lane)
 
     if args.cmd == "status":
-        rid = status_update(**common, new_state=args.state, new_utc=args.utc, new_notes=args.notes)
+        rid = status_update(
+            **common, new_state=args.state, new_utc=args.utc, new_notes=args.notes
+        )
     elif args.cmd == "claim":
         rid = task_claim(**common, task_id=args.task)
     elif args.cmd == "done":
         rid = task_done(**common, task_id=args.task)
     elif args.cmd == "history":
-        rid = history_append(**common, task_id=args.task, finding_path=args.finding, severity=args.severity)
+        rid = history_append(
+            **common,
+            task_id=args.task,
+            finding_path=args.finding,
+            severity=args.severity,
+        )
     elif args.cmd == "event":
         rid = mission_event(**common, line=args.line)
     elif args.cmd == "claim-dir":

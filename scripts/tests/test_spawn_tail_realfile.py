@@ -73,10 +73,16 @@ async def _drain_until(
 
 
 @pytest.mark.asyncio
-async def test_real_tail_delivers_appended_bytes(tmp_path: Path) -> None:
+async def test_real_tail_delivers_appended_bytes(
+    tmp_path: Path, governor_scripts_link
+) -> None:
     """Bytes appended to the stream log appear in subscriber queues."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
+    # start_all() runs the (default-enabled) governor preflight before the tmux
+    # mocks below ever apply; without the run-dir scripts/ symlink it raises
+    # GovernorPreflightError. Wire it as new_run.sh would.
+    governor_scripts_link(mission_dir)
     stream_log = mission_dir / ".fleet" / "A.stream.log"
     stream_log.touch()
 
