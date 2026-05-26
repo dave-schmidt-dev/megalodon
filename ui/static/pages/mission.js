@@ -19,6 +19,7 @@
 // property.
 
 import { API_STATE, API_CONFIG } from "../js/constants.js";
+import { authedFetch } from "../js/auth.js";
 
 // ---------------------------------------------------------------------------
 // DOM helpers (same pattern used across grid.js / lane_detail.js)
@@ -70,7 +71,7 @@ function clearNode(node) {
  * @returns {Promise<any>}
  */
 async function fetchState() {
-  const resp = await fetch(API_STATE, { credentials: "same-origin" });
+  const resp = await authedFetch(API_STATE);
   if (!resp.ok) throw new Error(`GET ${API_STATE} → HTTP ${resp.status}`);
   return resp.json();
 }
@@ -81,9 +82,65 @@ async function fetchState() {
  * @returns {Promise<any>}
  */
 async function fetchConfig() {
-  const resp = await fetch(API_CONFIG, { credentials: "same-origin" });
+  const resp = await authedFetch(API_CONFIG);
   if (!resp.ok) throw new Error(`GET ${API_CONFIG} → HTTP ${resp.status}`);
   return resp.json();
+}
+
+// ---------------------------------------------------------------------------
+// Mission id resolution (audit I5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a human-meaningful mission id, falling back when MISSION.md carries no
+ * machine-readable `id`. Resolution order:
+ *   1. state.mission.id            — the canonical machine id when present.
+ *   2. config.mission.id           — config-declared id (future-proof; harmless
+ *                                    if the config doesn't nest a mission block).
+ *   3. config.mission.description  — short human summary from the mission config.
+ *   4. MISSION.md title/heading    — surfaced as mission.title/name/heading if
+ *                                    the backend ever provides it.
+ *   5. first mission event's lead token (e.g. a phase marker) as a last hint.
+ * Returns "" only when nothing usable is found (caller renders "—").
+ *
+ * @param {Record<string, any>|null|undefined} mission  state.mission payload
+ * @param {Record<string, any>|null|undefined} config   /api/v1/config payload
+ * @returns {string}
+ */
+export function resolveMissionId(mission, config) {
+  const m = mission || {};
+  const c = config || {};
+
+  const direct = String(m.id || "").trim();
+  if (direct) return direct;
+
+  const cfgMission = (c && typeof c.mission === "object" && c.mission) || {};
+  const cfgId = String(cfgMission.id || "").trim();
+  if (cfgId) return cfgId;
+
+  const cfgDesc = String(cfgMission.description || "").trim();
+  if (cfgDesc) return cfgDesc;
+
+  // MISSION.md title / first heading, if the backend surfaces it.
+  const title = String(m.title || m.name || m.heading || "").trim();
+  if (title) return title;
+
+  // Last-resort: the leading token of the most-recent mission event line.
+  const events = Array.isArray(m.events) ? m.events : [];
+  for (const ev of events) {
+    let line = "";
+    if (ev && typeof ev === "object") line = String(ev.raw || "");
+    else if (typeof ev === "string") line = ev;
+    line = line.trim();
+    if (line) {
+      // Skip a leading UTC stamp; take the next word as a coarse label.
+      const parts = line.split(/\s+/).filter(Boolean);
+      const token = parts.length > 1 ? parts[1] : parts[0];
+      if (token) return token;
+    }
+  }
+
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -93,11 +150,16 @@ async function fetchConfig() {
 /**
  * @param {HTMLElement} container
  * @param {{ id?: string, phase?: string, status?: string }} mission
+ * @param {Record<string, any>|null} [config]  /api/v1/config for id fallback
  */
-function renderSummaryCard(container, mission) {
+function renderSummaryCard(container, mission, config) {
   clearNode(container);
 
-  const id = String(mission.id || "—");
+  const resolvedId = resolveMissionId(mission, config);
+  const id = resolvedId || "—";
+  // True when we fell back (no machine-readable mission.id) but still found a
+  // usable label — operators/tests can tell a fallback id from the real one.
+  const idIsFallback = !String(mission.id || "").trim() && resolvedId !== "";
   const phase = String(mission.phase || "—");
   const status = String(mission.status || "—");
 
@@ -116,8 +178,11 @@ function renderSummaryCard(container, mission) {
           {
             class: "mono",
             "data-mission-id": id,
+            "data-id-fallback": idIsFallback ? "true" : "false",
             "data-testid": "mission-id",
-            title: `Mission id: ${id}`,
+            title: idIsFallback
+              ? `Mission id (fallback — MISSION.md has no machine-readable id): ${id}`
+              : `Mission id: ${id}`,
           },
           id,
         ),
@@ -393,7 +458,7 @@ export async function render(root, _params) {
   // Populate summary card.
   if (stateData) {
     const mission = (stateData && stateData.mission) || {};
-    renderSummaryCard(summaryCard, mission);
+    renderSummaryCard(summaryCard, mission, configData);
   } else {
     renderError(
       summaryCard,

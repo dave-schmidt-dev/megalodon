@@ -19,12 +19,26 @@
 //   3. Config collapses   — <details> initially closed; click opens it; content visible.
 
 import { test, expect } from '@playwright/test';
+import { readUiToken } from './_helpers';
+
+// ---------------------------------------------------------------------------
+// Helper: authenticate via the hash-token exchange. /api/v1/{state,config}
+// are session-gated, so the mission page needs the mui_session cookie.
+// ---------------------------------------------------------------------------
+
+async function authenticate(page: import('@playwright/test').Page, testInfo: import('@playwright/test').TestInfo): Promise<void> {
+  const token = readUiToken(testInfo);
+  await page.goto(`/#t=${token}`);
+  await expect(page).toHaveURL('/', { timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+}
 
 // ---------------------------------------------------------------------------
 // Helper: navigate to /mission and wait for the page to be rendered.
 // ---------------------------------------------------------------------------
 
-async function gotoMission(page: import('@playwright/test').Page): Promise<void> {
+async function gotoMission(page: import('@playwright/test').Page, testInfo: import('@playwright/test').TestInfo): Promise<void> {
+  await authenticate(page, testInfo);
   await page.goto('/mission');
   // Wait until the page container is attached (the render() async function
   // populates this after the fetch resolves).
@@ -39,8 +53,8 @@ async function gotoMission(page: import('@playwright/test').Page): Promise<void>
 
 test.describe('mission page', () => {
 
-  test('summary card populates mission id, phase, and status', async ({ page }) => {
-    await gotoMission(page);
+  test('summary card populates mission id, phase, and status', async ({ page }, testInfo) => {
+    await gotoMission(page, testInfo);
 
     // Mission ID: [data-mission-id] attribute should be set on the id span.
     const idSpan = page.locator('[data-testid="mission-id"]');
@@ -68,8 +82,8 @@ test.describe('mission page', () => {
     expect(statusText!.trim()).not.toBe('');
   });
 
-  test('events log has at least one row and container allows scroll', async ({ page }) => {
-    await gotoMission(page);
+  test('events log has at least one row and container allows scroll', async ({ page }, testInfo) => {
+    await gotoMission(page, testInfo);
 
     // Events section must be present.
     const eventsSection = page.locator('[data-testid="mission-events-log"]');
@@ -90,8 +104,8 @@ test.describe('mission page', () => {
     expect(['auto', 'scroll']).toContain(overflowY);
   });
 
-  test('config details is initially closed; click opens it and shows content', async ({ page }) => {
-    await gotoMission(page);
+  test('config details is initially closed; click opens it and shows content', async ({ page }, testInfo) => {
+    await gotoMission(page, testInfo);
 
     // The config card must be present.
     await expect(page.locator('[data-testid="mission-config-card"]')).toBeVisible({ timeout: 5_000 });
@@ -120,6 +134,33 @@ test.describe('mission page', () => {
     const configText = await preBlock.textContent();
     expect(configText).toBeTruthy();
     expect(configText!.trim().length).toBeGreaterThan(0);
+  });
+
+  // ------------------------------------------------------------------ I5
+  test('mission id falls back to a usable label when MISSION.md has no machine id', async ({ page }, testInfo) => {
+    await authenticate(page, testInfo);
+
+    // Strip mission.id from /api/v1/state so the fallback path runs. The fixture
+    // keeps its events (INIT->ACTIVE), so the resolver falls back to the leading
+    // token of the most-recent event line ("INIT->ACTIVE") — never a bare "—".
+    await page.route('**/api/v1/state', async (route) => {
+      const resp = await route.fetch();
+      const json = await resp.json();
+      if (json.mission) delete json.mission.id;
+      await route.fulfill({ response: resp, json });
+    });
+
+    await page.goto('/mission');
+    await expect(page.locator('[data-testid="mission-page"]')).toBeVisible({ timeout: 15_000 });
+
+    const idSpan = page.locator('[data-testid="mission-id"]');
+    await expect(idSpan).toBeVisible({ timeout: 5_000 });
+    // Must NOT be the bare "—" placeholder.
+    const idText = (await idSpan.textContent())?.trim() ?? '';
+    expect(idText).not.toBe('—');
+    expect(idText.length).toBeGreaterThan(0);
+    // And it must be flagged as a fallback id.
+    await expect(idSpan).toHaveAttribute('data-id-fallback', 'true');
   });
 
 });

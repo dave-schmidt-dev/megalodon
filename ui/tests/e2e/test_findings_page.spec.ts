@@ -11,8 +11,23 @@
 //   3. Empty state — skipped when fixture has findings (it has 2).
 
 import { test, expect } from '@playwright/test';
+import { readUiToken } from './_helpers';
+
+// The server's auth gate is deny-by-default: /api/v1/findings now requires the
+// mui_session cookie. Exchange the hash token first so the findings fetch
+// (migrated to authedFetch) succeeds instead of 401-ing into the reauth modal.
+async function authenticate(page: import('@playwright/test').Page, testInfo: import('@playwright/test').TestInfo) {
+  const token = readUiToken(testInfo);
+  await page.goto(`/#t=${token}`);
+  await expect(page).toHaveURL('/', { timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+}
 
 test.describe('findings page', () => {
+
+  test.beforeEach(async ({ page }, testInfo) => {
+    await authenticate(page, testInfo);
+  });
 
   test('navigates to /findings and renders rows with structured attributes', async ({ page }) => {
     await page.goto('/findings');

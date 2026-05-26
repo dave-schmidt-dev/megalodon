@@ -52,6 +52,23 @@ import { fixtureRootForProject, readUiToken } from './_helpers';
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Dismiss every currently-rendered alert banner so its fixed-position stack
+ * stops intercepting clicks on board controls (e.g. the activity toggle).
+ * No-op when no banners are present. Idempotent.
+ */
+async function dismissAlertBanners(
+  page: import('@playwright/test').Page,
+): Promise<void> {
+  const dismissButtons = page.locator('[data-testid^="alert-dismiss-"]');
+  // The stack can hold several banners; dismiss until none remain (bounded so a
+  // re-firing alert can never loop forever).
+  for (let i = 0; i < 10 && (await dismissButtons.count()) > 0; i++) {
+    await dismissButtons.first().click();
+    await page.waitForTimeout(50);
+  }
+}
+
 /** Authenticate via hash-token exchange and navigate to /. */
 async function authenticateAndGotoGrid(
   page: import('@playwright/test').Page,
@@ -61,6 +78,14 @@ async function authenticateAndGotoGrid(
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  // The chromium-board project runs every board spec sequentially against ONE
+  // shared server (workers:1), so STATUS-STALE alert banners raised by earlier
+  // specs can still be on screen. The banner stack is a fixed, top-right
+  // overlay (alert_banner.js: position:fixed; z-index:1500) that can sit over
+  // the activity toggle and intercept its click. Dismiss any present banners
+  // first so the toggle is reachable. (In the product the operator dismisses
+  // them the same way — this is not a layout bug.)
+  await dismissAlertBanners(page);
   // The board does NOT auto-mount the activity wall — open it via the toggle.
   await page.locator('[data-testid="board-activity-toggle"]').click();
   await expect(page.locator('[data-testid="activity-wall-root"]')).toBeVisible({ timeout: 5_000 });

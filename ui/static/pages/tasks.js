@@ -18,6 +18,8 @@
 //   claims
 
 import { store } from "../js/store.js";
+import { authedFetch } from "../js/auth.js";
+import { API_STATE } from "../js/constants.js";
 
 /** Make a DOM element with attrs and optional textContent. No innerHTML. */
 function el(tag, opts) {
@@ -48,6 +50,31 @@ function truncate(s, n) {
   const str = String(s || "");
   if (str.length <= n) return str;
   return str.slice(0, n - 1) + "…";
+}
+
+/** Count done / total tasks in a phase. "done" matches the server task state. */
+export function phaseProgress(tasks) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  let done = 0;
+  for (const t of list) {
+    if (String(t && t.state).toLowerCase() === "done") done += 1;
+  }
+  return { done, total: list.length };
+}
+
+/**
+ * Whether a phase column matches the mission's current phase. The mission phase
+ * (from /api/v1/state → mission.phase) can be a canonical token ("PHASE-EXEC")
+ * or a human header ("PHASE 2 — BUILD"); column names come from TASKS.md
+ * headers. Compare case-insensitively and accept either being a substring of
+ * the other so both formats line up. Empty current phase never matches.
+ */
+export function isCurrentPhase(phaseName, currentPhase) {
+  const a = String(phaseName || "").trim().toLowerCase();
+  const b = String(currentPhase || "").trim().toLowerCase();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return a.includes(b) || b.includes(a);
 }
 
 // ---------------------------------------------------------------------------
@@ -394,16 +421,33 @@ export async function render(root, _params) {
   const skeleton = el("div", { class: "loading-skeleton", text: "Loading tasks…" });
   root.appendChild(skeleton);
 
-  // Fetch from API
+  // Fetch tasks + state in parallel. The /state read gives us the mission's
+  // current phase so the kanban can highlight the matching column. authedFetch
+  // awaits the auth bootstrap and surfaces the re-auth modal on 401, so a
+  // mid-session gate tightening recovers instead of silently emptying the board.
   let phases = [];
-  try {
-    const resp = await fetch("/api/v1/tasks");
-    if (resp.ok) {
-      const data = await resp.json();
+  let currentPhase = "";
+  const [tasksResult, stateResult] = await Promise.allSettled([
+    authedFetch("/api/v1/tasks"),
+    authedFetch(API_STATE),
+  ]);
+  if (tasksResult.status === "fulfilled" && tasksResult.value.ok) {
+    try {
+      const data = await tasksResult.value.json();
       if (Array.isArray(data.phases)) phases = data.phases;
+    } catch (err) {
+      console.warn("[tasks] tasks parse failed:", err);
     }
-  } catch (err) {
-    console.warn("[tasks] fetch failed:", err);
+  } else if (tasksResult.status === "rejected") {
+    console.warn("[tasks] fetch failed:", tasksResult.reason);
+  }
+  if (stateResult.status === "fulfilled" && stateResult.value.ok) {
+    try {
+      const stateData = await stateResult.value.json();
+      currentPhase = String((stateData && stateData.mission && stateData.mission.phase) || "");
+    } catch (_) {
+      /* non-fatal — no current-phase highlight */
+    }
   }
 
   while (root.firstChild) root.removeChild(root.firstChild);
@@ -515,24 +559,58 @@ export async function render(root, _params) {
           ? tasks
           : tasks.filter((t) => ui.selectedLanes.has(t.lane));
 
+        // Per-phase progress (over ALL tasks in the phase, not lane-filtered, so
+        // the count stays meaningful while a lane filter is active).
+        const { done, total } = phaseProgress(tasks);
+        const isCurrent = isCurrentPhase(phaseName, currentPhase);
+
         const col = el("div", {
-          class: "stack-2",
+          class: "stack-2" + (isCurrent ? " phase-col--current" : ""),
           testid: `phase-col-${phaseSlug}`,
           attrs: {
             "data-phase-name": phaseName,
-            title: `Phase: ${phaseName}`,
+            "data-phase-done": String(done),
+            "data-phase-total": String(total),
+            "data-current-phase": isCurrent ? "true" : "false",
+            title: `Phase: ${phaseName} — ${done}/${total} done`
+              + (isCurrent ? " (current phase)" : ""),
+            ...(isCurrent
+              ? { style: "outline:2px solid var(--accent,#4a9eff); outline-offset:2px; border-radius:var(--r-1,4px)" }
+              : {}),
           },
         });
 
-        // Column header
+        // Column header: phase name + done/total progress; current phase marked.
         const colHeader = el("h2", {
-          class: "lane-chip",
-          text: phaseName,
-          title: `Phase: ${phaseName} (${tasks.length} task${tasks.length !== 1 ? "s" : ""})`,
+          class: "lane-chip" + (isCurrent ? " active" : ""),
+          testid: `phase-header-${phaseSlug}`,
+          title: `Phase: ${phaseName} — ${done}/${total} done`
+            + (isCurrent ? " (current phase)" : ""),
           attrs: {
-            style: "width:100%; justify-content:flex-start; font-size:var(--fs-sm,0.85rem); margin-bottom:var(--sp-2,8px)",
+            "data-current-phase": isCurrent ? "true" : "false",
+            style: "width:100%; justify-content:flex-start; gap:var(--sp-2,8px); font-size:var(--fs-sm,0.85rem); margin-bottom:var(--sp-2,8px)",
           },
         });
+        // Current-phase dot indicator (left of the name).
+        if (isCurrent) {
+          colHeader.appendChild(el("span", {
+            testid: `phase-current-indicator-${phaseSlug}`,
+            title: "Current mission phase",
+            attrs: { "aria-label": "current phase", style: "flex-shrink:0" },
+            text: "●",
+          }));
+        }
+        colHeader.appendChild(el("span", {
+          text: phaseName,
+          attrs: { style: "flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" },
+        }));
+        colHeader.appendChild(el("span", {
+          class: "mono",
+          testid: `phase-progress-${phaseSlug}`,
+          text: `${done}/${total}`,
+          title: `${done} of ${total} tasks done`,
+          attrs: { style: "flex-shrink:0; opacity:0.85" },
+        }));
         col.appendChild(colHeader);
 
         if (visibleTasks.length === 0) {

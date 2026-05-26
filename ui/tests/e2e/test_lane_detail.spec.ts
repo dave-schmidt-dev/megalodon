@@ -35,6 +35,71 @@ async function gotoLaneA(page: import('@playwright/test').Page, testInfo: import
   await expect(page.locator('[data-testid="lane-detail-page"]')).toBeVisible({ timeout: 8_000 });
 }
 
+// Read the CSRF token from the page's meta tag (for __fake__ POSTs).
+async function readCsrfToken(page: import('@playwright/test').Page): Promise<string> {
+  return page.evaluate(
+    () =>
+      (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement | null)
+        ?.getAttribute('content') ?? '',
+  );
+}
+
+// Seed the narrative cache for given lanes (board-parity goal/now/tokens/digest).
+async function seedNarrative(
+  page: import('@playwright/test').Page,
+  lanes: Record<string, unknown>,
+): Promise<void> {
+  const csrf = await readCsrfToken(page);
+  const resp = await page.request.post('/api/v1/__fake__/narrative', {
+    headers: { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+    data: { lanes },
+  });
+  expect(resp.status(), 'POST /api/v1/__fake__/narrative').toBe(200);
+}
+
+test.describe('lane_detail: goal / progress / tokens from narrative (audit I2)', () => {
+
+  test('lane detail header surfaces goal, now, tokens, and digest from /api/v1/narrative', async ({ page }, testInfo) => {
+    const token = readUiToken(testInfo);
+    // Authenticate + land on the board first, then seed narrative so the lane
+    // detail page reads a populated narrative_cache on mount.
+    await page.goto(`/#t=${token}`);
+    await expect(page).toHaveURL('/', { timeout: 10_000 });
+    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+
+    await seedNarrative(page, {
+      A: {
+        lane: 'A',
+        lane_name: 'LANE-A',
+        state: 'claimed',
+        last: { task_id: 'T1', desc: 'A-LAST', phrase: null },
+        now: { task_id: 'T2', desc: 'A-NOW-desc', phrase: 'A-NOW-building-the-thing' },
+        goal: 'A-GOAL-ship-phase-2',
+        tokens: 54321,
+        narrator_ok: true,
+        digest: 'A-DIGEST-transcript-summary',
+      },
+    });
+
+    // Navigate to the lane detail page.
+    await page.locator('[data-testid="board-row-A"]').click();
+    await expect(page).toHaveURL(/\/lane\/A$/, { timeout: 5_000 });
+    await expect(page.locator('[data-testid="lane-detail-page"]')).toBeVisible({ timeout: 8_000 });
+
+    // Goal (board-parity).
+    await expect(page.locator('[data-testid="lane-detail-goal"]')).toContainText('A-GOAL-ship-phase-2');
+    // Now (narrator phrase preferred over desc).
+    const nowEl = page.locator('[data-testid="lane-detail-now"]');
+    await expect(nowEl).toContainText('A-NOW-building-the-thing');
+    await expect(nowEl).not.toContainText('A-NOW-desc');
+    // Tokens (formatted with thousands separators).
+    await expect(page.locator('[data-testid="lane-detail-tokens"]')).toContainText('54,321');
+    // Digest (only present when payload carries it).
+    await expect(page.locator('[data-testid="lane-detail-digest"]')).toContainText('A-DIGEST-transcript-summary');
+  });
+
+});
+
 test.describe('lane_detail: inject form send flow', () => {
 
   test('type "hello world" → click Send → POST /api/v1/lane/A/inject with correct body and X-CSRF-Token', async ({ page }, testInfo) => {

@@ -566,9 +566,21 @@ def _is_root_destructive(tokens: list[str]) -> bool:
     return False
 
 
-# Floor categories that an allow-override can NEVER lift.
+# Floor categories that an allow-override can NEVER lift. The write-target lock
+# categories (anti-tamper / write-secret / write-out-of-scope) are floors too:
+# an out-of-scope write or governor-config tamper — whether via a `>` redirect
+# or a mutation head (cp/mv/tee/...) — must not be flippable by an operator
+# rule, matching the spec's "floor categories non-overridable" requirement for
+# the mutation write-targets.
 _FLOOR_CATEGORIES = frozenset(
-    {"bash-root-destructive", "bash-privilege", "secret-read"}
+    {
+        "bash-root-destructive",
+        "bash-privilege",
+        "secret-read",
+        "anti-tamper",
+        "write-secret",
+        "write-out-of-scope",
+    }
 )
 
 
@@ -642,6 +654,186 @@ def _adjudicate_write_redirect_target(
         # Re-attribute against the original spelling for a clearer reason.
         return _deny(verdict.reason.replace(resolved, tgt), verdict.category)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Bash — mutation heads (write-target lock + secret-source floor)
+# ---------------------------------------------------------------------------
+
+# Heads that WRITE/CREATE/OVERWRITE their file operands. These were previously
+# treated as opaque and returned `bash-ok` — a confirmed hole: `cp secret
+# /etc/passwd`, `tee -a /etc/sudoers`, `mv x /etc/cron.d/job`,
+# `truncate -s 0 /etc/hosts`, `touch /etc/evil`, `mkdir /etc/evil`,
+# `ln -s /etc/passwd /tmp/leak` all slipped past the scope/secret guards. Each
+# head's destination operand(s) are now routed through the SAME
+# :func:`_adjudicate_write_target` lock used by Write/Edit and `>` redirects,
+# and SOURCE operands (the thing being copied/linked) through the SAME
+# secret-read floor used by `cat`. We FAIL CLOSED: if the operands cannot be
+# parsed confidently, the segment is denied (these are mutation/exfil commands).
+_MUTATION_HEADS = frozenset(
+    {"cp", "mv", "tee", "truncate", "touch", "mkdir", "ln", "install"}
+)
+
+# Flags that consume a following VALUE token (so the value is not mis-read as a
+# path operand), keyed by head. CRITICAL: `-s` is a VALUE flag for `truncate`
+# (`--size`) but a NO-VALUE flag for `ln` (`--symbolic`) — sharing one set would
+# let `ln -s /etc/passwd /tmp/leak` swallow the laundered target. Long `--x=val`
+# flags carry their own value and are handled generically (not listed here).
+_MUTATION_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "truncate": frozenset({"-s", "--size", "-r", "--reference", "-o", "--io-blocks"}),
+    "install": frozenset(
+        {"-m", "--mode", "-o", "--owner", "-g", "--group", "-t", "--target-directory"}
+    ),
+    "cp": frozenset({"-t", "--target-directory", "-S", "--suffix"}),
+    "mv": frozenset({"-t", "--target-directory", "-S", "--suffix"}),
+    "tee": frozenset(),
+    "touch": frozenset({"-d", "--date", "-r", "--reference", "-t"}),
+    "mkdir": frozenset({"-m", "--mode"}),
+    "ln": frozenset({"-S", "--suffix", "-t", "--target-directory"}),
+}
+
+
+def _mutation_operands(head_base: str, tokens: list[str]) -> tuple[list[str], bool]:
+    """Extract the non-flag path operands of a mutation head.
+
+    Returns ``(operands, ok)``. ``ok`` is False when a value-consuming flag is
+    dangling (no value) — caller must fail closed. ``--`` ends option parsing;
+    everything after is a literal operand. Flags (``-r``, ``-f``, ``--``, glued
+    ``-rf``) are skipped; value-flags (``-s 0``, ``-m 600``, ``--mode=600``)
+    consume their value. Quoted operands are de-quoted by shlex already.
+    """
+    value_flags = _MUTATION_VALUE_FLAGS.get(head_base, frozenset())
+    operands: list[str] = []
+    rest = tokens[1:]
+    i = 0
+    end_of_opts = False
+    while i < len(rest):
+        tok = rest[i]
+        if end_of_opts:
+            operands.append(tok)
+            i += 1
+            continue
+        if tok == "--":
+            end_of_opts = True
+            i += 1
+            continue
+        if tok.startswith("-") and tok != "-":
+            # `--mode=600` style carries its own value — no following token.
+            if "=" in tok and tok.startswith("--"):
+                i += 1
+                continue
+            if tok in value_flags:
+                # Consumes the next token as its value.
+                if i + 1 >= len(rest):
+                    return operands, False  # dangling value-flag → fail closed
+                i += 2
+                continue
+            # Plain flag (bundled short flags like `-rf`, or `-s`/`-f`/`-a`).
+            i += 1
+            continue
+        operands.append(tok)
+        i += 1
+    return operands, True
+
+
+def _adjudicate_mutation_head(
+    head_base: str, tokens: list[str], *, project_dir: Path
+) -> Decision | None:
+    """Adjudicate a mutation-head segment: secret-source floor + write-target lock.
+
+    Routes destination operand(s) through :func:`_adjudicate_write_target`
+    (anti-tamper + secret + scope) and SOURCE operands through the secret-read
+    floor — identical to Write/Edit/`>` and `cat` respectively. Returns a deny
+    Decision, or ``None`` if every operand is in-scope/non-secret. FAIL CLOSED:
+    unparseable operands → deny.
+    """
+    operands, ok = _mutation_operands(head_base, tokens)
+    if not ok:
+        return _deny(
+            f"mutation command with unparseable operands: {head_base}",
+            "write-out-of-scope",
+        )
+
+    # Partition operands into (sources, destinations) per head semantics.
+    sources: list[str] = []
+    dests: list[str] = []
+    if head_base in ("cp", "mv", "install"):
+        # `cp SRC... DST` — last operand is the destination, the rest sources.
+        if len(operands) < 2:
+            # Single/zero operand for a copy/move is malformed → fail closed.
+            return _deny(
+                f"mutation command with too few operands: {head_base}",
+                "write-out-of-scope",
+            )
+        dests = [operands[-1]]
+        sources = operands[:-1]
+    elif head_base == "ln":
+        # `ln [-s] TARGET LINK` (or `ln TARGET` defaulting link to basename in
+        # cwd). TARGET is the secret-source (symlink laundering: `ln -s
+        # /etc/passwd /tmp/leak`); LINK is the write target.
+        if not operands:
+            return _deny("ln with no operands", "write-out-of-scope")
+        sources = [operands[0]]
+        dests = operands[1:] if len(operands) > 1 else []
+    elif head_base == "tee":
+        # `tee FILE...` — every operand is a write destination (stdin → files).
+        dests = operands
+    elif head_base in ("truncate", "touch", "mkdir"):
+        # All operands are write/create targets; no source operand.
+        dests = operands
+    else:  # pragma: no cover — defensive
+        dests = operands
+
+    # Secret/scope floor on SOURCE operands (e.g. `cp ~/.ssh/id_rsa /tmp/x`,
+    # `ln -s /etc/passwd /tmp/leak`). Reading an out-of-scope or secret file via
+    # a mutation head is the SAME exfiltration vector as `cat`, so the source is
+    # routed through the identical :func:`_path_is_secret_or_out_of_scope` check
+    # (a symlink target out-of-scope is laundering). A relative source anchors
+    # at project_dir (the Bash cwd), matching the redirect handler.
+    for src in sources:
+        cand = _strip_quotes(src)
+        if not cand:
+            continue
+        blocked, reason, category = _path_is_secret_or_out_of_scope(
+            _anchor_to_project(cand, project_dir), project_dir=project_dir
+        )
+        if blocked:
+            return _deny(f"{reason} (via {head_base})", category)
+        # Also catch a bare-basename secret source (`cp id_rsa /tmp/x`).
+        if _SECRET_BASENAME_RE.match(cand):
+            return _deny(
+                f"secret source basename: {cand} (via {head_base})", "secret-read"
+            )
+
+    # Write-target lock on DESTINATION operands.
+    for dst in dests:
+        cand = _strip_quotes(dst)
+        if not cand:
+            # An empty/blank destination is ambiguous → fail closed.
+            return _deny(
+                f"mutation command with empty destination: {head_base}",
+                "write-out-of-scope",
+            )
+        resolved = _anchor_to_project(cand, project_dir)
+        verdict = _adjudicate_write_target(resolved, project_dir=project_dir)
+        if verdict.permission == "deny":
+            # Re-attribute against the original spelling for a clearer reason.
+            return _deny(verdict.reason.replace(resolved, cand), verdict.category)
+    return None
+
+
+def _anchor_to_project(path: str, project_dir: Path) -> str:
+    """Anchor a RELATIVE bash operand at ``project_dir`` (the bash cwd).
+
+    Absolute / ``~`` / ``$VAR`` paths are returned expanded as-is; a relative
+    spelling is joined onto ``project_dir`` so the scope check resolves against
+    the mission dir rather than the governor process's cwd (mirrors the
+    redirect-target handling).
+    """
+    expanded = os.path.expanduser(os.path.expandvars(path))
+    if os.path.isabs(expanded):
+        return expanded
+    return os.path.join(str(project_dir), expanded)
 
 
 def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
@@ -792,6 +984,18 @@ def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
         return _deny(f"sed exec/write program: {segment!r}", "bash-flag-exec")
     if head_base == "tar" and _segment_tar_dangerous(tokens):
         return _deny(f"tar exec flag: {segment!r}", "bash-flag-exec")
+
+    # --- Mutation heads: write-target scope-lock + secret-source floor ---
+    # cp/mv/tee/truncate/touch/mkdir/ln/install WRITE or CREATE their operands
+    # (and cp/mv/ln/install READ a source). Route destinations through the same
+    # write-target lock as `>`/Write/Edit and sources through the same
+    # secret-read floor as `cat`, so exfil (`cp ~/.ssh/id_rsa /tmp/x`) and
+    # out-of-scope writes (`tee -a /etc/sudoers`, `truncate -s 0 /etc/hosts`)
+    # are denied. Fail-closed on unparseable operands.
+    if head_base in _MUTATION_HEADS:
+        mut = _adjudicate_mutation_head(head_base, tokens, project_dir=project_dir)
+        if mut is not None:
+            return mut
 
     # --- Layer 3: secret/scope check on read-style heads ---
     if head_base in _READ_STYLE_HEADS:

@@ -14,7 +14,7 @@
 // this spec is the row/navigation structural contract only.
 
 import { test, expect } from '@playwright/test';
-import { readUiToken } from './_helpers';
+import { establishSession, readUiToken } from './_helpers';
 
 // Authenticate via the hash-token exchange and land on the board. The board's
 // narrative / lanes/stale / narrative-stream requests are session-gated; an
@@ -32,8 +32,10 @@ async function authAndGotoBoard(
 
 test.describe('board page: row count matches mission config', () => {
 
-  test('renders exactly 3 rows for a 3-lane mission (fix-small)', async ({ page }) => {
-    await page.goto('/');
+  test('renders exactly 3 rows for a 3-lane mission (fix-small)', async ({ page }, testInfo) => {
+    // The board's config/narrative fetches are session-gated; authenticate
+    // first (hash-token exchange) so the rows actually render.
+    await authAndGotoBoard(page, testInfo);
     // Wait for the board page to replace the loading skeleton.
     await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
 
@@ -50,7 +52,12 @@ test.describe('board page: row count matches mission config', () => {
     await expect(page.locator('[data-testid="board-row-D"]')).toHaveCount(0);
   });
 
-  test('row count equals /api/v1/config lanes length', async ({ page }) => {
+  test('row count equals /api/v1/config lanes length', async ({ page }, testInfo) => {
+    // /api/v1/config is session-gated (deny-by-default). Establish the session
+    // cookie in the browser context first; page.request shares that cookie jar,
+    // so the direct GET below carries it and returns 200 instead of 401.
+    await establishSession(page, testInfo);
+
     // Belt-and-suspenders: compare DOM count against config endpoint.
     const configResp = await page.request.get('/api/v1/config');
     expect(configResp.status()).toBe(200);

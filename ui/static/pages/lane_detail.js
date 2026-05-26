@@ -18,6 +18,7 @@
 // Security: no innerHTML with user data; all values via textContent / DOM APIs.
 
 import { loadConfig } from "../js/config.js";
+import { authedFetch } from "../js/auth.js";
 import { mountPage } from "../js/app.js";
 import { createTerminalPane } from "../components/terminal_pane.js";
 import { showConfirmModal } from "../components/confirm_modal.js";
@@ -154,7 +155,7 @@ async function fetchLaneStatus(short) {
     if (!laneConfig) return null;
     const laneName = String(laneConfig.name);
 
-    const resp = await fetch("/api/v1/status", { credentials: "include" });
+    const resp = await authedFetch("/api/v1/status");
     if (!resp.ok) return null;
     const json = await resp.json();
     const lanes = Array.isArray(json.lanes) ? json.lanes : [];
@@ -179,33 +180,76 @@ async function fetchLaneStatus(short) {
 }
 
 /**
+ * Fetch the per-lane narrative payload from /api/v1/narrative for this lane.
+ * The board already computes this richer view (goal / now / last / tokens /
+ * liveness / governed). Matches the board's field names so the two never
+ * diverge. Returns null on any failure (page still renders from /status).
+ *
+ * @param {string} short
+ * @returns {Promise<Record<string, any>|null>}
+ */
+async function fetchLaneNarrative(short) {
+  try {
+    const resp = await authedFetch("/api/v1/narrative");
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const lanes = json && typeof json.lanes === "object" && json.lanes ? json.lanes : {};
+    const row = lanes[short];
+    return row && typeof row === "object" ? row : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Render a now/last narrative cell to text: prefer the narrator phrase, fall
+ * back to the deterministic desc (prefixed with task_id), mirroring board.js.
+ * @param {Record<string, any>|null|undefined} cell  a narrative `now`/`last`
+ * @returns {string}
+ */
+function narrativeCellText(cell) {
+  if (!cell || typeof cell !== "object") return "";
+  if (cell.phrase) return String(cell.phrase);
+  if (cell.desc) {
+    const id = cell.task_id ? `${cell.task_id} · ` : "";
+    return `${id}${cell.desc}`;
+  }
+  return "";
+}
+
+/**
  * Build the metadata header element.
  * @param {string} short
  * @param {string} laneName
  * @param {{state: string, agent: string, working_task_id: string, notes: string}|null} status
+ * @param {Record<string, any>|null} [narrative]  per-lane /api/v1/narrative row
  * @returns {HTMLElement}
  */
-function buildMetaHeader(short, laneName, status) {
+function buildMetaHeader(short, laneName, status, narrative) {
   const stateText = status ? status.state : "—";
   const agentText = status ? status.agent : "—";
   const taskText = status ? (status.working_task_id || "—") : "—";
   const notesText = status ? status.notes : "";
 
-  return el(
+  // Narrative-derived (board-parity) fields. Absent narrative ⇒ "—" / hidden.
+  const n = narrative && typeof narrative === "object" ? narrative : null;
+  const goalText = n && n.goal ? String(n.goal) : "—";
+  const nowText = n ? narrativeCellText(n.now) : "";
+  const tokensVal = n ? n.tokens : null;
+  const tokensText = tokensVal == null ? "—" : `${Number(tokensVal).toLocaleString()} tok`;
+  // Transcript digest: only present on some payloads (digest_text is internal
+  // to the narrator, but a public `digest` may be carried). Render if present.
+  const digestText = n && n.digest ? String(n.digest) : "";
+
+  // Top row: the existing status fields (chip / state / agent / task / notes).
+  const topRow = el(
     "div",
     {
-      "data-testid": "lane-detail-meta",
       style: [
-        "background: #1c1f24;",
-        "border: 1px solid #2a2f37;",
-        "border-radius: 4px;",
-        "padding: 10px 14px;",
         "display: flex;",
         "flex-wrap: wrap;",
         "gap: 16px;",
         "align-items: center;",
-        "font-family: ui-monospace, SFMono-Regular, Menlo, monospace;",
-        "font-size: 13px;",
       ].join(" "),
     },
     el(
@@ -245,6 +289,16 @@ function buildMetaHeader(short, laneName, status) {
       },
       `task: ${taskText}`
     ),
+    // Tokens — board-parity field; shown inline with the status row.
+    el(
+      "span",
+      {
+        "data-testid": "lane-detail-tokens",
+        title: `Total tokens from the lane's session digest`,
+        style: "color: #9aa0a8;",
+      },
+      `tokens: ${tokensText}`
+    ),
     notesText
       ? el(
           "span",
@@ -256,6 +310,87 @@ function buildMetaHeader(short, laneName, status) {
           notesText
         )
       : false
+  );
+
+  // Narrative row: goal + now (board-parity). Always rendered so the goal slot
+  // is stable; values fall back to "—" when no narrative is available.
+  const narrativeRow = el(
+    "div",
+    {
+      "data-testid": "lane-detail-narrative",
+      style: [
+        "display: flex;",
+        "flex-wrap: wrap;",
+        "gap: 16px;",
+        "align-items: baseline;",
+      ].join(" "),
+    },
+    el(
+      "span",
+      {
+        "data-testid": "lane-detail-goal",
+        title: `Lane goal: ${goalText}`,
+        style: "color: #e6e6e6; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+      },
+      `goal: ${goalText}`
+    ),
+    nowText
+      ? el(
+          "span",
+          {
+            "data-testid": "lane-detail-now",
+            title: `Now: ${nowText}`,
+            style: "color: #9aa0a8; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+          },
+          `now: ${nowText}`
+        )
+      : false
+  );
+
+  const children = [topRow, narrativeRow];
+
+  // Optional transcript digest (only when the payload carries a public digest).
+  if (digestText) {
+    children.push(
+      el(
+        "div",
+        {
+          "data-testid": "lane-detail-digest",
+          title: "Latest transcript digest",
+          style: [
+            "color: #6b7280;",
+            "font-size: 11px;",
+            "max-height: 64px;",
+            "overflow-y: auto;",
+            "white-space: pre-wrap;",
+            "word-break: break-word;",
+            "width: 100%;",
+            "border-top: 1px solid #2a2f37;",
+            "padding-top: 6px;",
+          ].join(" "),
+        },
+        `digest: ${digestText}`
+      )
+    );
+  }
+
+  return el(
+    "div",
+    {
+      "data-testid": "lane-detail-meta",
+      style: [
+        "background: #1c1f24;",
+        "border: 1px solid #2a2f37;",
+        "border-radius: 4px;",
+        "padding: 10px 14px;",
+        "display: flex;",
+        "flex-direction: column;",
+        "gap: 8px;",
+        "font-family: ui-monospace, SFMono-Regular, Menlo, monospace;",
+        "font-size: 13px;",
+      ].join(" "),
+    },
+    ...children
   );
 }
 
@@ -429,9 +564,8 @@ function buildInjectForm(short) {
     sendBtn.disabled = true;
 
     try {
-      const resp = await fetch(`/api/v1/lane/${encodeURIComponent(short)}/inject`, {
+      const resp = await authedFetch(`/api/v1/lane/${encodeURIComponent(short)}/inject`, {
         method: "POST",
-        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           ...(csrf ? { "X-CSRF-Token": csrf } : {}),
@@ -561,8 +695,13 @@ export async function render(root, { short }) {
     // non-fatal; use short code as fallback
   }
 
-  // --- fetch lane status (non-blocking; page still renders on failure) ---
-  const status = await fetchLaneStatus(short);
+  // --- fetch lane status + narrative in parallel (non-blocking; the page still
+  //     renders on either failure). Narrative gives the board-parity goal / now
+  //     / tokens / digest view; status gives state / agent / working task. ---
+  const [status, narrative] = await Promise.all([
+    fetchLaneStatus(short),
+    fetchLaneNarrative(short),
+  ]);
 
   // --- clear skeleton; build page ---
   clearNode(root);
@@ -638,9 +777,8 @@ export async function render(root, { short }) {
     restartLoopBtn.disabled = true;
 
     try {
-      const resp = await fetch(`/api/v1/lane/${encodeURIComponent(short)}/restart-loop`, {
+      const resp = await authedFetch(`/api/v1/lane/${encodeURIComponent(short)}/restart-loop`, {
         method: "POST",
-        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           ...(csrf ? { "X-CSRF-Token": csrf } : {}),
@@ -668,7 +806,7 @@ export async function render(root, { short }) {
   });
 
   // --- meta header ---
-  const metaHeader = buildMetaHeader(short, laneName, status);
+  const metaHeader = buildMetaHeader(short, laneName, status, narrative);
 
   // --- terminal pane ---
   const termComponent = createTerminalPane({ lane: short, scrollback: 5000 });

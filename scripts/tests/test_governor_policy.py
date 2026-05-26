@@ -407,6 +407,128 @@ def test_allow_redirect_in_scope_non_critical(project_dir):
 
 
 # ---------------------------------------------------------------------------
+# DENY — mutation heads (cp/mv/tee/truncate/touch/mkdir/ln/install) route their
+# DESTINATIONS through the same write-target lock as `>`/Write and their SOURCES
+# through the same secret-read floor as `cat`. Confirmed exploit vectors that
+# previously returned `bash-ok`. (See policy._MUTATION_HEADS.)
+# ---------------------------------------------------------------------------
+
+
+# The 8 verified-exploit commands and the floor category each must now carry.
+@pytest.mark.parametrize(
+    "cmd,category",
+    [
+        # Secret exfiltration via copy — source is a private key.
+        ("cp ~/.ssh/id_rsa /tmp/stolen", "secret-read"),
+        # Symlink laundering an out-of-scope file into scope (target /etc/passwd
+        # is not a secret-signature file, so the accurate floor is out-of-scope).
+        ("ln -s /etc/passwd /tmp/leak", "out-of-scope"),
+        # Out-of-scope appends/writes via tee.
+        ("tee -a /etc/sudoers", "write-out-of-scope"),
+        ("echo x | tee /etc/passwd", "write-out-of-scope"),
+        # Out-of-scope overwrite / persistence via cp/mv.
+        ("cp secret /etc/passwd", "write-out-of-scope"),
+        ("mv x /etc/cron.d/job", "write-out-of-scope"),
+        # Destructive out-of-scope truncate.
+        ("truncate -s 0 /etc/hosts", "write-out-of-scope"),
+        # Out-of-scope creation via touch / mkdir.
+        ("touch /etc/evil", "write-out-of-scope"),
+        ("mkdir /etc/evil", "write-out-of-scope"),
+    ],
+)
+def test_deny_mutation_head_exploits(cmd, category, project_dir):
+    _assert_deny(_bash(cmd, project_dir), category)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # Secret SOURCE operands on every read-source-bearing mutation head.
+        "cp ~/.ssh/id_rsa /tmp/x",
+        "cp id_rsa /tmp/x",  # bare-basename secret source
+        "mv ~/.ssh/id_ed25519 /tmp/x",
+        "install ~/.ssh/id_rsa /tmp/x",
+        "ln -s ~/.ssh/id_rsa /tmp/leak",  # symlink launder via ~
+        "cp server.pem /tmp/x",  # *.pem source
+        "cp /home/u/.env /tmp/x",  # .env source
+    ],
+)
+def test_deny_mutation_secret_source(cmd, project_dir):
+    _assert_deny(_bash(cmd, project_dir), "secret-read")
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "tee /etc/passwd",
+        "tee -a /etc/sudoers /var/spool/cron",  # multiple dests, one bad
+        "install -m 600 README.md /etc/evil",  # value-flag then bad dest
+        "ln README.md /etc/evil",  # hard-link write into /etc
+        "mkdir -p /etc/evil/nested",
+        "touch -- /etc/evil",  # `--` end-of-opts then bad target
+    ],
+)
+def test_deny_mutation_out_of_scope_dest(cmd, project_dir):
+    _assert_deny(_bash(cmd, project_dir), "write-out-of-scope")
+
+
+def test_deny_mutation_anti_tamper_via_cp(project_dir):
+    # cp into the governor's own config is anti-tamper (write-target lock).
+    d = _bash("cp x .claude/governor-settings.json", project_dir)
+    _assert_deny(d, "anti-tamper")
+
+
+def test_deny_mutation_write_secret_dest(project_dir):
+    # Writing TO a secret path (in-scope but secret-signature) is write-secret.
+    d = _bash("cp README.md id_rsa", project_dir)
+    _assert_deny(d, "write-secret")
+
+
+def test_mutation_write_floor_not_overridable(project_dir):
+    # An operator rule must NOT be able to flip an out-of-scope mutation write.
+    _write_rules(project_dir, ["Bash(cp:*)"])
+    _assert_deny(_bash("cp secret /etc/passwd", project_dir), "write-out-of-scope")
+
+
+def test_mutation_secret_source_floor_not_overridable(project_dir):
+    # secret-read floor on a mutation source is non-overridable too.
+    _write_rules(project_dir, ["Bash(cp:*)"])
+    _assert_deny(_bash("cp ~/.ssh/id_rsa /tmp/x", project_dir), "secret-read")
+
+
+def test_deny_mutation_fail_closed_on_unparseable(project_dir):
+    # A copy/move with too few operands is malformed → fail closed (deny),
+    # never a silent allow.
+    _assert_deny(_bash("cp /etc/passwd", project_dir), "write-out-of-scope")
+
+
+# ---------------------------------------------------------------------------
+# ALLOW — legitimate in-scope mutation usage must still pass (no fleet-bricking).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cp README.md copy.txt",
+        "cp -r scripts build",  # recursive copy within scope
+        "mv README.md NOTES.md",
+        "mkdir build",
+        "mkdir -p build/nested",
+        "touch out.log",
+        "truncate -s 0 out.log",  # value-flag consumed, in-scope target
+        "tee out.log",
+        "echo x | tee build.log",
+        "ln -s README.md link.md",  # symlink within scope, non-secret target
+        "install -m 600 README.md out.bin",
+        "cp README.md /tmp/scratch.txt",  # /tmp scratch is allowed
+    ],
+)
+def test_allow_mutation_in_scope(cmd, project_dir):
+    _assert_allow(_bash(cmd, project_dir))
+
+
+# ---------------------------------------------------------------------------
 # DENY — native read / write / spawn
 # ---------------------------------------------------------------------------
 

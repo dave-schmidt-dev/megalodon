@@ -105,5 +105,9 @@ async def test_make_app_lifespan_context_pattern(fix_medium):
             assert getattr(app.state, "lifespan_entered", False) is True, (
                 "lifespan_context did not run startup"
             )
+            # /api/v1/status is now auth-gated (deny-by-default); mint a cookie.
+            client.cookies.set(
+                "mui_session", app.state.megalodon.session_store.create()
+            )
             r = await client.get("/api/v1/status")
             assert r.status_code == 200

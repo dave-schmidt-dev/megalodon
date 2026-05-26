@@ -7,11 +7,19 @@
 // scripts/contract_scan.py orchestrator parses those sentinels.
 
 import { test, expect } from '@playwright/test';
+import { establishSession } from './_helpers';
 
-test('M2 contract-trace — walks SPA, dumps fetched URLs', async ({ page }) => {
+test('M2 contract-trace — walks SPA, dumps fetched URLs', async ({ page }, testInfo) => {
   await page.addInitScript(() => {
     (window as unknown as { __M9_CONTRACT_TRACE__: boolean }).__M9_CONTRACT_TRACE__ = true;
   });
+
+  // Deny-by-default auth gate: /api/v1/config (and the other SPA fetches we
+  // trace) require the mui_session cookie. Establish the session before
+  // navigating so the traced board fetches succeed (otherwise the board never
+  // renders → board-page never appears). establishSession does not navigate,
+  // so the addInitScript above remains armed for the goto below.
+  await establishSession(page, testInfo);
 
   await page.goto('/static/index.html');
 

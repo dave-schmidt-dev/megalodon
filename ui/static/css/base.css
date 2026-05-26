@@ -563,3 +563,32 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------- I2: alert stack vs. activity panel collision -------------------- */
+/* The fleet alert banner stack (components/alert_banner.js) is pinned top-right
+ * at z-index:1500; the board's activity panel (board.js) is pinned top-right at
+ * z-index:100. Both anchor to the same right edge, so when alerts are present
+ * their banners (pointer-events:auto) sit ON TOP of the activity panel's header
+ * and controls — covering the pause/close/filter affordances and swallowing
+ * their clicks.
+ *
+ * Fix: while the activity panel is open, shift the alert stack to the LEFT of
+ * the panel so the two no longer overlap. The panel is up to 340px wide at
+ * right:var(--sp-3); offsetting the alert stack's right edge past the panel
+ * (340px + a gap) clears the panel's controls entirely. Both components set
+ * inline styles, so these overrides need !important to win the cascade.
+ *
+ * Uses :has() (supported in all current evergreen + WebKit/Safari engines the
+ * matrix targets). If :has() is ever unavailable the rule is simply inert and
+ * we fall back to the prior behaviour — no breakage.
+ */
+body:has([data-testid="board-activity-panel"]) [data-testid="alert-banner-stack"] {
+  right: calc(340px + var(--sp-3, 12px) + var(--sp-2, 8px)) !important;
+}
+
+/* Belt-and-suspenders: keep the activity panel ABOVE the alert stack's z so any
+ * residual sliver of overlap can never bury the panel's interactive header.
+ * (The panel sets z-index:100 inline; raise it past the alert stack's 1500.) */
+[data-testid="board-activity-panel"] {
+  z-index: 1600 !important;
+}

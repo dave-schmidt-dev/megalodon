@@ -300,6 +300,40 @@ def _lookup_status_row(
     return None
 
 
+# Coordination-signal notes routed between lanes look like ``[SIG ...]`` or
+# ``SIG-FROM-LANE-X: ...``. They are routing chatter, NOT a description of what
+# the lane is working ON — surfacing them as the Goal/Now line (I3) is wrong.
+_SIGNAL_NOTE_RE = re.compile(r"(?:^\s*\[?\s*SIG\b|\bSIG-FROM-LANE-)", re.IGNORECASE)
+
+
+def _is_signal_note(note: str) -> bool:
+    """True when a STATUS.md note is a coordination-signal routing string (I3).
+
+    These (``[SIG ...]`` / ``SIG-FROM-LANE-D: ...``) are inter-lane routing
+    chatter, not a human-readable description of the lane's current work, so
+    they must never become the Goal line.
+    """
+    return bool(_SIGNAL_NOTE_RE.search(note or ""))
+
+
+def _resolve_task_desc(
+    task_id: str | None, all_tasks: list[dict[str, Any]]
+) -> str | None:
+    """Return the TASKS.md description for ``task_id``, or None if not found.
+
+    Used to turn a STATUS.md ``working:<task_id>`` marker into a clean,
+    human-readable Goal/Now line sourced from the canonical task record rather
+    than the raw STATUS note (which may be a coordination signal — I3).
+    """
+    if not task_id:
+        return None
+    for t in all_tasks:
+        if t.get("task_id") == task_id:
+            desc = str(t.get("description", "")).strip()
+            return desc or None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Pure assembler
 # ---------------------------------------------------------------------------
@@ -384,43 +418,83 @@ def assemble_lane_rows(
                 "phrase": None,
             }
 
-        # Goal: now.desc > last.desc > lane role.
-        if now is not None:
+        # ------------------------------------------------------------------
+        # CURRENT-ACTIVITY PRECEDENCE (B1/B2/I3 fix).
+        #
+        # STATUS.md ``working:<task_id>`` is the AUTHORITATIVE source of what a
+        # lane is doing RIGHT NOW. A prior DONE task must never displace it.
+        # Precedence for state/now/goal: live STATUS working: > claimed task >
+        # last done > role. The live ``working:`` marker fires whenever STATUS
+        # reports it — independent of any done/claimed task rows (B1: a lane
+        # with a prior done P3-A but STATUS ``working: P4-A`` must reflect P4-A).
+        #
+        # The Now/Goal text comes from the TASKS.md DESCRIPTION resolved by
+        # task_id (B2: basic progress must not require a live LLM narrator). The
+        # raw STATUS note is used only when the task_id is unknown, and a
+        # coordination-signal note (``[SIG ...]``) is never used for the Goal
+        # line (I3 — that text is routing chatter, not a work description).
+        # ------------------------------------------------------------------
+        status_working_fired = False
+        if status_index:
+            status_row = _lookup_status_row(cfg, status_index)
+            if status_row is not None:
+                status_state = str(status_row.get("state", ""))
+                board_state, task_id = _status_to_board_state(status_state)
+                raw_note = str(status_row.get("notes", "")).strip()
+                # Prefer the canonical task description; fall back to a CLEAN
+                # status note (never a signal-routing note — I3).
+                resolved_desc = _resolve_task_desc(task_id, all_tasks)
+                clean_note = "" if _is_signal_note(raw_note) else raw_note
+                is_working = status_state.strip().lower().startswith("working")
+                if is_working and (task_id or resolved_desc or clean_note):
+                    # LIVE working: wins for current activity (B1) — it overrides
+                    # any prior done/claimed-derived now, regardless of task rows.
+                    status_working_fired = True
+                    desc = resolved_desc or clean_note or status_state.strip()
+                    now = {"task_id": task_id, "desc": desc, "phrase": None}
+                    # "claimed" → RUNNING pill — UNLESS a blocked task row out-
+                    # ranks it (blocked is a higher-severity alarm that the live
+                    # working marker must not mask). The now/goal still reflect
+                    # the live work; only the pill defers to blocked.
+                    state = "blocked" if blocked_tasks else board_state
+                elif (
+                    board_state != "open"
+                    and not done_tasks
+                    and not claimed_tasks
+                    and not blocked_tasks
+                ):
+                    # INIT / pre-PLAN gap-fill (initialized, no task rows): reflect
+                    # live activity rather than IDLE. Goal stays the lane role.
+                    state = board_state
+                    desc = resolved_desc or clean_note or status_state.strip()
+                    now = {"task_id": task_id, "desc": desc, "phrase": None}
+
+        # Goal: live working desc > claimed/now desc > last done desc > role.
+        # When the live STATUS working: marker fired, its now.desc IS the goal —
+        # resolved from the task description (I3: not the raw signal note).
+        if status_working_fired and now is not None:
             goal = now["desc"]
+        elif latest_claimed is not None:
+            goal = latest_claimed.get("description", "") or (cfg.role or "")
         elif last is not None:
             goal = last["desc"]
         else:
             goal = cfg.role or ""
 
-        # Derive state label from the highest-priority active task.
+        # Derive state label from the highest-priority active task — UNLESS the
+        # live STATUS working: marker already set RUNNING (which wins for the
+        # "what is it doing now" question per the precedence above).
         # Precedence: blocked > claimed > done > open.
-        if blocked_tasks:
-            state = "blocked"
-        elif claimed_tasks:
-            state = "claimed"
-        elif done_tasks:
-            state = "done"
-        else:
-            state = "open"
-
-        # STATUS.md fallback: when no TASKS.md row backs this lane (the INIT /
-        # pre-PLAN case), reflect the lane's STATUS.md state so live activity
-        # ("working: <id>" / "initialized") is not misrendered as IDLE. Task-
-        # derived state always wins — we only fill the gap. Goal is left as the
-        # lane role (set above); the fallback drives state + the Now line only.
-        if status_index and now is None and last is None and state == "open":
-            status_row = _lookup_status_row(cfg, status_index)
-            if status_row is not None:
-                status_state = str(status_row.get("state", ""))
-                board_state, task_id = _status_to_board_state(status_state)
-                if board_state != "open":
-                    state = board_state
-                    notes = str(status_row.get("notes", "")).strip()
-                    now = {
-                        "task_id": task_id,
-                        "desc": notes or status_state.strip(),
-                        "phrase": None,
-                    }
+        if not status_working_fired:
+            if blocked_tasks:
+                state = "blocked"
+            elif claimed_tasks:
+                state = "claimed"
+            elif done_tasks:
+                state = "done"
+            elif now is None:
+                state = "open"
+            # else: state already set by the INIT gap-fill above.
 
         # Digest + tokens.
         digest = digests.get(short)

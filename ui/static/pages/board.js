@@ -619,9 +619,28 @@ function formatBaselineLast(iso) {
 }
 
 /**
+ * Whether a STATUS.md note is inter-lane coordination-signal routing chatter
+ * (``[SIG ...]`` / ``SIG-FROM-LANE-X: ...``) rather than a description of the
+ * lane's current work. Mirrors board_state._is_signal_note (I3) so the board
+ * never renders a routing signal as the Now/Goal line.
+ * @param {string|null|undefined} note
+ * @returns {boolean}
+ */
+function isSignalNote(note) {
+  return /(?:^\s*\[?\s*SIG\b|\bSIG-FROM-LANE-)/i.test(String(note || ""));
+}
+
+/**
  * Seed a row from a STATUS.md baseline record (bug #3). This populates state +
  * Last so an empty/warming narrator does not render bare "—"/IDLE for a lane
  * that STATUS.md says is actually working. Narrative frames overlay this later.
+ *
+ * B2: a lane STATUS reports ``working: <id>`` should show BASIC progress in the
+ * Now line WITHOUT waiting on the LLM narrator. Use the clean STATUS note (or,
+ * when the note is a routing signal / empty, the state string itself) as the
+ * baseline Now line instead of a permanent "narrator warming up…". A genuinely
+ * idle/unknown lane still gets the warming-up hint. The narrative frame (which
+ * carries the resolved task DESCRIPTION + any narrator phrase) overlays this.
  * @param {LaneRowRefs} refs
  * @param {{state: string, last_utc: string, agent: string, notes: string}} row
  */
@@ -633,10 +652,23 @@ function applyStatusBaseline(refs, row) {
     refs.lastEl.textContent = lastLabel || "—";
   }
   if (refs.nowEl.textContent === "—" || refs.nowEl.textContent === "") {
-    // No live narrator phrase yet — say so explicitly rather than bare "—".
-    refs.nowEl.textContent = "narrator warming up…";
-    refs.nowEl.style.fontStyle = "italic";
-    refs.nowEl.dataset.baseline = "true";
+    const stateStr = String(row.state || "").trim();
+    const isWorking = stateStr.toLowerCase().startsWith("working");
+    const note = String(row.notes || "").trim();
+    const cleanNote = isSignalNote(note) ? "" : note;
+    if (isWorking) {
+      // Show real progress from STATUS, not "warming up". Prefer the clean note,
+      // else the state string (e.g. "working: P4-A"). Mark as baseline so a
+      // later narrative phrase/desc still overlays it.
+      refs.nowEl.textContent = cleanNote || stateStr;
+      refs.nowEl.style.fontStyle = "";
+      refs.nowEl.dataset.baseline = "true";
+    } else {
+      // No live work reported yet — say the narrator is warming up.
+      refs.nowEl.textContent = "narrator warming up…";
+      refs.nowEl.style.fontStyle = "italic";
+      refs.nowEl.dataset.baseline = "true";
+    }
   }
 }
 

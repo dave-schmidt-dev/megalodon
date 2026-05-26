@@ -14,12 +14,18 @@
 //   PHASE-PLAN, PHASE-EXEC, OPERATOR-ACCEPTANCE
 
 import { test, expect } from '@playwright/test';
+import { gotoAuthed } from './_helpers';
 
 const CONFIG_PHASES = ['PHASE-PLAN', 'PHASE-EXEC', 'OPERATOR-ACCEPTANCE'];
 
+// reconcilePhaseStrip() runs only after /api/v1/config resolves; that endpoint
+// is session-gated (deny-by-default), so each test authenticates first via
+// gotoAuthed (which lands on the board /) — without the cookie config 401s and
+// the strip never reconciles to the fixture's custom 3-phase set.
+
 test.describe('phase strip reconciliation against config.phases', () => {
-  test('shows exactly the config phases, in order, after config resolves', async ({ page }) => {
-    await page.goto('/');
+  test('shows exactly the config phases, in order, after config resolves', async ({ page }, testInfo) => {
+    await gotoAuthed(page, testInfo);
 
     const strip = page.locator('ol.phase-strip');
     await expect(strip).toBeVisible({ timeout: 10_000 });
@@ -34,8 +40,8 @@ test.describe('phase strip reconciliation against config.phases', () => {
     expect(names).toEqual(CONFIG_PHASES);
   });
 
-  test('a standard phase absent from config stays in the DOM but hidden', async ({ page }) => {
-    await page.goto('/');
+  test('a standard phase absent from config stays in the DOM but hidden', async ({ page }, testInfo) => {
+    await gotoAuthed(page, testInfo);
     await expect(page.locator('ol.phase-strip')).toBeVisible({ timeout: 10_000 });
 
     // Reconciliation runs after loadConfig resolves; wait for the visible set to
@@ -59,8 +65,8 @@ test.describe('phase strip reconciliation against config.phases', () => {
     expect(opDisplay).toBe('none');
   });
 
-  test('a config phase with no static <li> is created (PHASE-EXEC)', async ({ page }) => {
-    await page.goto('/');
+  test('a config phase with no static <li> is created (PHASE-EXEC)', async ({ page }, testInfo) => {
+    await gotoAuthed(page, testInfo);
     await expect(page.locator('ol.phase-strip')).toBeVisible({ timeout: 10_000 });
 
     // PHASE-EXEC is not part of the standard static strip — it must be created

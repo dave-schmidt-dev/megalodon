@@ -73,9 +73,10 @@ async def _get_csrf(client: httpx.AsyncClient) -> str:
 async def _authenticate(client: httpx.AsyncClient, token: str | None) -> None:
     """Exchange a UI token for an mui_session cookie (server.py:1371).
 
-    Cookie-gated endpoints (lanes/stale, _test/*) require a valid session.
-    No-op when ``token`` is falsy (open endpoints like /api/v1/state and
-    /api/v1/config don't need it). The AsyncClient persists the Set-Cookie.
+    Under deny-by-default (v9.2) EVERY /api/** endpoint — including /api/v1/state
+    and /api/v1/config — requires a valid session cookie. No-op when ``token`` is
+    falsy; callers that then hit a gated endpoint will get a 401 (handled by the
+    caller as a failed result). The AsyncClient persists the Set-Cookie.
     """
     if not token:
         return
@@ -107,8 +108,21 @@ async def run_stale_lane_check(
     already-consumed read can't flake.
     """
     async with httpx.AsyncClient(base_url=base_url, timeout=10) as c:
-        await _authenticate(c, token)
-        csrf = await _get_csrf(c)
+        # Deny-by-default auth gate (v9.2): /api/v1/config (which carries the
+        # CSRF token) is now cookie-gated, so we MUST authenticate first. Without
+        # a token the bootstrap can't proceed — return a clean failed result
+        # rather than letting the 401 surface as an exception.
+        try:
+            await _authenticate(c, token)
+            csrf = await _get_csrf(c)
+        except httpx.HTTPStatusError as exc:
+            return StimulusResult(
+                "stale-lane",
+                False,
+                f"auth/csrf bootstrap failed ({exc.response.status_code}); "
+                "a valid UI token is required (config is now cookie-gated)",
+                0.0,
+            )
         override_seconds = 100_000.0  # vastly above the 900 s stale threshold
 
         async def shows_stale():

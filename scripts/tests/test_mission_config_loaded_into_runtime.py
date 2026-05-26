@@ -69,6 +69,11 @@ def config_mission(tmp_path: Path, request):
     return dest
 
 
+
+def _auth(app, client) -> None:
+    """Attach a valid mui_session cookie — every /api/** call is now gated."""
+    client.cookies.set("mui_session", app.state.megalodon.session_store.create())
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(not _BACKEND_AVAILABLE, reason="megalodon_ui.server not available")
 @pytest.mark.parametrize(
@@ -93,6 +98,7 @@ async def test_config_endpoint_reflects_mission_config(
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as client:
+            _auth(app, client)
             r = await client.get("/api/v1/config")
 
     assert r.status_code == 200, f"unexpected status {r.status_code}: {r.text}"
@@ -130,6 +136,7 @@ async def test_default_v9_lane_count_not_leaked_for_3_lane_mission(tmp_path: Pat
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as client:
+            _auth(app, client)
             r = await client.get("/api/v1/config")
 
     body = r.json()

@@ -54,6 +54,60 @@ export function readUiToken(testInfo: TestInfo): string {
 }
 
 /**
+ * Authenticate against the deny-by-default auth gate and land on the board.
+ *
+ * The server now requires the `mui_session` cookie on every `/api/**` route
+ * except the small public allowlist (`/`, `/static/*`, `/healthz`,
+ * `POST /api/v1/auth/exchange`). The SPA's bootstrap performs a hash-token
+ * exchange (`/#t=<token>` → POST /api/v1/auth/exchange → Set-Cookie) and then
+ * strips the hash. After this resolves the browser context (and therefore
+ * `page.request`, which shares the context's cookie jar) carries the session
+ * cookie, so subsequent page fetches and direct `page.request.*` calls succeed
+ * instead of 401-ing into the re-auth modal.
+ *
+ * This is the canonical replacement for a bare `page.goto('/')` in any spec
+ * that depends on a gated endpoint (config / state / status / narrative /
+ * findings / tasks / activity-wall / approval-rules / pane-stream).
+ *
+ * @param target optional SPA path to navigate to AFTER authenticating (the
+ *   board cookie is already set, so the target's own gated fetches succeed).
+ *   Defaults to staying on the board (`/`).
+ */
+export async function gotoAuthed(
+  page: Page,
+  testInfo: TestInfo,
+  target?: string,
+): Promise<void> {
+  const token = readUiToken(testInfo);
+  await page.goto(`/#t=${token}`);
+  await expect(page).toHaveURL('/', { timeout: 10_000 });
+  await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  if (target && target !== '/') {
+    await page.goto(target);
+  }
+}
+
+/**
+ * Exchange the hash token into the browser context's cookie jar WITHOUT
+ * asserting any board UI. Useful when a spec needs an authenticated
+ * `page.request.*` call but does not (yet) want to render the board, or
+ * renders a non-board surface (e.g. /static/index.html, the v92 dashboard).
+ *
+ * After this resolves, `page.request.get('/api/v1/config')` (and friends)
+ * carry the `mui_session` cookie and return 200 instead of 401.
+ */
+export async function establishSession(page: Page, testInfo: TestInfo): Promise<void> {
+  const token = readUiToken(testInfo);
+  // POST through the page's own request context so the Set-Cookie lands in the
+  // context cookie jar shared by page navigations and page.request.*.
+  const resp = await page.request.post('/api/v1/auth/exchange', {
+    headers: { 'Content-Type': 'application/json' },
+    data: { token },
+  });
+  expect(resp.status(), 'POST /api/v1/auth/exchange').toBe(200);
+}
+
+/**
  * Click `submit` (typically a form submit button) and wait until the resulting
  * 202-queued mutation has been applied by the in-process queue drain loop.
  *

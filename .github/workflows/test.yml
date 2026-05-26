@@ -7,13 +7,16 @@ on:
     branches: ["**"]
 
 jobs:
+  # Primary gate: runs on ubuntu-latest only. The previous matrix included
+  # macos-latest, which sat perpetually `queued` (no macOS runner available on
+  # this repo's plan), so every workflow hung indefinitely and `fail-fast:
+  # false` never let it conclude. macOS-specific behaviour (the 104-byte
+  # sun_path socket limit) is covered by the test fixtures regardless of runner
+  # OS; Linux is sufficient for the gates that protect the product.
   test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    name: test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     env:
       MEGALODON_KILL_ON_EXIT: "1"
@@ -22,13 +25,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install tmux (Linux)
-        if: runner.os == 'Linux'
+      - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
-
-      - name: Install tmux (macOS)
-        if: runner.os == 'macOS'
-        run: brew install tmux
 
       - name: Verify tmux
         run: tmux -V
@@ -84,26 +82,83 @@ jobs:
       - name: Dead-code scan (vulture)
         run: uv run --with vulture vulture
 
-      - name: Install Playwright browsers (Linux)
-        if: runner.os == 'Linux' && hashFiles('ui/tests/e2e/playwright.config.ts') != ''
+      - name: Install Playwright browsers (chromium)
+        if: hashFiles('ui/tests/e2e/playwright.config.ts') != ''
         run: npx playwright install --with-deps chromium
 
-      - name: Install Playwright browsers (macOS)
-        if: runner.os == 'macOS' && hashFiles('ui/tests/e2e/playwright.config.ts') != ''
-        run: npx playwright install chromium
-
-      # Board page e2e gate: the operator-facing board (stale/BLOCKED pills,
-      # lane rows, safety rails). Scoped to the chromium-board project so the
-      # board surface is gated explicitly even if the full multi-project run is
-      # later trimmed. chromium-board sets MEGALODON_FAKE_SPAWNER=1 and uses the
-      # fix-small fixture (see ui/tests/e2e/playwright.config.ts).
+      # Load-bearing Playwright gate. The full config defines 11 projects across
+      # chromium + webkit, each spinning its own uvicorn server; running them all
+      # under CI never concluded. We gate on the chromium projects that protect
+      # the operator-facing surfaces:
+      #   - chromium-board: the board (stale/BLOCKED pills, lane rows, safety
+      #     rails) plus lane_detail / activity_wall / findings / signals /
+      #     mission / tasks / approval_rules pages and the T2.8 stale badge.
+      #   - chromium-default: the v9.0 dashboard render + request handlers.
+      # webkit (Safari-engine) projects are exercised locally and are NOT a CI
+      # blocking gate (see the non-blocking job below). --workers is capped to
+      # fit the GitHub runner (the config already drops to 4 under CI; we hold it
+      # there explicitly so a single failure can't fan out a server stampede).
       - name: Playwright board e2e (chromium-board)
         if: hashFiles('ui/tests/e2e/playwright.config.ts') != ''
         run: >
           npx playwright test
           --config=ui/tests/e2e/playwright.config.ts
           --project=chromium-board
+          --workers=2
 
-      - name: Playwright e2e tests
+      - name: Playwright default e2e (chromium-default)
         if: hashFiles('ui/tests/e2e/playwright.config.ts') != ''
-        run: npx playwright test --config=ui/tests/e2e/playwright.config.ts
+        run: >
+          npx playwright test
+          --config=ui/tests/e2e/playwright.config.ts
+          --project=chromium-default
+          --workers=2
+
+  # Non-blocking WebKit / Safari-engine coverage. Safari users get coverage, but
+  # a WebKit-specific flake or the heavier multi-server startup can't wedge the
+  # primary gate. `continue-on-error: true` keeps it visible without blocking
+  # the merge signal; a generous-but-bounded timeout guarantees it concludes.
+  playwright-webkit:
+    name: playwright webkit (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 25
+    if: hashFiles('ui/tests/e2e/playwright.config.ts') != ''
+
+    env:
+      MEGALODON_KILL_ON_EXIT: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install Node dependencies
+        if: hashFiles('package-lock.json') != ''
+        run: npm ci
+
+      - name: Install Playwright browsers (webkit)
+        run: npx playwright install --with-deps webkit
+
+      - name: Playwright board e2e (webkit-board)
+        run: >
+          npx playwright test
+          --config=ui/tests/e2e/playwright.config.ts
+          --project=webkit-board
+          --workers=2

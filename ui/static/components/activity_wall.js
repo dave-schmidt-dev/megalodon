@@ -24,6 +24,7 @@
 //   - Pause: per-component state (not global store).
 
 import { authedFetch, probeReauthOn401, onReauthSuccess } from '../js/auth.js';
+import { store } from '../js/store.js';
 
 // ---------------------------------------------------------------------------
 // Minimal DOM helper (mirrors grid.js pattern)
@@ -65,6 +66,46 @@ function el(tag, attrs, ...children) {
 // ---------------------------------------------------------------------------
 
 const MAX_DOM_ROWS = 500;
+
+// Bug R5: liveness watchdog. The activity-wall SSE emits keepalive comments
+// every ~heartbeatIntervalSeconds (~15s). Treat silence longer than
+// HEARTBEAT_GRACE_MULTIPLIER × that interval as a silently-dead connection and
+// force a reconnect+backfill (mirrors ui/static/js/sse.js).
+const HEARTBEAT_GRACE_MULTIPLIER = 2.5;
+const DEFAULT_HEARTBEAT_SECONDS = 15;
+
+// I3: how close to the top counts as "at the top" for auto-scroll. A small
+// slack absorbs sub-pixel rounding and a reader sitting on the newest row.
+const NEAR_TOP_PX = 8;
+
+// I1: persist the operator's open/closed choice. The open/close CONTROL lives
+// in board.js (the "activity ▸" toggle), which mounts/unmounts this component.
+// This component can't auto-mount itself, but it CAN record whether it was last
+// open and default to open when no choice is stored, so board.js can honour the
+// preference. See activityWallShouldDefaultOpen() below (exported for board.js).
+const AW_OPEN_KEY = 'megalodon.activityWall.open';
+
+/**
+ * Whether the activity wall should be open by default. For a "see what agents
+ * are doing" tool we default to OPEN; once the operator toggles it we persist
+ * and honour their last choice. board.js can call this on board mount to decide
+ * whether to auto-open the panel (I1).
+ *
+ * @returns {boolean}
+ */
+export function activityWallShouldDefaultOpen() {
+  try {
+    const v = localStorage.getItem(AW_OPEN_KEY);
+    if (v === '0') return false; // operator explicitly closed it last
+    return true; // default-open (no stored choice) or explicitly opened ('1')
+  } catch (_) {
+    return true;
+  }
+}
+
+function _persistOpenState(open) {
+  try { localStorage.setItem(AW_OPEN_KEY, open ? '1' : '0'); } catch (_) { /* ignore */ }
+}
 
 /** Filter chip labels → event type values (null = "All") */
 const CHIP_DEFS = [
@@ -490,6 +531,12 @@ export function createActivityWall({ container }) {
   const RECONNECT_MAX_MS = 30_000;
   /** @type {ReturnType<typeof setTimeout>|null} */
   let reconnectTimer = null;
+  // Bug R5: liveness watchdog timer + a flag marking that the current SSE was
+  // opened AFTER a prior failure/silence. When set, the next es.onopen runs a
+  // snapshot backfill to fill the gap the browser's silent auto-reconnect left.
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let heartbeatTimer = null;
+  let needsBackfillOnOpen = false;
   /** @type {() => void} */
   let offReauth = () => {};
   // Dedupe key set so a reconnect snapshot-backfill (bug #5) doesn't re-insert
@@ -747,6 +794,10 @@ export function createActivityWall({ container }) {
     const key = _eventKey(/** @type {any} */ (event));
     if (seenKeys.has(key)) return; // dedupe (bug #5: reconnect backfill overlap)
     seenKeys.add(key);
+    // I3: capture scroll position BEFORE inserting. We only auto-scroll the
+    // reader back to the top when they were already at/near the top; a reader
+    // who scrolled back into history must NOT be yanked up on every new event.
+    const wasAtTop = listEl.scrollTop <= NEAR_TOP_PX;
     const row = buildRow(/** @type {any} */ (event), onRowClick);
     // Tag the row with its dedupe key so cap-eviction can drop it from seenKeys
     // in lockstep (bug: seenKeys grew unbounded — a long-lived wall leaked one
@@ -760,8 +811,12 @@ export function createActivityWall({ container }) {
 
     _enforceCap();
 
-    // Auto-scroll to top only if not paused and user was already at top
-    if (!paused) {
+    // I3: auto-scroll to top ONLY when not paused AND the reader was already at
+    // (or within NEAR_TOP_PX of) the top. Previously this checked only !paused,
+    // so a reader scrolled back into history was yanked to the top on every new
+    // event. (insertBefore at firstChild pushes content down, so a reader not at
+    // the top would otherwise drift; overflow-anchor:none keeps their position.)
+    if (!paused && wasAtTop) {
       listEl.scrollTop = 0;
     }
     _refreshEmptyState();
@@ -849,6 +904,37 @@ export function createActivityWall({ container }) {
     }
   }
 
+  function _clearHeartbeatTimer() {
+    if (heartbeatTimer !== null) {
+      clearTimeout(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  /**
+   * (Re)arm the liveness watchdog (bug R5). Called on open and on every SSE
+   * message — any received byte resets the clock. If the grace window elapses
+   * with no traffic the connection is silently dead (the browser may still be
+   * stuck in CONNECTING and auto-retrying), so force a visible reconnect that
+   * backfills the gap via fetchSnapshot().
+   */
+  function _armHeartbeatWatchdog() {
+    _clearHeartbeatTimer();
+    if (disposed) return;
+    const cfg = store.get('config') || {};
+    const interval = cfg.heartbeatIntervalSeconds ?? DEFAULT_HEARTBEAT_SECONDS;
+    const graceMs = Math.round(interval * HEARTBEAT_GRACE_MULTIPLIER * 1000);
+    heartbeatTimer = setTimeout(() => {
+      if (disposed) return;
+      console.warn('[activity-wall] heartbeat watchdog tripped; forcing reconnect+backfill');
+      // Tear down the (possibly CONNECTING-but-silent) EventSource ourselves so
+      // the browser's invisible auto-reconnect can't keep masking the gap.
+      if (es) { try { es.close(); } catch (_) { /* ignore */ } es = null; }
+      probeReauthOn401('/api/v1/activity-wall');
+      _scheduleReconnect();
+    }, graceMs);
+  }
+
   /**
    * Schedule a capped-backoff reconnect (bug #5). On the next attempt we
    * re-run fetchSnapshot() to backfill events missed during the outage, then
@@ -857,6 +943,7 @@ export function createActivityWall({ container }) {
   function _scheduleReconnect() {
     if (disposed) return;
     _clearReconnectTimer();
+    _clearHeartbeatTimer();
     setConnState('disconnected');
     const delay = Math.min(reconnectDelay, RECONNECT_MAX_MS);
     reconnectTimer = setTimeout(async () => {
@@ -864,7 +951,10 @@ export function createActivityWall({ container }) {
       if (disposed) return;
       setConnState('connecting');
       // Backfill missed events before re-subscribing so the gap is filled.
+      // This explicit backfill makes the onopen-backfill redundant for this
+      // attempt, so clear the flag to avoid fetching the snapshot twice.
       await fetchSnapshot();
+      needsBackfillOnOpen = false;
       if (disposed) return;
       startSSE();
     }, delay);
@@ -877,8 +967,20 @@ export function createActivityWall({ container }) {
     es.onopen = () => {
       reconnectDelay = 500;
       setConnState('connected');
+      // Bug R5: if this open follows a prior error/silence, the browser may have
+      // silently auto-reconnected and we may have missed events while down. Run
+      // a snapshot backfill to fill the gap (seenKeys dedupes the overlap).
+      if (needsBackfillOnOpen) {
+        needsBackfillOnOpen = false;
+        fetchSnapshot();
+      }
+      // Arm the liveness watchdog so a future silent stall is detected.
+      _armHeartbeatWatchdog();
     };
     es.onmessage = (ev) => {
+      // Any traffic (event OR keepalive comment) proves the stream is alive —
+      // reset the watchdog (bug R5).
+      _armHeartbeatWatchdog();
       try {
         const event = JSON.parse(ev.data);
         prependRow(event);
@@ -887,14 +989,26 @@ export function createActivityWall({ container }) {
       }
     };
     es.onerror = () => {
-      // Bug #5: a dropped/closed stream must reconnect with backoff + backfill,
-      // and probe for a 401 (session expired) to surface the re-auth modal.
-      // Previously this only console.warn'd, freezing the feed forever.
-      if (!es || es.readyState !== EventSource.CLOSED) return;
-      try { es.close(); } catch (_) { /* ignore */ }
-      es = null;
-      probeReauthOn401('/api/v1/activity-wall');
-      _scheduleReconnect();
+      // Bug #5/R5: a dropped/closed stream must reconnect with backoff +
+      // backfill, and probe for a 401 (session expired) to surface the re-auth
+      // modal. Previously this only acted on readyState === CLOSED, so a
+      // transient outage that left the browser in CONNECTING (auto-retrying)
+      // froze the feed with a permanent gap. We now always show a disconnected
+      // state and arm a watchdog; if the browser DOES silently reconnect,
+      // es.onopen runs the backfill. If it CLOSED, we drive our own backoff.
+      needsBackfillOnOpen = true;
+      if (es && es.readyState === EventSource.CLOSED) {
+        try { es.close(); } catch (_) { /* ignore */ }
+        es = null;
+        probeReauthOn401('/api/v1/activity-wall');
+        _scheduleReconnect();
+        return;
+      }
+      // Transient (still CONNECTING): surface the disconnect and let the
+      // watchdog force a reconnect+backfill if the silence persists. The
+      // browser's own auto-reconnect, if it succeeds, fires es.onopen → backfill.
+      setConnState('disconnected');
+      _armHeartbeatWatchdog();
     };
   }
 
@@ -908,6 +1022,9 @@ export function createActivityWall({ container }) {
   document.addEventListener('keydown', onKeyDown);
 
   // ---- bootstrap (async, fire-and-forget) ---------------------------------
+  // I1: mounting === the wall is open. Persist that so board.js can default to
+  // open next session (activityWallShouldDefaultOpen).
+  _persistOpenState(true);
   setConnState('connecting');
   fetchSnapshot().then(() => startSSE());
 
@@ -926,7 +1043,14 @@ export function createActivityWall({ container }) {
 
   function cleanup() {
     disposed = true;
+    // I1 NOTE: we do NOT persist "closed" here. board.js calls aw.cleanup() both
+    // when the operator toggles the panel closed AND on board-page teardown
+    // (navigating away). The component can't tell those apart — only board.js
+    // knows the difference — so persisting "closed" on cleanup would wrongly
+    // record a close every time the operator merely navigated away. We persist
+    // only "open" on mount and default to open (see activityWallShouldDefaultOpen).
     _clearReconnectTimer();
+    _clearHeartbeatTimer();
     try { offReauth(); } catch (_) {}
     if (es) {
       try { es.close(); } catch (_) {}

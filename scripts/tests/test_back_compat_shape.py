@@ -26,6 +26,11 @@ _CSRF = "test-csrf-back-compat"
 _APP_CONFIG = AppConfig(csrf_token=_CSRF, poll_interval_seconds=0.05)
 
 
+def _auth(app, client) -> None:
+    """Attach a valid mui_session cookie — every /api/** call is now gated."""
+    client.cookies.set("mui_session", app.state.megalodon.session_store.create())
+
+
 async def _wait_for_applied(
     client: AsyncClient,
     request_id: str,
@@ -89,6 +94,7 @@ async def test_api_v1_config_returns_v9_1_extended_shape(queue_mission: Path):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
+        _auth(app, client)
         r = await client.get("/api/v1/config")
     assert r.status_code == 200, r.text
     data = r.json()
@@ -129,6 +135,7 @@ async def test_api_v1_state_returns_6_lanes_init_first(queue_mission: Path):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
+        _auth(app, client)
         r = await client.get("/api/v1/state")
     assert r.status_code == 200, r.text
     data = r.json()
@@ -161,6 +168,7 @@ async def test_all_11_v1_routes_register(queue_mission: Path):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
+        _auth(app, client)
         r = await client.get("/api/v1/__contract_introspect__")
     assert r.status_code == 200, r.text
     registered = r.json()["registered"]
@@ -196,6 +204,7 @@ async def test_challenge_task_id_validates(queue_mission: Path):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
+        _auth(app, client)
         r = await client.post("/api/v1/inject-task", json={"task_text": task_line})
         assert r.status_code == 202, f"expected 202, got {r.status_code}: {r.text}"
         request_id = r.json()["request_id"]
@@ -221,6 +230,7 @@ async def test_sse_stream_connects(queue_mission: Path):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
+        _auth(app, client)
         async with client.stream("GET", "/api/v1/events") as response:
             assert response.status_code == 200, f"SSE status {response.status_code}"
             async for line in response.aiter_lines():
@@ -246,6 +256,7 @@ async def test_queue_applier_accepts_canonical_intent(queue_mission: Path):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
+        _auth(app, client)
         r = await client.post(
             "/api/v1/signal",
             json={

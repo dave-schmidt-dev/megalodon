@@ -129,6 +129,11 @@ def cv1_mission(tmp_path: Path) -> Path:
     return dest
 
 
+
+def _auth(app, client) -> None:
+    """Attach a valid mui_session cookie — every /api/** call is now gated."""
+    client.cookies.set("mui_session", app.state.megalodon.session_store.create())
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(not _BACKEND_AVAILABLE, reason="megalodon_ui.server not available")
 async def test_state_endpoint_parses_non_default_lane_rows(cv1_mission: Path):
@@ -145,6 +150,7 @@ async def test_state_endpoint_parses_non_default_lane_rows(cv1_mission: Path):
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as client:
+            _auth(app, client)
             r = await client.get("/api/v1/state")
 
     assert r.status_code == 200, f"unexpected status {r.status_code}: {r.text}"
@@ -179,6 +185,7 @@ async def test_tasks_endpoint_parses_non_default_lane_tasks(cv1_mission: Path):
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as client:
+            _auth(app, client)
             r = await client.get("/api/v1/tasks")
 
     assert r.status_code == 200, f"unexpected status {r.status_code}: {r.text}"

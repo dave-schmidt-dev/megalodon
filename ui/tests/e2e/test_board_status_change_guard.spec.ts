@@ -19,14 +19,17 @@
 // Runs under chromium-board (3-lane fix-small fixture, port 8769).
 
 import { test, expect } from '@playwright/test';
+import { gotoAuthed } from './_helpers';
 
 test.describe('store: malformed status-change does not poison status.lanes (BUG 1)', () => {
 
-  test('status-change with no row is ignored and a later valid event still applies', async ({ page }) => {
+  test('status-change with no row is ignored and a later valid event still applies', async ({ page }, testInfo) => {
     const pageErrors: string[] = [];
     page.on('pageerror', (err) => pageErrors.push(String(err)));
 
-    await page.goto('/');
+    // The board's lane rows only render once the session-gated config/narrative
+    // fetches succeed, so authenticate first (hash-token exchange).
+    await gotoAuthed(page, testInfo);
     await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
     await expect(page.locator('[data-testid^="board-row-"]')).toHaveCount(3, { timeout: 5_000 });
 

@@ -12,6 +12,7 @@ import shutil
 import pytest
 
 from ui.tests.integration.conftest import wait_for_queue_applied
+from ui.tests.integration._auth_helper import authenticate
 
 
 try:
@@ -24,6 +25,17 @@ except ImportError:
 
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _auth_all(async_client_with_lifespan):
+    """Deny-by-default gate now requires a cookie for every /api/** call.
+
+    Mint a session and attach the cookie before each test so the existing
+    endpoint-behavior assertions exercise the handler (not the 401 gate). The
+    gate itself is covered by test_auth_gate_enumerates_all_routes.py.
+    """
+    authenticate(async_client_with_lifespan)
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"

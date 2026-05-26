@@ -155,8 +155,13 @@ test('baseline: empty narrator seeds state/last from /api/status (not blank IDLE
 
   // Lane B is "working: T2" in STATUS.md → baseline maps to RUNNING (not IDLE).
   await expect(page.locator('[data-testid="board-pill-B"]')).toHaveText('RUNNING', { timeout: 8_000 });
-  // Its Now cell shows the explicit "warming up" hint, not a bare dash.
-  await expect(page.locator('[data-testid="board-row-B"]')).toContainText('narrator warming up');
+  // Its Now cell shows REAL progress from STATUS, not a bare dash. The B2
+  // baseline rule (applyStatusBaseline in board.js) surfaces the clean STATUS
+  // note for a `working` lane WITHOUT waiting on the LLM narrator; the
+  // fix-small STATUS.md note for LANE-B is "mid-task". (Only a genuinely
+  // idle/unknown lane falls back to the "narrator warming up…" hint — see the
+  // A/C lanes.) Asserting "warming up" here was stale relative to B2.
+  await expect(page.locator('[data-testid="board-row-B"]')).toContainText('mid-task');
   // Baseline Last carries the STATUS.md last-seen timestamp, not "—".
   await expect(page.locator('[data-testid="board-row-B"]')).toContainText('last seen');
 });

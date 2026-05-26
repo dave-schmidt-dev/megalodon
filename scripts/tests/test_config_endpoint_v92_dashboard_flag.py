@@ -24,12 +24,22 @@ from megalodon_ui.server import AppConfig, make_app
 _APP_CONFIG = AppConfig(csrf_token="test-csrf", poll_interval_seconds=0.05)
 
 
+def _auth(app, client) -> None:
+    """Attach a valid mui_session cookie (deny-by-default gate requires it).
+
+    GET /api/v1/config is now auth-gated (it carries the CSRF token). Mint a
+    session directly on the in-memory store and set the cookie.
+    """
+    client.cookies.set("mui_session", app.state.megalodon.session_store.create())
+
+
 @pytest.mark.asyncio
 async def test_v92_dashboard_field_present_default_false(queue_mission, monkeypatch):
     """Without the env var, /api/v1/config returns v92_dashboard: False."""
     monkeypatch.delenv("MEGALODON_V92_DASHBOARD", raising=False)
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        _auth(app, c)
         r = await c.get("/api/v1/config")
     assert r.status_code == 200, r.text
     data = r.json()
@@ -44,6 +54,7 @@ async def test_v92_dashboard_true_when_env_set(value, queue_mission, monkeypatch
     monkeypatch.setenv("MEGALODON_V92_DASHBOARD", value)
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        _auth(app, c)
         r = await c.get("/api/v1/config")
     data = r.json()
     assert data["v92_dashboard"] is True, (
@@ -60,6 +71,7 @@ async def test_v92_dashboard_false_for_explicit_false_values(
     monkeypatch.setenv("MEGALODON_V92_DASHBOARD", value)
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        _auth(app, c)
         r = await c.get("/api/v1/config")
     data = r.json()
     assert data["v92_dashboard"] is False, (

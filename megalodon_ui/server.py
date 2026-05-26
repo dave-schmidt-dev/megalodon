@@ -81,23 +81,59 @@ from .harnesses import get_adapter
 
 
 # ---------------------------------------------------------------------------
-# CR-4 (narrow) — v9.2 auth path gating
+# v9.2 auth gate — DENY-BY-DEFAULT (security inversion)
 # ---------------------------------------------------------------------------
+#
+# Previously the gate was an *allowlist of gated paths*: anything not matched by
+# ``_V92_GATED_PATH_RE`` / ``_V92_GATED_EXACT`` was served WITHOUT a cookie.
+# That left the entire legacy ``/api/v1/*`` surface (``/state``, ``/config``,
+# ``/findings``, all mutation POSTs, the SSE ``/events`` stream, …) wide open —
+# and ``GET /api/v1/config`` even handed out the CSRF token unauthenticated,
+# defeating CSRF.
+#
+# The gate is now deny-by-default: EVERY request requires a valid ``mui_session``
+# cookie EXCEPT a small, explicit PUBLIC allowlist below. The public set is the
+# minimum needed to bootstrap the SPA and exchange a token:
+#   * the SPA shell + its assets (``/``, ``/index.html``, ``/static/*``,
+#     ``/favicon*``),
+#   * the liveness probe (``GET /healthz``),
+#   * the token-exchange endpoint (``POST /api/v1/auth/exchange``) — the ONE
+#     door through which a cookie is minted.
+# Everything else (anything under ``/api/**``, the SSE streams, every mutation)
+# is gated. FE bootstraps auth before any other fetch, so this is safe.
 
-#: Path prefixes that ALWAYS require a valid mui_session cookie. Any method.
-_V92_GATED_PATH_RE = re.compile(
-    r"^/api/v1/(lane/[^/]+|__fake__|activity-wall|narrative-stream|narrative|approval-rules|lanes/stale|alerts|coordination|_test)(/|$)"
-)
-
-#: Exact (method, path) pairs that require a cookie.
-_V92_GATED_EXACT: frozenset[tuple[str, str]] = frozenset(
+#: The ONE public endpoint under ``/api/**`` — the token-exchange door through
+#: which a session cookie is minted. Everything else under ``/api/**`` is gated.
+_V92_PUBLIC_API_EXACT: frozenset[tuple[str, str]] = frozenset(
     {
-        ("DELETE", "/api/v1/fleet"),
+        ("POST", "/api/v1/auth/exchange"),
     }
 )
 
 #: Cookie name used to carry the session id after exchange.
 SESSION_COOKIE_NAME = "mui_session"
+
+
+def _v92_path_is_gated(method: str, path: str) -> bool:
+    """Return True iff (*method*, *path*) REQUIRES a valid session cookie.
+
+    Deny-by-default for the data/control plane: any path under ``/api/**`` is
+    gated (this covers ``/state``, ``/config``, ``/findings*``, ``/events`` SSE,
+    ``/tasks``, ``/status``, the legacy ``/api/*`` duplicates, AND every
+    mutation POST) EXCEPT the single public token-exchange endpoint.
+
+    Non-``/api`` paths are NOT gated: they only resolve to the SPA shell
+    (``/``, the ``/{spa_path}`` catch-all that re-serves ``index.html`` for
+    client-side routes like ``/tasks``), the ``/static/*`` bundle, ``/favicon*``,
+    and ``GET /healthz``. None of those expose mission data — they are the
+    bootstrap surface the login flow needs BEFORE a cookie exists. The SPA fetches
+    everything sensitive through gated ``/api/**`` calls after auth.
+    """
+    if not path.startswith("/api/"):
+        return False
+    if (method, path) in _V92_PUBLIC_API_EXACT:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1094,8 +1130,43 @@ def _parse_file_signals(signals_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
+# A STATUS.md table row: ``| <lane> | <agent> | <state> | ... | <notes> |``.
+# We need only (a) the OWNING lane (first cell) and (b) the full row text so we
+# can find which `[SIG ...]` tokens physically sit in that row. The lane cell is
+# the v9.0 ``[A-Z][A-Z\- ]*?`` shape (long or short lane label, e.g. ``LANE-C``
+# or ``CORE-AUDIT``). Line-anchored, so each match is exactly one table row.
+_STATUS_ROW_LANE_RE = re.compile(
+    r"^\|\s*(?P<lane>[A-Z][A-Z0-9\- ]*?)\s*\|(?P<rest>.*)\|\s*$",
+    re.MULTILINE,
+)
+
+#: Sender labels that are SERVER-GENERATED (orchestrator origin). The POST
+#: signal endpoints write ``[SIG from=orchestrator ...]`` into the TARGET lane's
+#: row, so an orchestrator-origin token legitimately disagrees with the owning
+#: row's lane. These are trusted (server-written) and keep their claimed sender.
+_ORCH_SENDER_LABELS = frozenset({"ORCHESTRATOR", "ORCH", "LANE-ORCH"})
+
+
 def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
-    """Parse `[SIG ...]` tokens out of STATUS.md notes (``source:"status-note"``)."""
+    """Parse `[SIG ...]` tokens out of STATUS.md notes (``source:"status-note"``).
+
+    SECURITY (anti-spoof): the ``from=`` field inside a ``[SIG ...]`` token is
+    attacker-controllable — an agent editing its OWN STATUS row can write
+    ``[SIG from=LANE-A ...]`` and forge a message (e.g. a fake approval) that
+    renders as if it came from LANE-A. We therefore bind the sender to the lane
+    whose STATUS row the token physically sits in:
+
+      * The authoritative ``from_lane`` is the OWNING ROW'S lane.
+      * EXCEPTION: an orchestrator-origin token (``from=orchestrator``/``ORCH``)
+        is server-written (the POST signal endpoints route it into the *target*
+        lane's row), so it is trusted and keeps ``LANE-ORCH``.
+      * If a non-orchestrator claimed ``from=`` DISAGREES with the owning lane,
+        we override ``from_lane`` to the true owning lane, stash the forged value
+        in ``claimed_from``, and set ``from_unverified: true``.
+      * A token that is NOT inside any recognizable STATUS row (loose text) can't
+        be bound, so it is flagged ``from_unverified: true`` with the claimed
+        sender preserved (best-effort, never trusted).
+    """
     status_path = mission_dir / "STATUS.md"
     out: list[dict[str, Any]] = []
     try:
@@ -1105,30 +1176,71 @@ def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
     except OSError:
         return out
     mtime = _mtime_iso(status_path)
+
+    # Map each `[SIG ...]` token's character offset → the owning row's lane, by
+    # scanning table rows and recording the span each row's text covers.
+    owning_lane_by_span: list[tuple[int, int, str]] = []  # (start, end, lane)
+    for rm in _STATUS_ROW_LANE_RE.finditer(text):
+        lane_label = (rm.group("lane") or "").strip()
+        if lane_label.lower() == "lane":  # header row
+            continue
+        owning_lane_by_span.append((rm.start(), rm.end(), lane_label))
+
+    def _owning_lane_for(pos: int) -> str | None:
+        for start, end, lane in owning_lane_by_span:
+            if start <= pos < end:
+                return lane
+        return None
+
     for idx, m in enumerate(_SIG_TOKEN_RE.finditer(text)):
         from_raw = (m.group(1) or "").strip()
         to_raw = (m.group(2) or "").strip()
         sig_text = (m.group(3) or "").strip()
         cite = (m.group(4) or "").strip()
-        # Normalize lane labels to LANE-<X> with a non-empty short.
-        from_lane = _normalize_lane_label(from_raw, "LANE-UNKNOWN")
+
+        claimed_from = _normalize_lane_label(from_raw, "LANE-UNKNOWN")
         to_lane = _normalize_lane_label(to_raw, "LANE-ALL")
+
+        owning_label = _owning_lane_for(m.start())
+        owning_lane = (
+            _normalize_lane_label(owning_label, "LANE-UNKNOWN")
+            if owning_label is not None
+            else None
+        )
+
+        from_unverified = False
+        if from_raw.upper() in _ORCH_SENDER_LABELS:
+            # Server-written orchestrator token (POST endpoints write from=ORCH
+            # into the target's row). Trusted — keep the orchestrator sender.
+            from_lane = "LANE-ORCH"
+        elif owning_lane is None:
+            # Loose token not inside a recognizable row — cannot bind; flag it.
+            from_lane = claimed_from
+            from_unverified = True
+        else:
+            # Authoritative: the sender IS the owning row's lane. If the claimed
+            # value disagrees, the token is forged — override + flag.
+            from_lane = owning_lane
+            if claimed_from != owning_lane:
+                from_unverified = True
+
         topic = _slugify(" ".join(sig_text.split()[:5]))
         body = sig_text + (f" (cite: {cite})" if cite else "")
-        out.append(
-            {
-                "filename": f"status-note-{idx}",
-                "from_lane": from_lane,
-                "to_lane": to_lane,
-                "to": to_lane,
-                "topic": topic,
-                "utc": "",
-                "kind": "SIGNAL",
-                "source": "status-note",
-                "body": body[:4096],
-                "_mtime": mtime,
-            }
-        )
+        rec: dict[str, Any] = {
+            "filename": f"status-note-{idx}",
+            "from_lane": from_lane,
+            "claimed_from": claimed_from,
+            "from_unverified": from_unverified,
+            "to_lane": to_lane,
+            "to": to_lane,
+            "topic": topic,
+            "utc": "",
+            "kind": "SIGNAL",
+            "source": "status-note",
+            "body": body[:4096],
+            "_mtime": mtime,
+        }
+        out.append(rec)
     return out
 
 
@@ -2285,14 +2397,17 @@ def make_app(
 
     @app.middleware("http")
     async def v92_auth_gate(request: Request, call_next):  # noqa: ANN001
-        """Gate v9.2-new endpoints; existing v9.1 surface stays open (CR-4 narrow)."""
+        """Deny-by-default auth gate: every ``/api/**`` path requires a cookie.
+
+        Security inversion (was: allowlist of gated paths → wide-open legacy
+        surface). Now any request under ``/api/**`` is rejected with 401 unless
+        it carries a valid ``mui_session`` cookie, EXCEPT the single public
+        token-exchange endpoint. Non-``/api`` paths (SPA shell, static assets,
+        favicon, healthz) are served pre-auth so the login bootstrap can render.
+        """
         path = request.url.path
         method = request.method
-        gated = (
-            _V92_GATED_PATH_RE.match(path) is not None
-            or (method, path) in _V92_GATED_EXACT
-        )
-        if gated:
+        if _v92_path_is_gated(method, path):
             cookie = request.cookies.get(SESSION_COOKIE_NAME)
             if not ctx.session_store.validate(cookie):
                 return JSONResponse(
@@ -2758,7 +2873,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def delete_fleet(request: Request):  # noqa: ANN201
         """Destructive teardown — kill the tmux server + unlink bootstrap files (Task 7.1).
 
-        Cookie-gated via ``_V92_GATED_EXACT``. Best-effort throughout:
+        Cookie-gated (deny-by-default; under ``/api/**``). Best-effort throughout:
 
         * ``tmux.kill_server(socket)`` — non-zero rc is tolerated (server may
           already be gone if the operator killed it manually).
@@ -2790,8 +2905,8 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         async def fake_emit_route(request: Request):  # noqa: ANN201
             """Test-only — fan out a byte chunk into a lane's subscriber queues.
 
-            Registered only when ``MEGALODON_FAKE_SPAWNER=1``. Cookie-gated via
-            ``_V92_GATED_PATH_RE``. Body: ``{lane, data_b64}``.
+            Registered only when ``MEGALODON_FAKE_SPAWNER=1``. Cookie-gated
+            (deny-by-default; under ``/api/**``). Body: ``{lane, data_b64}``.
             """
             import base64
 
@@ -2838,8 +2953,8 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         async def fake_narrative_inject_route(request: Request):  # noqa: ANN201
             """Test-only — seed narrative_cache and publish to narrative_hub.
 
-            Registered only when ``MEGALODON_FAKE_SPAWNER=1``. Cookie-gated via
-            ``_V92_GATED_PATH_RE``. Body: ``{"lanes": {<short>: <row_payload>, ...}}``.
+            Registered only when ``MEGALODON_FAKE_SPAWNER=1``. Cookie-gated
+            (deny-by-default; under ``/api/**``). Body: ``{"lanes": {<short>: <row_payload>, ...}}``.
 
             Merges the supplied lanes into ``app.state.narrative_cache`` (i.e.
             ``cache[short] = row_payload`` for each), then publishes the full
@@ -3518,7 +3633,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         ``stale_lanes`` so the operator does not kill it thinking it is merely
         silent.
 
-        Cookie-gated via ``_V92_GATED_PATH_RE``. Cached for 5 s (serves
+        Cookie-gated (deny-by-default; under ``/api/**``). Cached for 5 s (serves
         concurrent operator polls without recomputing).
 
         Response shape::
@@ -3578,7 +3693,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def get_alerts():  # noqa: ANN201
         """Return recent watchdog alerts, newest-first (contract §2).
 
-        Cookie-gated via ``_V92_GATED_PATH_RE``. Source: the structured JSONL the
+        Cookie-gated (deny-by-default; under ``/api/**``). Source: the structured JSONL the
         watchdog ``AlertManager`` appends to ``.fleet/watchdog-alerts.jsonl``.
 
         Response shape::
@@ -3601,8 +3716,8 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         async def post_stale_override(request: Request):  # noqa: ANN201
             """Test-only — populate _TEST_STALE_OVERRIDES for the next stale check.
 
-            Registered ONLY when ``MEGALODON_FAKE_SPAWNER=1``. Cookie-gated via
-            ``_V92_GATED_PATH_RE``. Query params: ``lane`` (str), ``seconds``
+            Registered ONLY when ``MEGALODON_FAKE_SPAWNER=1``. Cookie-gated
+            (deny-by-default; under ``/api/**``). Query params: ``lane`` (str), ``seconds``
             (float). Body: empty or `{}`. CSRF-protected via ``X-CSRF-Token``.
 
             On success: sets ``_TEST_STALE_OVERRIDES[lane] = seconds`` and
@@ -3935,7 +4050,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def activity_wall_snapshot(request: Request):  # noqa: ANN201
         """Return recent activity-wall events as JSON, newest-first.
 
-        Cookie-gated via ``_V92_GATED_PATH_RE``.
+        Cookie-gated (deny-by-default; under ``/api/**``).
 
         Query params
         ------------
@@ -3982,7 +4097,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def activity_wall_sse(request: Request):  # noqa: ANN201
         """SSE stream of NEW activity-wall events as they arrive.
 
-        Cookie-gated via ``_V92_GATED_PATH_RE``. Emits no backlog — the client
+        Cookie-gated (deny-by-default; under ``/api/**``). Emits no backlog — the client
         must hydrate history via ``GET /api/v1/activity-wall/snapshot`` first.
 
         Each SSE data payload is a JSON-encoded event dict::
@@ -4024,7 +4139,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def narrative_snapshot(request: Request):  # noqa: ANN201
         """Return the current per-lane narrative cache.
 
-        Cookie-gated via ``_V92_GATED_PATH_RE``. Returns the full cache map
+        Cookie-gated (deny-by-default; under ``/api/**``). Returns the full cache map
         keyed by lane short-name.  ``now.phrase`` may be null when no narrator
         response has arrived yet; all other deterministic fields (last, now,
         goal, state) are always present for each cached lane.
@@ -4039,7 +4154,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def narrative_stream(request: Request):  # noqa: ANN201
         """SSE stream of narrative payload updates as they are published.
 
-        Cookie-gated via ``_V92_GATED_PATH_RE``.
+        Cookie-gated (deny-by-default; under ``/api/**``).
 
         On connect:
         1. Subscribe to the NarrativeHub fan-out queue.
@@ -4172,7 +4287,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def get_approval_rules():  # noqa: ANN201
         """Return all approval-rule patterns.
 
-        Cookie-gated via ``_V92_GATED_PATH_RE``.
+        Cookie-gated (deny-by-default; under ``/api/**``).
 
         Response shape: ``{rules: [{pattern, added_at_utc, added_by_session}, ...]}``
 
@@ -4225,7 +4340,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         """Extract an --allowedTools pattern from a raw command string.
 
         Query param: ``command`` (URL-encoded shell command string).
-        Cookie-gated via ``_V92_GATED_PATH_RE`` (``approval-rules`` prefix).
+        Cookie-gated (deny-by-default; under ``/api/**``) (``approval-rules`` prefix).
         No CSRF required — safe GET method.
 
         Response: ``{pattern: str | null}``

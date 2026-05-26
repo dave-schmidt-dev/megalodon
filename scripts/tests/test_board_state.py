@@ -434,7 +434,15 @@ class TestStatusFallback:
         ]
 
     def test_working_status_makes_lane_running_when_no_tasks(self) -> None:
-        """STATUS.md 'working: P1-B' with no task rows → state=claimed, now from notes."""
+        """STATUS.md 'working: P1-B' with no task rows → state=claimed, now from notes.
+
+        UPDATED (B1/B2 rework): a live ``working:`` marker is authoritative for
+        current activity, so when its task_id is NOT in TASKS.md the board now
+        falls back to the CLEAN status note for BOTH the Now line AND the Goal
+        line. The old behavior (Goal stays the lane role even with a live
+        working marker) encoded the buggy precedence and is intentionally
+        changed: a working lane's Goal should describe what it is working on.
+        """
         cfgs = self._make_lane_cfgs()
         tasks_fe = _tasks_fe({"PHASE-PLAN": []})
         digests: dict[str, SessionDigest | None] = {"A": None, "B": None}
@@ -447,8 +455,8 @@ class TestStatusFallback:
         assert row.now["task_id"] == "P1-B"
         assert row.now["desc"] == "surveying surface"
         assert row.now["phrase"] is None
-        # Goal stays the lane role — STATUS fallback must not hijack the Goal line.
-        assert row.goal == "Audit all findings"
+        # Goal now reflects the live work (clean note) — not the lane role.
+        assert row.goal == "surveying surface"
 
     def test_initialized_status_makes_lane_running(self) -> None:
         """STATUS.md 'initialized' (bootstrapped, no task) → non-idle state."""
@@ -497,6 +505,138 @@ class TestStatusFallback:
         rows = assemble_lane_rows(tasks_fe, cfgs, digests, {})
         assert rows["A"].state == "open"
         assert rows["A"].now is None
+
+
+class TestLiveWorkingPrecedence:
+    """B1/B2/I3: STATUS.md ``working:<task_id>`` is authoritative for CURRENT
+    activity and must override a prior DONE task.
+
+    The operator's core complaint: a lane whose STATUS says ``working: P4-A``
+    but which has a prior DONE ``P3-A`` was rendered IDLE with Goal = the DONE
+    task and Now = "narrator warming up…". The live working marker now wins for
+    state/now/goal, with the Now/Goal text resolved from the TASKS.md task
+    DESCRIPTION (by task_id), never the raw STATUS note when it is a routing
+    signal.
+    """
+
+    def _cfgs(self) -> list[MagicMock]:
+        return [_lane_cfg("AUDIT", "A", "Audit all findings")]
+
+    def test_working_overrides_prior_done_task(self) -> None:
+        """B1: working: P4-A + prior done P3-A → RUNNING, now/goal = P4-A desc."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task(
+                "P3-A", "AUDIT", "dummy phase-3 task", "done", "2026-05-01T08:00:00Z"
+            ),
+            _task("P4-A", "AUDIT", "phase-4 deep audit", "open"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "working: P4-A", notes="auditing module x")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P3-A": 0, "P4-A": 1}, status_rows=status_rows
+        )
+        row = rows["A"]
+        # Live working: wins — RUNNING, not IDLE/done.
+        assert row.state == "claimed"
+        assert row.now is not None
+        assert row.now["task_id"] == "P4-A"
+        # Now/Goal resolved from the TASKS.md DESCRIPTION of P4-A, NOT P3-A and
+        # NOT "narrator warming up…" (that is a board.js baseline, never here).
+        assert row.now["desc"] == "phase-4 deep audit"
+        assert row.goal == "phase-4 deep audit"
+        # The DONE task still populates `last` (history is preserved).
+        assert row.last is not None
+        assert row.last["task_id"] == "P3-A"
+        assert row.last["desc"] == "dummy phase-3 task"
+
+    def test_working_resolves_desc_even_with_signal_note(self) -> None:
+        """I3: a [SIG ...] STATUS note must NOT become the Goal — task desc wins."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("P4-A", "AUDIT", "phase-4 deep audit", "open"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [
+            _status_row(
+                "AUDIT",
+                "working: P4-A",
+                notes="SIG-FROM-LANE-D: please rebase onto main",
+            )
+        ]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P4-A": 0}, status_rows=status_rows
+        )
+        row = rows["A"]
+        assert row.state == "claimed"
+        assert row.now is not None
+        # Goal/Now are the resolved task description, NOT the routing signal.
+        assert row.now["desc"] == "phase-4 deep audit"
+        assert row.goal == "phase-4 deep audit"
+        assert "SIG-FROM-LANE-D" not in row.goal
+        assert "SIG-FROM-LANE-D" not in row.now["desc"]
+
+    def test_working_unknown_task_id_ignores_signal_note_for_goal(self) -> None:
+        """I3: working: unknown id + a [SIG ...] note → fall back to status_state,
+        never the signal text."""
+        cfgs = self._cfgs()
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [
+            _status_row("AUDIT", "working: P9-Z", notes="[SIG broadcast handshake]")
+        ]
+        rows = assemble_lane_rows(tasks_fe, cfgs, digests, {}, status_rows=status_rows)
+        row = rows["A"]
+        assert row.state == "claimed"
+        assert row.now is not None
+        assert row.now["task_id"] == "P9-Z"
+        # Signal note dropped; falls back to the (clean) status_state string.
+        assert "SIG" not in row.goal
+        assert row.now["desc"] == "working: P9-Z"
+        assert row.goal == "working: P9-Z"
+
+    def test_working_overrides_other_claimed_task(self) -> None:
+        """Live working: P4-A wins over a stale CLAIMED P2-A row for now/goal."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task(
+                "P2-A", "AUDIT", "stale claimed task", "claimed", "2026-05-01T08:00:00Z"
+            ),
+            _task("P4-A", "AUDIT", "live phase-4 task", "open"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "working: P4-A", notes="")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P2-A": 0, "P4-A": 1}, status_rows=status_rows
+        )
+        row = rows["A"]
+        assert row.now is not None
+        assert row.now["task_id"] == "P4-A"
+        assert row.now["desc"] == "live phase-4 task"
+        assert row.goal == "live phase-4 task"
+
+    def test_working_with_blocked_task_keeps_blocked_pill(self) -> None:
+        """A blocked task out-ranks the working pill, but now/goal stay live work."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("P4-A", "AUDIT", "phase-4 task", "open"),
+            _task("P5-A", "AUDIT", "blocked dependency", "blocked"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "working: P4-A", notes="grinding")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P4-A": 0, "P5-A": 1}, status_rows=status_rows
+        )
+        row = rows["A"]
+        # Blocked alarm wins the pill; live work still drives now/goal.
+        assert row.state == "blocked"
+        assert row.now is not None
+        assert row.now["task_id"] == "P4-A"
+        assert row.goal == "phase-4 task"
 
 
 # ---------------------------------------------------------------------------

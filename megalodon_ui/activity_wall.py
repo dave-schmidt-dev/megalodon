@@ -1,13 +1,25 @@
 """Activity wall: ring buffer + fan-in task + subscriber fanout.
 
-The activity wall aggregates events from 6 sources into a shared in-memory
+The activity wall aggregates events from 7 sources into a shared in-memory
 ring buffer (deque, maxlen=500) and fans them out to per-connection asyncio
 queues for SSE clients.
 
-The six sources are: findings, signals, history, queue_applier, inject_log,
-and governor_log (the PreToolUse governor's audit log — see Phase 3 governor
-hook). The governor-log source is what makes a governed lane's allow/deny
-activity visible on the board.
+The seven sources are: findings, signals, status_notes, history, queue_applier,
+inject_log, and governor_log (the PreToolUse governor's audit log — see Phase 3
+governor hook). The governor-log source is what makes a governed lane's
+allow/deny activity visible on the board.
+
+SCHISM FIX — live signals for ALL THREE comms channels. A signal can arrive via
+three channels and ALL THREE now emit a live ``type:"signal"`` event:
+  * ``source:"file"``        — a new ``signals/*.md`` file (``_source_signals``).
+  * ``source:"finding"``     — a new SIGNAL-class finding (``signal-type`` in YAML
+                               frontmatter) ALSO emits a signal event alongside
+                               its ``type:"finding"`` event (``_source_findings``).
+  * ``source:"status-note"`` — a new ``[SIG ...]`` token in STATUS.md notes, via
+                               the ``_source_status_notes`` watcher (sender bound
+                               to the owning STATUS row, anti-spoof).
+Signal event payload shape (all three channels):
+``{filename, from_lane, to_lane, topic, utc, source, excerpt}``.
 
 Usage (from server.py lifespan)
 --------------------------------
@@ -72,6 +84,49 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+# Small pure helpers, mirrored from server.py so SIGNAL-class finding events and
+# STATUS-note signal events share the same lane-label / topic normalization the
+# unified ``parse_signals`` uses — WITHOUT importing server.py (which lazily
+# imports this module, so a top-level back-import would risk a cycle).
+
+
+def _slugify(text: str, default: str = "note") -> str:
+    """Lowercase ``[a-z0-9-]+`` slug, or *default* if empty (matches server.py)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
+    return slug or default
+
+
+def _normalize_lane_label(raw: str, default: str) -> str:
+    """Normalize a lane label to canonical ``LANE-<X>`` (matches server.py)."""
+    short = (raw or "").strip().upper()
+    if not short:
+        return default
+    if short.startswith("LANE-"):
+        return short
+    if short == "ORCHESTRATOR":
+        short = "ORCH"
+    if re.fullmatch(r"[A-Z0-9]+", short):
+        return f"LANE-{short}"
+    return short
+
+
+# `[SIG from=X to=Y text="..." cite=...]` token embedded in STATUS.md notes.
+# Mirrors server.py ``_SIG_TOKEN_RE`` (shared grammar; no import cycle).
+_SIG_TOKEN_RE = re.compile(
+    r'\[SIG\s+from=(\S+)\s+to=(\S+)\s+text="([^"]*)"\s*(?:cite=(\S+))?\s*\]'
+)
+
+# A STATUS.md table row → owning lane (first cell) + remaining row text.
+# Mirrors server.py ``_STATUS_ROW_LANE_RE``.
+_STATUS_ROW_LANE_RE = re.compile(
+    r"^\|\s*(?P<lane>[A-Z][A-Z0-9\- ]*?)\s*\|(?P<rest>.*)\|\s*$",
+    re.MULTILINE,
+)
+
+#: Orchestrator-origin sender labels (server-written tokens; trusted).
+_ORCH_SENDER_LABELS = frozenset({"ORCHESTRATOR", "ORCH", "LANE-ORCH"})
+
+
 def _parse_lane_from_filename(name: str) -> str | None:
     """Extract single-letter lane short from a finding/signal filename stem.
 
@@ -94,10 +149,10 @@ def _parse_lane_from_filename(name: str) -> str | None:
 
 
 class ActivityWall:
-    """Central fan-in hub for the 6 activity-wall event sources.
+    """Central fan-in hub for the 7 activity-wall event sources.
 
-    Sources: findings, signals, history, queue_applier, inject_log,
-    governor_log.
+    Sources: findings, signals, status_notes, history, queue_applier,
+    inject_log, governor_log.
 
     Parameters
     ----------
@@ -114,7 +169,7 @@ class ActivityWall:
     Fan-in task
     -----------
     ``start()`` launches a single asyncio.Task (``_fan_in_task``) that drives
-    all 6 source coroutines via ``asyncio.gather``. Each source is its own
+    all 7 source coroutines via ``asyncio.gather``. Each source is its own
     inner coroutine that loops on its generator and calls ``_emit``.
     ``stop()`` cancels the task and awaits it.
     """
@@ -296,11 +351,12 @@ class ActivityWall:
     # ------------------------------------------------------------------
 
     async def _fan_in(self) -> None:
-        """Run all 6 source coroutines concurrently; restart on unexpected exit."""
+        """Run all 7 source coroutines concurrently; restart on unexpected exit."""
         try:
             await asyncio.gather(
                 self._source_findings(),
                 self._source_signals(),
+                self._source_status_notes(),
                 self._source_history(),
                 self._source_queue_applier(),
                 self._source_inject_log(),
@@ -326,12 +382,91 @@ class ActivityWall:
                     event = self._build_file_event("finding", path)
                     if event:
                         self._emit(event)
+                    # SCHISM FIX (a): a SIGNAL-class finding (``signal-type`` in
+                    # YAML frontmatter) ALSO emits a ``type:"signal"`` event so
+                    # the signals page updates live for the finding channel — not
+                    # just for signals/*.md files. The finding event above is
+                    # kept unchanged for the findings page.
+                    sig_event = self._build_finding_signal_event(path)
+                    if sig_event:
+                        self._emit(sig_event)
                 except Exception:
                     _log.exception("activity-wall: error processing finding %s", path)
         except asyncio.CancelledError:
             raise
         except Exception:
             _log.exception("activity-wall: findings source crashed")
+
+    def _build_finding_signal_event(self, path: Path) -> dict | None:
+        """Emit a ``type:"signal"`` event for a SIGNAL-class finding, else None.
+
+        A finding is SIGNAL-class iff its YAML frontmatter carries a
+        ``signal-type`` key (per ``signal_parser.parse_signal``). The emitted
+        signal payload mirrors the file/status-note contract
+        (``from_lane``/``to_lane``/``topic``/``utc``/``source``/``excerpt``)
+        with ``source:"finding"`` and the finding filename.
+        """
+        from . import signal_parser
+
+        try:
+            fm = signal_parser.parse_signal(path)
+        except Exception:
+            fm = None
+        if not fm:
+            return None
+
+        from_raw = str(
+            fm.get("from-lane")
+            or fm.get("from_lane")
+            or fm.get("agent")
+            or fm.get("lane")
+            or ""
+        ).strip()
+        to_raw = str(
+            fm.get("to-lane") or fm.get("to_lane") or fm.get("addressed-to") or ""
+        ).strip()
+        from_lane = _normalize_lane_label(from_raw, "LANE-UNKNOWN")
+        to_lane = _normalize_lane_label(to_raw, "LANE-ALL")
+        topic = _slugify(str(fm.get("signal-type", "note")))
+        utc = str(fm.get("utc", "")).strip()
+
+        try:
+            mtime = path.stat().st_mtime
+            ts = (
+                datetime.fromtimestamp(mtime, tz=timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        except OSError:
+            ts = _now_utc_iso()
+
+        excerpt = ""
+        try:
+            raw = path.read_text(errors="replace")
+            if raw.startswith("---"):
+                end = raw.find("\n---", 3)
+                if end >= 0:
+                    raw = raw[end + 4 :].lstrip("\n")
+            excerpt = raw[:200]
+        except OSError:
+            pass
+
+        return {
+            "type": "signal",
+            "lane": from_lane,
+            "ts": ts,
+            "summary": f"{from_lane}→{to_lane}: {topic}"[:200],
+            "payload": {
+                "filename": path.name,
+                "path": str(path),
+                "from_lane": from_lane,
+                "to_lane": to_lane,
+                "topic": topic,
+                "utc": utc,
+                "source": "finding",
+                "excerpt": excerpt,
+            },
+        }
 
     # ------------------------------------------------------------------
     # Source 2: signals/
@@ -353,6 +488,155 @@ class ActivityWall:
             raise
         except Exception:
             _log.exception("activity-wall: signals source crashed")
+
+    # ------------------------------------------------------------------
+    # Source 2b: STATUS.md `[SIG ...]` notes (the previously-dark channel)
+    # ------------------------------------------------------------------
+
+    async def _source_status_notes(self) -> None:
+        """Watch STATUS.md and emit ``type:"signal"`` events for NEW SIG tokens.
+
+        SCHISM FIX (b): the third comms channel — ``[SIG from=X to=Y text=...]``
+        tokens embedded in STATUS.md notes — had NO live source, so the signals
+        page never updated for it. STATUS.md is rewritten in place (not appended),
+        so we poll its mtime and re-parse on change, emitting a signal event only
+        for tokens not seen before (tracked by a stable identity key). The sender
+        is bound to the OWNING STATUS row (anti-spoof; orchestrator-origin tokens
+        stay trusted) — mirroring server.py ``_parse_status_note_signals``.
+        """
+        from .event_tail import POLL_INTERVAL_S
+
+        status_path = self._mission_dir / "STATUS.md"
+        seen: set[str] = set()
+        last_mtime: float = -1.0
+
+        # Prime: existing tokens at startup are part of the snapshot/backfill, not
+        # live deltas — record them as seen WITHOUT emitting so the first real
+        # change doesn't replay the whole file.
+        try:
+            for ev in self._parse_status_note_events(status_path):
+                seen.add(ev["_identity"])
+            last_mtime = self._safe_mtime(status_path)
+        except Exception:
+            _log.exception("activity-wall: status-note prime failed")
+
+        try:
+            while True:
+                try:
+                    await asyncio.sleep(POLL_INTERVAL_S)
+                except asyncio.CancelledError:
+                    return
+                mtime = self._safe_mtime(status_path)
+                if mtime == last_mtime:
+                    continue
+                last_mtime = mtime
+                try:
+                    for ev in self._parse_status_note_events(status_path):
+                        ident = ev.pop("_identity")
+                        if ident in seen:
+                            continue
+                        seen.add(ident)
+                        self._emit(ev)
+                except Exception:
+                    _log.exception("activity-wall: status-note parse failed")
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            _log.exception("activity-wall: status-notes source crashed")
+
+    @staticmethod
+    def _safe_mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return -1.0
+
+    def _parse_status_note_events(self, status_path: Path) -> list[dict]:
+        """Parse STATUS.md SIG tokens → signal events (owning-row-bound sender).
+
+        Returns events carrying a private ``_identity`` key the caller uses for
+        new-token dedupe (popped before emit). Sender binding mirrors server.py.
+        """
+        try:
+            if not status_path.is_file():
+                return []
+            text = status_path.read_text(errors="replace")
+        except OSError:
+            return []
+
+        try:
+            ts = (
+                datetime.fromtimestamp(status_path.stat().st_mtime, tz=timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        except OSError:
+            ts = _now_utc_iso()
+
+        # Span → owning lane, from the table rows.
+        spans: list[tuple[int, int, str]] = []
+        for rm in _STATUS_ROW_LANE_RE.finditer(text):
+            lane_label = (rm.group("lane") or "").strip()
+            if lane_label.lower() == "lane":
+                continue
+            spans.append((rm.start(), rm.end(), lane_label))
+
+        def _owning_lane_for(pos: int) -> str | None:
+            for start, end, lane in spans:
+                if start <= pos < end:
+                    return lane
+            return None
+
+        events: list[dict] = []
+        for m in _SIG_TOKEN_RE.finditer(text):
+            from_raw = (m.group(1) or "").strip()
+            to_raw = (m.group(2) or "").strip()
+            sig_text = (m.group(3) or "").strip()
+            claimed_from = _normalize_lane_label(from_raw, "LANE-UNKNOWN")
+            to_lane = _normalize_lane_label(to_raw, "LANE-ALL")
+            owning_label = _owning_lane_for(m.start())
+            owning_lane = (
+                _normalize_lane_label(owning_label, "LANE-UNKNOWN")
+                if owning_label is not None
+                else None
+            )
+            from_unverified = False
+            if from_raw.upper() in _ORCH_SENDER_LABELS:
+                from_lane = "LANE-ORCH"
+            elif owning_lane is None:
+                from_lane = claimed_from
+                from_unverified = True
+            else:
+                from_lane = owning_lane
+                if claimed_from != owning_lane:
+                    from_unverified = True
+
+            topic = _slugify(" ".join(sig_text.split()[:5]))
+            # Identity is the authoritative sender + target + text, so re-saving
+            # STATUS.md with the same tokens does not re-emit, but a genuinely new
+            # token (different text/target) does.
+            identity = f"{from_lane}|{to_lane}|{sig_text}"
+            events.append(
+                {
+                    "type": "signal",
+                    "lane": from_lane,
+                    "ts": ts,
+                    "summary": f"{from_lane}→{to_lane}: {topic}"[:200],
+                    "payload": {
+                        "filename": "status-note",
+                        "from_lane": from_lane,
+                        "claimed_from": claimed_from,
+                        "from_unverified": from_unverified,
+                        "to_lane": to_lane,
+                        "topic": topic,
+                        "utc": "",
+                        "source": "status-note",
+                        "excerpt": sig_text[:200],
+                    },
+                    "_identity": identity,
+                }
+            )
+        return events
 
     def _build_file_event(self, event_type: str, path: Path) -> dict | None:
         """Build an event dict for a findings/ or signals/ file.
@@ -409,6 +693,13 @@ class ActivityWall:
         except OSError:
             pass
 
+        # ``lane`` from the agent-NNNN-L- filename grammar is None for canonical
+        # cross-lane signal files (``LANE-X-to-LANE-Y-...``). Fall back to the
+        # parsed ``from_lane`` so the signal row is attributed to its sender
+        # instead of rendering ``lane: null``.
+        if lane is None and from_lane:
+            lane = from_lane
+
         if from_lane and to_lane:
             summary = f"{from_lane}→{to_lane}: {topic}"[:200]
         else:
@@ -426,6 +717,7 @@ class ActivityWall:
                 "to_lane": to_lane,
                 "topic": topic,
                 "utc": utc,
+                "source": "file",
                 "excerpt": excerpt,
             },
         }

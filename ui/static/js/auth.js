@@ -99,15 +99,32 @@ function _ensureModal() {
   const modal = /** @type {HTMLDialogElement} */ (document.createElement("dialog"));
   modal.setAttribute("data-testid", "reauth-modal");
   modal.className = "reauth-modal";
+  // R1 (regression fix): present as a NON-MODAL, pinned banner — never a
+  // top-layer showModal() dialog. A modal <dialog> renders a ::backdrop in the
+  // top layer that swallows ALL pointer events across the SPA, so a mid-session
+  // 401 (transient blip / tightened auth gate) used to freeze navigation and
+  // clicks board-wide. As a non-modal dialog the rest of the UI stays fully
+  // interactive while the re-auth prompt is visible; the operator can keep
+  // navigating and dismiss it via Escape or the close button.
+  //
   // Inline styles (no dependency on base.css load order; this can appear during
-  // an early auth race before page CSS matters).
+  // an early auth race before page CSS matters). Pinned top-center so it does
+  // not blanket the viewport and does not collide with the top-right alert
+  // stack / activity panel.
   modal.style.cssText = [
+    "position: fixed;",
+    "top: 12px;",
+    "left: 50%;",
+    "transform: translateX(-50%);",
+    "margin: 0;",
+    "z-index: 2147483646;",
     "border: 1px solid var(--border, #2a2f37);",
     "border-radius: 6px;",
     "background: var(--surface, #15181d);",
     "color: var(--text, #e6e6e6);",
     "padding: 18px 20px;",
     "max-width: 420px;",
+    "box-shadow: 0 8px 32px rgba(0,0,0,0.5);",
     "font-family: ui-monospace, SFMono-Regular, Menlo, monospace;",
   ].join(" ");
 
@@ -156,6 +173,18 @@ function _ensureModal() {
     try { location.reload(); } catch (_) { /* ignore */ }
   });
 
+  // R1: an explicit dismiss affordance. A transient/false 401 must be
+  // dismissible so it can't pin a stale prompt over a working board.
+  const dismissBtn = document.createElement("button");
+  dismissBtn.type = "button";
+  dismissBtn.textContent = "Dismiss";
+  dismissBtn.setAttribute("data-testid", "reauth-dismiss");
+  dismissBtn.setAttribute("aria-label", "Dismiss re-auth prompt");
+  dismissBtn.className = "button";
+  dismissBtn.addEventListener("click", () => {
+    try { modal.close(); } catch (_) { modal.removeAttribute("open"); }
+  });
+
   const err = document.createElement("p");
   err.setAttribute("data-testid", "reauth-error");
   err.style.cssText = "color: #ff8b8b; margin: 4px 0 0; font-size: 12px;";
@@ -163,6 +192,7 @@ function _ensureModal() {
 
   row.appendChild(submit);
   row.appendChild(reloadBtn);
+  row.appendChild(dismissBtn);
   form.appendChild(heading);
   form.appendChild(hint);
   form.appendChild(input);
@@ -195,10 +225,29 @@ function _ensureModal() {
     }
   });
 
+  // Escape-to-dismiss. A non-modal dialog (dialog.show()) does NOT get the
+  // native Escape→cancel the top-layer modal form does, so wire it explicitly
+  // while the prompt is open. Scoped to document so focus need not be inside it.
+  function _onEscape(ev) {
+    if (ev.key === "Escape" && modal.open) {
+      ev.stopPropagation();
+      try { modal.close(); } catch (_) { modal.removeAttribute("open"); }
+    }
+  }
+  document.addEventListener("keydown", _onEscape);
+
   document.body.appendChild(modal);
   _modalEl = modal;
   return modal;
 }
+
+// R1: coalesce 401 bursts. A single stale cookie typically trips several gated
+// calls at once (board + activity wall + signals + SSE probe). Without a guard
+// each would re-invoke showReauthModal(); even though it's idempotent while
+// open, debouncing avoids churn and keeps the affordance from re-opening the
+// instant the operator dismisses it during a burst.
+let _lastShownAt = 0;
+const _SHOW_DEBOUNCE_MS = 1500;
 
 /**
  * Show the shared re-auth modal. Idempotent — calling it while already open is a
@@ -208,8 +257,18 @@ function _ensureModal() {
 export function showReauthModal() {
   const modal = _ensureModal();
   if (modal.open) return;
-  if (typeof modal.showModal === "function") {
-    try { modal.showModal(); return; } catch (_) { /* fall through */ }
+  // Coalesce 401 bursts: ignore a re-open within the debounce window so a
+  // single stale cookie tripping N gated calls doesn't thrash the prompt (and
+  // can't pop back the instant the operator dismisses it mid-burst).
+  const now = Date.now();
+  if (now - _lastShownAt < _SHOW_DEBOUNCE_MS) return;
+  _lastShownAt = now;
+  // NON-MODAL on purpose (R1): show() keeps the prompt out of the top layer so
+  // it has no ::backdrop and never intercepts pointer events for the rest of
+  // the SPA — the board/nav stay usable while a re-auth prompt is up. We
+  // deliberately do NOT call showModal().
+  if (typeof modal.show === "function") {
+    try { modal.show(); return; } catch (_) { /* fall through */ }
   }
   modal.setAttribute("open", "");
 }

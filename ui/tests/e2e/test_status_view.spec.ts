@@ -3,14 +3,16 @@
 // and P2.5-E §"Updated test inventory".
 
 import { test, expect } from '@playwright/test';
+import { gotoAuthed } from './_helpers';
 
 test.describe('STATUS view (T-V-STATUS-e2e)', () => {
 
-  test('renders one row per lane from fix-medium fixture', async ({ page }) => {
+  test('renders one row per lane from fix-medium fixture', async ({ page }, testInfo) => {
     // v9.4 Task 3.5a: `/` now renders board.js (summary board) — one
     // [data-testid^="board-row-"] row per lane. fix-medium has 6 lanes.
-    await page.goto('/');
-    await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+    // The board's data fetches are session-gated (deny-by-default), so
+    // authenticate first; an unauthenticated load renders an empty board.
+    await gotoAuthed(page, testInfo);
     const rows = page.locator('[data-testid^="board-row-"]');
     await expect(rows).toHaveCount(6);
   });
@@ -26,8 +28,9 @@ test.describe('STATUS view (T-V-STATUS-e2e)', () => {
 
 test.describe('TASKS view (T-V-TASKS-e2e)', () => {
 
-  test('renders bracket states correctly for fix-medium', async ({ page }) => {
-    await page.goto('/tasks');
+  test('renders bracket states correctly for fix-medium', async ({ page }, testInfo) => {
+    // /tasks fetches /api/v1/tasks which is session-gated; authenticate first.
+    await gotoAuthed(page, testInfo, '/tasks');
     await expect(page.locator('[data-testid^="task-card-"]')).not.toHaveCount(0);
   });
 

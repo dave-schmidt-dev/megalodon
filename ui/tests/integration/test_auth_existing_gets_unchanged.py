@@ -1,12 +1,18 @@
-"""Integration tests: v9.1 existing endpoints stay unauthenticated (CR-4 narrow).
+"""Integration tests: deny-by-default gating of the formerly-open v9.1 GETs.
 
-Plan §6.3: cookie required for v9.2-NEW endpoints + v9.1 mutation endpoints
-that already had CSRF gating. Existing v9.1 GETs remain unauthenticated in
-v9.2 because ``ui/static/js/sse.js`` fetches them at module load before the
-token exchange could possibly complete (chicken-and-egg with bootstrap).
+SECURITY INVERSION (v9.2): the auth gate is now deny-by-default. The v9.1 GET
+endpoints (``/state``, ``/config``, ``/status``, ``/tasks``, ``/findings``) used
+to be served WITHOUT a cookie — that leaked mission state and, via
+``/config``'s ``csrf_token``, defeated CSRF. They are now GATED: a request
+without a valid ``mui_session`` cookie gets 401.
 
-This file is the regression net: if a future refactor accidentally gates a
-v9.1 GET endpoint, the bootstrap chain breaks and the UI never loads.
+The SPA bootstrap fetches these only AFTER the token exchange completes, so the
+chicken-and-egg concern in the prior comment no longer applies — the bootstrap
+authenticates first. Only the SPA shell + ``/healthz`` remain public.
+
+This file is the regression net for the inversion: if a future refactor
+accidentally re-opens one of these GETs, the security contract breaks and this
+test fails loudly.
 """
 
 import pytest
@@ -26,13 +32,14 @@ pytestmark = pytest.mark.integration
         "/api/v1/findings",
     ],
 )
-async def test_v91_get_endpoint_unauthenticated_returns_200(
+async def test_v91_get_endpoint_unauthenticated_returns_401(
     async_client_with_lifespan, path: str
 ):
-    """Every v9.1 GET listed in plan §6.3 must respond 200 without a cookie."""
+    """Every formerly-open v9.1 GET must now 401 without a session cookie."""
     r = await async_client_with_lifespan.get(path)
-    assert r.status_code == 200, (
-        f"v9.1 GET {path} regressed to {r.status_code}: {r.text}"
+    assert r.status_code == 401, (
+        f"deny-by-default regressed: {path} returned {r.status_code} "
+        f"without a cookie (should be 401): {r.text}"
     )
 
 

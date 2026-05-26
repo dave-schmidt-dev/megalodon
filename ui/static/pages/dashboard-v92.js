@@ -328,14 +328,27 @@ function ensurePasteTokenModal() {
     }
   });
 
+  // Non-modal <dialog> doesn't get native Escape-to-close; wire it explicitly
+  // so the recovery prompt is dismissible and never traps the operator.
+  modal.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); try { modal.close(); } catch {} }
+  });
+
   document.body.appendChild(modal);
 }
 
 function showPasteTokenModal() {
   ensurePasteTokenModal();
   const modal = document.querySelector('[data-testid="paste-token-modal"]');
-  if (modal && typeof modal.showModal === 'function' && !modal.open) {
-    try { modal.showModal(); } catch {}
+  // Use NON-modal show() (not showModal()): the v92 dashboard script's IIFE
+  // loads on every page via index.html and probes /api/v1/config, which now
+  // 401s under the deny-by-default auth gate. A modal <dialog> renders a
+  // top-layer ::backdrop that makes the whole SPA non-interactive — so on a
+  // generic page that brick navigation. show() surfaces the recovery prompt
+  // without stealing pointer events from the rest of the UI (mirrors the
+  // global reauth modal in auth.js). Escape dismisses it.
+  if (modal && typeof modal.show === 'function' && !modal.open) {
+    try { modal.show(); } catch {}
   } else if (modal) {
     modal.setAttribute('open', '');
   }

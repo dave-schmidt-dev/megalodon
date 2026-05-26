@@ -95,8 +95,15 @@ function el(tag, opts) {
  * @param {string} utc
  * @returns {string}
  */
-function utcAgo(utc) {
-  if (!utc) return "";
+/**
+ * Parse a UTC stamp (ISO `2026-05-20T10:00Z` OR filename dash-form
+ * `2026-05-20T10-00Z`) to epoch-ms. Returns NaN for empty/invalid input.
+ *
+ * @param {string} utc
+ * @returns {number}
+ */
+function parseUtcMs(utc) {
+  if (!utc) return NaN;
   const s = String(utc);
   let iso = s;
   const m = s.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})(?:-(\d{2}))?Z$/);
@@ -104,6 +111,12 @@ function utcAgo(utc) {
     iso = `${m[1]}T${m[2]}:${m[3]}:${m[4] || "00"}Z`;
   }
   const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : NaN;
+}
+
+function utcAgo(utc) {
+  if (!utc) return "";
+  const t = parseUtcMs(utc);
   if (!Number.isFinite(t)) return "";
   const deltaSec = Math.max(0, Math.floor((Date.now() - t) / 1000));
   if (deltaSec < 60) return `${deltaSec}s ago`;
@@ -147,6 +160,25 @@ function signalFields(sig) {
     topic: sig.topic || parsed.topic,
     utc: sig.utc || parsed.utc || "",
   };
+}
+
+/**
+ * Best-available sort time for a signal, in epoch-ms (M2). Prefers the resolved
+ * UTC (file signals); falls back to the event `ts` captured at ingest
+ * (`_eventTs`) for status-note/finding signals whose `utc` is empty so they no
+ * longer perpetually rank oldest. Returns 0 when nothing is parseable (those
+ * sort last, which is the correct behaviour for a truly time-less signal).
+ *
+ * @param {object} sig
+ * @returns {number}
+ */
+function _sortTimeMs(sig) {
+  const utc = signalFields(sig).utc;
+  let t = parseUtcMs(utc);
+  if (Number.isFinite(t)) return t;
+  t = parseUtcMs(sig && sig._eventTs);
+  if (Number.isFinite(t)) return t;
+  return 0;
 }
 
 /** Human label for a signal's source channel. */
@@ -314,12 +346,12 @@ export async function render(root, _params) {
     }
     for (const [fn, s] of liveByFilename) byFilename.set(fn, s);
     const all = [...byFilename.values()];
-    // Newest-first by resolved UTC (dash-form sorts lexicographically by time).
-    all.sort((a, b) => {
-      const ua = signalFields(a).utc;
-      const ub = signalFields(b).utc;
-      return ub.localeCompare(ua);
-    });
+    // Newest-first by best-available time (M2). Status-note/finding signals
+    // often have an empty `utc`; without a fallback they sort to the bottom and
+    // never surface. Use the resolved signal UTC, falling back to the event ts
+    // (`_eventTs`) captured at ingest, normalized to epoch-ms for a correct
+    // numeric ordering across the dash-form (filename) and ISO (event) shapes.
+    all.sort((a, b) => _sortTimeMs(b) - _sortTimeMs(a));
     return all;
   }
 
@@ -452,27 +484,45 @@ export async function render(root, _params) {
 
   /**
    * Turn an activity-wall signal event into a signal dict and merge it.
-   * @param {{type?:string, payload?:object}} ev
+   *
+   * R2-FE: ingest ALL three channels — file, finding, status-note. The BE emits
+   * `type:"signal"` for every channel with `payload:{filename|id, from_lane,
+   * to_lane, topic, utc, source, excerpt}`. Finding/status-note signals carry an
+   * `id` (no on-disk filename), so we key on `filename` else `id`. The previous
+   * `if (!filename) return;` silently dropped every non-file signal.
+   *
+   * M2: status-note/finding signals often have empty `utc`. We stash the event's
+   * own `ts` as `_eventTs` so sorting can fall back to it (else they perpetually
+   * rank oldest at the bottom).
+   *
+   * @param {{type?:string, ts?:string, payload?:object}} ev
    */
   function ingestEvent(ev) {
     if (!ev || ev.type !== "signal") return;
     const p = ev.payload || {};
-    const filename = p.filename || "";
-    if (!filename) return;
+    // Key on filename, falling back to the payload id for finding/status-note
+    // signals that have no on-disk file. Skip only if BOTH are absent.
+    const key = p.filename || p.id || "";
+    if (!key) return;
     const sig = {
-      filename,
+      // Keep `filename` populated (UI rows / read-state / dedupe use it). For
+      // id-only signals the id is a stable synthetic filename.
+      filename: p.filename || p.id || "",
+      id: p.id || "",
       from_lane: p.from_lane || "",
       to_lane: p.to_lane || "",
       to: p.to_lane || "",
       topic: p.topic || "",
       utc: p.utc || "",
+      // M2: best-available time fallback when utc is empty.
+      _eventTs: ev.ts || "",
       kind: "SIGNAL",
       // The activity-wall payload carries an excerpt, not the full body. Use it
       // as the drawer body when no fuller body is known.
       body: p.excerpt || p.body || "",
       source: p.source || "file",
     };
-    liveByFilename.set(filename, sig);
+    liveByFilename.set(key, sig);
   }
 
   async function hydrateSnapshot() {

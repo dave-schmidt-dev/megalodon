@@ -1,16 +1,21 @@
-"""Integration test: enumerate ALL /api/v1/* routes and assert each gates auth.
+"""Integration test: enumerate ALL routes and assert deny-by-default auth.
 
-This is a permanent regression test that prevents new endpoints from shipping
-without explicit auth gating. The test:
-1. Builds the app via make_app()
-2. Enumerates every route in app.router.routes whose path starts with /api/v1/
-3. For each route, makes a request WITHOUT a session cookie
-4. Asserts response is 401 (authentication required)
-5. Exception: routes in UNGATED_ALLOWLIST (commented with justification)
-   The point is "every new endpoint must justify its un-gated status by being
-   added to this allowlist with a comment explaining why."
+Permanent regression pin for the v9.2 SECURITY inversion. The auth gate is now
+DENY-BY-DEFAULT: every route under ``/api/**`` requires a valid ``mui_session``
+cookie EXCEPT a tiny public allowlist (just ``POST /api/v1/auth/exchange``).
 
-Fails loudly if a route enumerator returns 200 without auth.
+This test:
+1. Builds the app via the lifespan fixture.
+2. Enumerates EVERY route (method-aware — uses the route's real HTTP methods,
+   not just GET, since a POST-only mutation must also 401 without a cookie).
+3. Issues a no-cookie request with the route's actual method.
+4. Asserts the response is NOT 200 for any gated route (401 expected; 404/405/
+   422 are also fine — they mean the gate passed but routing/validation
+   rejected, which is not a security leak).
+5. Asserts the public-allowlist routes are reachable (NOT 401).
+
+If a new ``/api/**`` endpoint ships without gating, this fails loudly — there
+is no longer a large "ungated v9.1 surface" escape hatch.
 """
 
 from __future__ import annotations
@@ -19,113 +24,143 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-# Routes that DO NOT require auth. Each entry must have a comment explaining why.
-# When a new endpoint is added to this list, the comment is evidence that the
-# decision to leave it un-gated was deliberate and reviewed.
+# The ONLY routes that may be served without a session cookie. Deny-by-default
+# means the public set is intentionally tiny: non-/api paths (SPA shell, static
+# assets, favicon, healthz) plus the single token-exchange door under /api.
 #
-# v9.1 surface (backward-compatible, pre-auth-gate) per CR-4 (narrow):
-# These routes existed before v9.2 auth gating and are left open for compatibility.
-# New endpoints MUST be gated by the regex unless explicitly justified below.
-UNGATED_ALLOWLIST: set[str] = {
-    # ===== v9.1 surface (pre-auth gate) — backward-compat per CR-4 =====
-    # These are old read-only status/query endpoints from v9.1. They do not
-    # mutate state and are left un-gated for backward compatibility with dashboards
-    # and monitoring systems that may lack session cookies.
-    "/api/v1/status",
-    "/api/v1/tasks",
-    "/api/v1/state",
-    "/api/v1/findings",
-    "/api/v1/findings/{filename}",
-    "/api/v1/events",
-    "/api/v1/config",
-    "/api/v1/__contract_introspect__",
-    # ===== v9.2+ entry point =====
-    # POST /api/v1/auth/exchange — entry point for auth; if it required a cookie,
-    # the operator could never get in. No cookie needed on initial exchange.
-    "/api/v1/auth/exchange",
+# Entries are (METHOD, PATH) so the contract is method-precise. Everything else
+# under /api/** MUST require a cookie.
+PUBLIC_ALLOWLIST: set[tuple[str, str]] = {
+    # Token-exchange: the ONE door that mints a cookie. If it were gated the
+    # operator could never authenticate.
+    ("POST", "/api/v1/auth/exchange"),
 }
+
+# Path prefixes that are public regardless of method (non-/api bootstrap
+# surface served by the catch-all / static mount). These never carry mission
+# data — they are the SPA shell + assets the login flow renders pre-auth.
+_PUBLIC_NON_API_PREFIXES = ("/static", "/favicon")
+_PUBLIC_NON_API_EXACT = {"/", "/index.html", "/healthz"}
+
+
+def _route_methods(route) -> set[str]:
+    """Return the concrete HTTP methods for a route (excluding HEAD/OPTIONS)."""
+    methods = getattr(route, "methods", None) or set()
+    return {m for m in methods if m not in ("HEAD", "OPTIONS")}
+
+
+def _is_public(method: str, path: str) -> bool:
+    if (method, path) in PUBLIC_ALLOWLIST:
+        return True
+    if not path.startswith("/api/"):
+        # Non-/api routes are the bootstrap surface (SPA shell + assets).
+        if path in _PUBLIC_NON_API_EXACT:
+            return True
+        if any(path.startswith(p) for p in _PUBLIC_NON_API_PREFIXES):
+            return True
+        # The SPA catch-all (/{spa_path}) and any other non-/api GET serve the
+        # HTML shell only — no mission data — so they are public by design.
+        return True
+    return False
 
 
 @pytest.mark.asyncio
-async def test_all_api_v1_routes_gate_auth(async_client_with_lifespan):
-    """Enumerate all /api/v1/* routes and assert each requires auth (except allowlist)."""
+async def test_every_route_denies_without_cookie(async_client_with_lifespan):
+    """Method-aware: every gated route 401s (never 200) without a cookie."""
     app = async_client_with_lifespan._transport.app
 
-    # Collect all routes under /api/v1/
-    api_v1_routes = []
+    # Build a method-aware list of (method, path) pairs for every real route.
+    pairs: list[tuple[str, str]] = []
     for route in app.routes:
-        if hasattr(route, "path") and route.path.startswith("/api/v1/"):
-            api_v1_routes.append(route.path)
-
-    assert api_v1_routes, "No /api/v1/* routes found — fixture may be misconfigured"
-
-    # Sort for reproducible output
-    api_v1_routes.sort()
-
-    # Track failures
-    failures = []
-
-    for route_path in api_v1_routes:
-        if route_path in UNGATED_ALLOWLIST:
-            # Skip routes that are explicitly allowed to be ungated
+        path = getattr(route, "path", None)
+        if path is None:
             continue
+        methods = _route_methods(route)
+        if not methods:
+            continue
+        for m in sorted(methods):
+            pairs.append((m, path))
 
-        # Try a GET request (most permissive; if GET 401s, so will POST/etc).
-        # If the route doesn't support GET, the middleware still runs first, so
-        # 405 Method Not Allowed would come after auth check; but we'll check
-        # more carefully below per method.
-        r = await async_client_with_lifespan.get(route_path)
+    assert pairs, "No routes enumerated — fixture may be misconfigured"
+    # There must be a meaningful gated surface to verify.
+    gated_pairs = [(m, p) for (m, p) in pairs if not _is_public(m, p)]
+    assert gated_pairs, "No gated routes found — the auth gate may be disabled"
+
+    failures: list[str] = []
+    for method, path in sorted(set(gated_pairs)):
+        # Substitute a placeholder for any path params so routing reaches the
+        # handler (or fails AFTER the gate). The gate runs before routing, so a
+        # 401 fires regardless of whether the path param resolves.
+        request_path = path
+        if "{" in path:
+            import re as _re
+
+            request_path = _re.sub(r"\{[^}]+\}", "x", path)
+
+        r = await async_client_with_lifespan.request(method, request_path)
 
         if r.status_code == 200:
             failures.append(
-                f"  {route_path} returned 200 without auth cookie (SECURITY BUG)"
+                f"  {method} {path} returned 200 WITHOUT a session cookie "
+                f"(SECURITY BUG: gated route is publicly readable)"
             )
-        elif r.status_code == 401:
-            # Expected: auth gate rejected the request
-            pass
-        elif r.status_code == 404:
-            # Route exists but handler not implemented (OK, middleware passed)
-            pass
-        elif r.status_code == 405:
-            # Method not allowed (OK, auth gate passed, routing rejected)
-            pass
-        elif r.status_code >= 400 and r.status_code < 500:
-            # Other 4xx (bad request, unprocessable entity, etc.) — all OK,
-            # means auth gate passed and handler was reached. As long as it's
-            # not 200, the security contract is intact.
-            pass
-        elif r.status_code >= 500:
-            # Server error — not a security issue, but log it
-            pass
+        # 401 is the expected reject. 404/405/422/4xx all mean the gate passed
+        # but routing/validation rejected — not a security leak. 5xx is a bug
+        # but not a security leak. Only 200 is a contract violation.
 
     if failures:
         pytest.fail(
-            "Auth gate regression detected:\n"
+            "Auth gate regression — deny-by-default broken:\n"
             + "\n".join(failures)
-            + "\n\nIf you added a new /api/v1/* endpoint, add it to UNGATED_ALLOWLIST"
-            + " with a comment explaining why (if truly un-gated), or extend"
-            + " _V92_GATED_PATH_RE in megalodon_ui/server.py:65 to gate it."
+            + "\n\nEvery /api/** route must require a valid mui_session cookie. "
+            "If a new endpoint is genuinely public, add it to PUBLIC_ALLOWLIST "
+            "here AND to _V92_PUBLIC_API_EXACT in megalodon_ui/server.py with a "
+            "justification. Otherwise it is gated automatically by being under "
+            "/api/."
         )
 
 
 @pytest.mark.asyncio
-async def test_enumerated_routes_summary(async_client_with_lifespan, capsys):
-    """Print a summary of all /api/v1/* routes for manual inspection."""
-    app = async_client_with_lifespan._transport.app
+async def test_gated_api_route_401s_specifically(async_client_with_lifespan):
+    """Spot-check the contract paths the FE depends on: each 401s sans cookie."""
+    # These are the exact routes the FROZEN AUTH CONTRACT calls out.
+    must_401 = [
+        ("GET", "/api/v1/state"),
+        ("GET", "/api/v1/config"),
+        ("GET", "/api/v1/events"),
+        ("GET", "/api/v1/findings"),
+        ("GET", "/api/v1/status"),
+        ("GET", "/api/v1/tasks"),
+        ("POST", "/api/v1/signal"),
+        ("POST", "/api/v1/reclaim"),
+        ("POST", "/api/v1/challenge"),
+        ("POST", "/api/v1/inject-task"),
+        ("POST", "/api/v1/phase-flip"),
+        ("POST", "/api/v1/mission-status"),
+        ("POST", "/api/v1/status/update"),
+        ("POST", "/api/v1/history/append"),
+        ("POST", "/api/v1/mission-event"),
+    ]
+    for method, path in must_401:
+        r = await async_client_with_lifespan.request(method, path)
+        assert r.status_code == 401, (
+            f"{method} {path} must 401 without a cookie, got {r.status_code}"
+        )
 
-    # Collect all routes under /api/v1/
-    api_v1_routes = []
-    for route in app.routes:
-        if hasattr(route, "path") and route.path.startswith("/api/v1/"):
-            api_v1_routes.append(route.path)
 
-    api_v1_routes.sort()
-
-    print("\n=== All /api/v1/* Routes ===")
-    for route_path in api_v1_routes:
-        status = "(un-gated)" if route_path in UNGATED_ALLOWLIST else "(gated)"
-        print(f"  {route_path:50} {status}")
-
-    print(f"\nTotal: {len(api_v1_routes)} routes")
-    print(f"Un-gated: {len(UNGATED_ALLOWLIST)} (in allowlist)")
-    print(f"Gated: {len(api_v1_routes) - len(UNGATED_ALLOWLIST)}")
+@pytest.mark.asyncio
+async def test_public_routes_not_gated(async_client_with_lifespan):
+    """The public allowlist must NOT 401 (it would lock everyone out)."""
+    # Token-exchange with a bad token still reaches the handler (401 from the
+    # handler, not the gate) — but it must NOT be rejected by the GATE before a
+    # body is read. A missing-token exchange returns 401 from the handler with
+    # the same shape, so we assert the endpoint is reachable (not 404/405).
+    r = await async_client_with_lifespan.post(
+        "/api/v1/auth/exchange", json={"token": "definitely-wrong"}
+    )
+    assert r.status_code in (200, 401), (
+        f"auth/exchange must be reachable pre-auth, got {r.status_code}"
+    )
+    # The SPA shell must be reachable without a cookie.
+    r = await async_client_with_lifespan.get("/")
+    assert r.status_code == 200, f"index must be public, got {r.status_code}"

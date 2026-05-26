@@ -14,6 +14,9 @@ import asyncio
 import pytest
 
 
+from ui.tests.integration._auth_helper import authenticate
+
+
 try:
     from megalodon_ui.server import make_app  # type: ignore[import-not-found]
 
@@ -24,6 +27,12 @@ except ImportError:
 
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _auth_all(async_client_with_lifespan):
+    """SSE endpoints are gated (deny-by-default): mint a cookie before each test."""
+    authenticate(async_client_with_lifespan)
 
 
 @pytest.mark.asyncio

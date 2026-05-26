@@ -12,6 +12,7 @@
 
 import { API_FINDINGS } from "../js/constants.js";
 import { loadConfig } from "../js/config.js";
+import { authedFetch } from "../js/auth.js";
 
 // ---------------------------------------------------------------------------
 // DOM helpers (same pattern as board.js / lane_detail.js)
@@ -411,7 +412,7 @@ export async function render(root, _params) {
   /** @type {(short: string) => string} */
   let laneShortToName = buildLaneResolver(null);
   const [findingsResult, configResult] = await Promise.allSettled([
-    fetch(API_FINDINGS, { headers: { Accept: "application/json" } }).then((r) =>
+    authedFetch(API_FINDINGS, { headers: { Accept: "application/json" } }).then((r) =>
       r.ok ? r.json() : null,
     ),
     loadConfig(),
@@ -446,7 +447,7 @@ export async function render(root, _params) {
         drawer.open({ filename: clickedMeta.filename, body: "Loading…" });
 
         try {
-          const resp = await fetch(
+          const resp = await authedFetch(
             `${API_FINDINGS}/${encodeURIComponent(clickedMeta.filename)}`,
             { headers: { Accept: "application/json" } },
           );

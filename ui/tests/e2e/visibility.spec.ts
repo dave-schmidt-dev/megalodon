@@ -43,7 +43,7 @@
 import { test, expect } from "@playwright/test";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import * as path from "node:path";
-import { fixtureRootForProject, readUiToken } from "./_helpers";
+import { fixtureRootForProject, gotoAuthed, readUiToken } from "./_helpers";
 
 // ---------------------------------------------------------------------------
 // Route table. pageTestId is the destination page container's data-testid, or
@@ -73,8 +73,12 @@ function urlRe(routePath: string): RegExp {
 test.describe("snap-back: navigation stays on clicked tab", () => {
   test("navigate each route rapidly — URL does not revert to dashboard", async ({
     page,
-  }) => {
-    await page.goto("/");
+  }, testInfo) => {
+    // Authenticate first: the destination pages (findings/signals/mission) fetch
+    // session-gated endpoints. Without the cookie they render empty / surface
+    // the re-auth modal, defeating the snap-back assertions. gotoAuthed lands on
+    // the board (/), which is this test's starting point anyway.
+    await gotoAuthed(page, testInfo);
     // Wait just long enough for the nav to be in the DOM; don't wait for the
     // full grid render (which involves loadConfig()) — that creates the race
     // the _mountSeq fix prevents.
@@ -100,8 +104,10 @@ test.describe("snap-back: navigation stays on clicked tab", () => {
 
     test(`snap-back: clicking ${route.navTestId} from / lands on ${route.path}`, async ({
       page,
-    }) => {
-      await page.goto("/");
+    }, testInfo) => {
+      // Authenticate first so the destination page's gated fetches succeed and
+      // its container renders (see suite-level note above).
+      await gotoAuthed(page, testInfo);
       await page.waitForSelector(`[data-testid="${route.navTestId}"]`, {
         timeout: 10_000,
       });

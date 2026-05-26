@@ -128,6 +128,10 @@ async def test_tasks_endpoint_human_headers_non_empty(
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
+            # Deny-by-default gate: /api/v1/tasks now requires a session cookie.
+            client.cookies.set(
+                "mui_session", app.state.megalodon.session_store.create()
+            )
             r = await client.get("/api/v1/tasks")
 
     assert r.status_code == 200, f"unexpected status {r.status_code}: {r.text}"

@@ -60,6 +60,10 @@ async def async_client(tmp_path, monkeypatch):
             transport=ASGITransport(app=app),
             base_url="http://test",
         ) as client:
+            # Deny-by-default gate: every /api/** call needs a session cookie.
+            client.cookies.set(
+                "mui_session", app.state.megalodon.session_store.create()
+            )
             yield client, mission
 
 

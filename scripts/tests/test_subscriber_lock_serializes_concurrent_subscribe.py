@@ -87,11 +87,16 @@ class _FakeProc:
 
 @pytest.mark.asyncio
 async def test_burst_subscribe_unsubscribe_during_fanout(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, governor_scripts_link
 ) -> None:
     """Hammer subscribe / unsubscribe while the producer is fanning out chunks."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
+    # The governor is enabled by default, so start_all() runs preflight_governor
+    # before any lane spawns. Wire the run-dir scripts/ symlink it requires
+    # (conftest.link_governor_scripts) — otherwise preflight raises
+    # GovernorPreflightError and the subscriber-lock logic under test never runs.
+    governor_scripts_link(mission_dir)
     # Slightly larger cap so the churn can park multiple temporary subscribers.
     monkeypatch.setattr("megalodon_ui.spawn.SSE_MAX_SUBSCRIBERS_PER_LANE", 8)
 
