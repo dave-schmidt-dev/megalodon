@@ -10,6 +10,22 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-26 — CI DISABLED (cost): paused Actions until this work is done
+
+- [bug] Actions spend ran to **$1,031** for May (15,168 macОS min × $0.062 = **$940 / 91%**, plus
+  15,179 Linux min = $91); 100% megalodon, all May 22→26. | files: .github/workflows/test.yml
+  - **Root cause:** a `[ubuntu-latest, macos-latest]` matrix (macOS = 10× price) amplified by runaway
+    runs (Wave 1-4 each *cancelled* after 9-12h; macOS leg hung under `fail-fast: false`) and
+    fire-hose triggers (`push`+`pull_request` on `branches: ["**"]`, no `concurrency` cancel-in-progress).
+  - **Action (operator decision):** **disabled CI for now** — renamed `test.yml` → `test.yml.disabled`
+    (inert; GitHub only runs `.yml`/`.yaml`) and cancelled the in-flight run. macOS was already removed
+    from the live workflow earlier today; this fully stops Actions billing until the work is done.
+  - **Revisit checklist (when re-enabling):** keep macOS OFF; add `concurrency: {group, cancel-in-progress:
+    true}`; scope triggers (full gate on PR/main, not every branch push); set a Budget/spend cap in the
+    GitHub billing UI. The Node-20 JS-unit glob fix (below) stays in for when CI returns.
+
+---
+
 ## 2026-05-26 — CI FIX: blocking gate never actually ran (JS-unit glob on Node 20)
 
 **Meta-finding:** the "Authoritative gate (all green)" recorded below was a **local** result. CI
