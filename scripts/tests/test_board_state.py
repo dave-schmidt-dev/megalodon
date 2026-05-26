@@ -1237,3 +1237,291 @@ class TestBuildLaneRows:
             mission_dir, tasks_fe, sessions, adapter_resolver, lane_cfgs
         )
         assert "A" in rows
+
+
+# ---------------------------------------------------------------------------
+# Fix Round 3: Full STATUS lifecycle authoritative over stale TASKS.md
+#
+# Covers three findings:
+#   HIGH  — STATUS idle loses to stale claimed TASKS.md row
+#   MEDIUM — BLOCKED lane goal always empty when no TASKS blocking row
+#   LOW   — Completed task leaks into goal after STATUS idle
+# ---------------------------------------------------------------------------
+
+
+class TestStatusIdleAuthoritativeOverStaleClaimed:
+    """HIGH: STATUS `idle` must override a stale TASKS.md `claimed` row.
+
+    A lane whose STATUS.md says `idle` is IDLE — not RUNNING — even when
+    TASKS.md still has a `claimed` row from a prior session.
+    """
+
+    def _cfgs(self) -> list[MagicMock]:
+        return [_lane_cfg("AUDIT", "A", "Audit all findings")]
+
+    def test_idle_status_with_stale_claimed_task_gives_idle_pill(self) -> None:
+        """STATUS idle + TASKS claimed → pill=IDLE (state=open), now=None."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task(
+                "P3-A", "AUDIT", "stale claimed desc", "claimed", "2026-05-01T08:00:00Z"
+            ),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "idle")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P3-A": 0}, status_rows=status_rows
+        )
+        row = rows["A"]
+        # STATUS idle is authoritative: lane must render as IDLE, not RUNNING.
+        assert row.state == "open", (
+            f"Expected state=open (IDLE) but got {row.state!r}; "
+            "STATUS idle must not be overridden by a stale claimed TASKS row"
+        )
+        assert row.now is None, f"Expected now=None for idle lane but got {row.now!r}"
+
+    def test_idle_status_goal_is_not_stale_claimed_desc(self) -> None:
+        """STATUS idle + TASKS claimed → goal must NOT be the stale claimed task desc."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task(
+                "P3-A", "AUDIT", "stale claimed desc", "claimed", "2026-05-01T08:00:00Z"
+            ),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "idle")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P3-A": 0}, status_rows=status_rows
+        )
+        row = rows["A"]
+        assert row.goal != "stale claimed desc", (
+            "Goal must not show the stale claimed task; STATUS idle is authoritative"
+        )
+
+    def test_idle_with_multiple_stale_claimed_tasks_still_idle(self) -> None:
+        """Multiple stale claimed tasks + STATUS idle → still IDLE."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("P3-A", "AUDIT", "first stale", "claimed", "2026-05-01T08:00:00Z"),
+            _task("P3-B", "AUDIT", "second stale", "claimed", "2026-05-01T10:00:00Z"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "idle")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P3-A": 0, "P3-B": 1}, status_rows=status_rows
+        )
+        assert rows["A"].state == "open"
+        assert rows["A"].now is None
+
+    def test_idle_with_done_task_is_state_done_not_claimed(self) -> None:
+        """STATUS idle + TASKS done only → state=done (no stale claimed to resurrect)."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("P3-A", "AUDIT", "finished work", "done", "2026-05-01T08:00:00Z"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "idle")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P3-A": 0}, status_rows=status_rows
+        )
+        row = rows["A"]
+        # idle + done tasks → "done" is fine (history), but NOT "claimed".
+        assert row.state != "claimed", (
+            "STATUS idle must not yield state=claimed even with done tasks"
+        )
+        assert row.now is None
+
+
+class TestBlockedLaneGoalNotEmpty:
+    """MEDIUM: A BLOCKED lane with no TASKS blocking row must have a non-empty goal.
+
+    When STATUS says BLOCKED and there are no task rows at all, the lane's
+    goal should be informative (STATUS note or lane role), never empty string.
+    """
+
+    def _cfgs(self) -> list[MagicMock]:
+        return [_lane_cfg("META", "M", "Meta-coordination role")]
+
+    def test_blocked_status_no_tasks_goal_uses_status_note(self) -> None:
+        """STATUS BLOCKED, no task rows, status note present → goal = note."""
+        cfgs = self._cfgs()
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        digests: dict[str, SessionDigest | None] = {"M": None}
+        status_rows = [_status_row("META", "BLOCKED", notes="Waiting for backend")]
+        rows = assemble_lane_rows(tasks_fe, cfgs, digests, {}, status_rows=status_rows)
+        row = rows["M"]
+        assert row.state == "blocked"
+        assert row.goal != "", "goal must not be empty for a BLOCKED lane"
+        assert row.goal == "Waiting for backend", (
+            f"Expected goal to be the STATUS note but got {row.goal!r}"
+        )
+
+    def test_blocked_status_no_tasks_no_note_goal_uses_role(self) -> None:
+        """STATUS BLOCKED, no task rows, no note → goal = lane role (non-empty fallback)."""
+        cfgs = self._cfgs()
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        digests: dict[str, SessionDigest | None] = {"M": None}
+        status_rows = [_status_row("META", "BLOCKED", notes="")]
+        rows = assemble_lane_rows(tasks_fe, cfgs, digests, {}, status_rows=status_rows)
+        row = rows["M"]
+        assert row.state == "blocked"
+        assert row.goal != "", "goal must not be empty for a BLOCKED lane"
+        assert row.goal == "Meta-coordination role", (
+            f"Expected goal to fall back to role but got {row.goal!r}"
+        )
+
+    def test_blocked_status_signal_note_falls_back_to_role(self) -> None:
+        """STATUS BLOCKED + signal note (SIG...) → goal falls back to role, not empty."""
+        cfgs = self._cfgs()
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        digests: dict[str, SessionDigest | None] = {"M": None}
+        status_rows = [_status_row("META", "BLOCKED", notes="[SIG broadcast barrier]")]
+        rows = assemble_lane_rows(tasks_fe, cfgs, digests, {}, status_rows=status_rows)
+        row = rows["M"]
+        assert row.state == "blocked"
+        assert row.goal != ""
+        assert "SIG" not in row.goal
+
+
+class TestDoneLaneGoalDoesNotLeakCompletedTask:
+    """LOW: STATUS idle + TASKS done must not present the completed task as goal.
+
+    A done/idle lane should show the role or None as goal, not the description
+    of a finished task.
+    """
+
+    def _cfgs(self) -> list[MagicMock]:
+        return [_lane_cfg("AUDIT", "A", "Audit all findings")]
+
+    def test_idle_status_done_task_goal_not_finished_desc(self) -> None:
+        """STATUS idle + TASKS done → goal is NOT the completed task description."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("P3-A", "AUDIT", "Implement scanner", "done", "2026-05-01T08:00:00Z"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "idle")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P3-A": 0}, status_rows=status_rows
+        )
+        row = rows["A"]
+        assert row.state in ("open", "done"), f"Unexpected state {row.state!r}"
+        assert row.goal != "Implement scanner", (
+            "A done/idle lane must not present the completed task desc as goal"
+        )
+
+    def test_idle_status_done_task_goal_is_role_or_none(self) -> None:
+        """STATUS idle + TASKS done → goal should be the role (informative but not stale)."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("P3-A", "AUDIT", "Implement scanner", "done", "2026-05-01T08:00:00Z"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "idle")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P3-A": 0}, status_rows=status_rows
+        )
+        row = rows["A"]
+        # goal should be the role when idle/done (not the stale done desc).
+        assert row.goal == "Audit all findings", (
+            f"Expected role as goal for idle+done lane but got {row.goal!r}"
+        )
+
+    def test_idle_status_multiple_done_tasks_goal_is_role(self) -> None:
+        """STATUS idle + multiple done tasks → goal = role, not any done desc."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("P1-A", "AUDIT", "First pass", "done", "2026-04-01T08:00:00Z"),
+            _task("P2-A", "AUDIT", "Second pass", "done", "2026-05-01T08:00:00Z"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "idle")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P1-A": 0, "P2-A": 1}, status_rows=status_rows
+        )
+        row = rows["A"]
+        assert row.goal == "Audit all findings"
+        assert row.now is None
+
+
+class TestStatusLifecycleRegressions:
+    """Regression tests confirming prior working behaviors are preserved.
+
+    The auditor confirmed these work — assert they still do after the Round 3
+    fixes.
+    """
+
+    def _cfgs(self) -> list[MagicMock]:
+        return [_lane_cfg("AUDIT", "A", "Audit all findings")]
+
+    def test_working_overrides_done_task_still_works(self) -> None:
+        """Regression: working: P4-A + prior done P3-A → RUNNING, now/goal = P4-A."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("P3-A", "AUDIT", "prior done task", "done", "2026-05-01T08:00:00Z"),
+            _task("P4-A", "AUDIT", "new phase task", "open"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "working: P4-A", notes="grinding")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P3-A": 0, "P4-A": 1}, status_rows=status_rows
+        )
+        row = rows["A"]
+        assert row.state == "claimed"
+        assert row.now is not None
+        assert row.now["task_id"] == "P4-A"
+        assert row.now["desc"] == "new phase task"
+        assert row.goal == "new phase task"
+        assert row.last is not None
+        assert row.last["task_id"] == "P3-A"
+
+    def test_signal_note_suppressed_from_goal(self) -> None:
+        """Regression: [SIG ...] notes must never become the Goal line."""
+        cfgs = self._cfgs()
+        tasks = [_task("P4-A", "AUDIT", "phase-4 audit task", "open")]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [
+            _status_row("AUDIT", "working: P4-A", notes="[SIG handshake from lane B]")
+        ]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P4-A": 0}, status_rows=status_rows
+        )
+        row = rows["A"]
+        assert "SIG" not in row.goal
+        assert row.goal == "phase-4 audit task"
+
+    def test_no_status_rows_backward_compat_idle(self) -> None:
+        """Regression: no status_rows + no tasks → IDLE state (open), no breakage."""
+        cfgs = self._cfgs()
+        tasks_fe = _tasks_fe({"PHASE-PLAN": []})
+        rows = assemble_lane_rows(tasks_fe, cfgs, {"A": None}, {})
+        assert rows["A"].state == "open"
+        assert rows["A"].now is None
+        assert rows["A"].goal == "Audit all findings"
+
+    def test_working_overrides_stale_claimed_task_not_idle(self) -> None:
+        """Regression: STATUS working: P4 + stale claimed P2 → RUNNING on P4, not idle."""
+        cfgs = self._cfgs()
+        tasks = [
+            _task("P2-A", "AUDIT", "stale claimed", "claimed", "2026-05-01T08:00:00Z"),
+            _task("P4-A", "AUDIT", "live phase-4 task", "open"),
+        ]
+        tasks_fe = _tasks_fe({"PHASE-PLAN": tasks})
+        digests: dict[str, SessionDigest | None] = {"A": None}
+        status_rows = [_status_row("AUDIT", "working: P4-A", notes="")]
+        rows = assemble_lane_rows(
+            tasks_fe, cfgs, digests, {"P2-A": 0, "P4-A": 1}, status_rows=status_rows
+        )
+        row = rows["A"]
+        assert row.state == "claimed"
+        assert row.now is not None
+        assert row.now["task_id"] == "P4-A"

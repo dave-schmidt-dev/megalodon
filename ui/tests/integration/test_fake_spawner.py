@@ -52,6 +52,12 @@ async def authed_fake_client(
         ) as client:
             exch = await client.post("/api/v1/auth/exchange", json={"token": token})
             assert exch.status_code == 200, exch.text
+            # /api/v1/lane/{lane}/followup is now CSRF-protected + control-mode
+            # gated (Fix R3). Attach the token + flip control mode ON per-fixture
+            # (NOT a shared conftest) so test_control_mode_server.py default-OFF
+            # assertions in this dir remain valid.
+            client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
+            app.state.megalodon.control_mode = True
             yield client, app
 
 

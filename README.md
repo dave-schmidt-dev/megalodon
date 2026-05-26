@@ -602,6 +602,14 @@ screen-scraping permission system (decommissioned in Phases 1–4, 2026-05-25).
   does not kill it thinking it is merely silent).
 - **Claude-only fleet** — the governor is a Claude Code feature; non-`claude` harnesses
   are not governed. This is an accepted tradeoff: the fleet is now Claude-only.
+- **Server-side control mode (Fix Round 3, 2026-05-26)** — the server now enforces a
+  global `control_mode` flag (default **OFF / read-only**). Every destructive endpoint
+  (`/signal`, `/reclaim`, `/challenge`, `/mission-status`, `/inject-task`, and the legacy
+  `/api/lanes/{lane}/reclaim`) requires both control mode ON **and** a valid CSRF token.
+  Flipping control mode on/off goes through `POST /api/v1/control-mode` (itself CSRF-gated).
+  The current state is surfaced in `/config` and `/state`; the board's control-mode toggle
+  is wired to this endpoint. Calling any destructive route while control mode is OFF returns
+  403 regardless of CSRF token validity.
 
 ---
 

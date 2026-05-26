@@ -69,13 +69,24 @@ def build_status_row_re(config: MissionConfig) -> re.Pattern:
     """Per server.py:64 shape. The lane group keeps the v9.0 pattern
     ``[A-Z][A-Z\\- ]*?`` — config doesn't change this because it captures the
     *long* lane name from a markdown table row and downstream parsing already
-    handles whitespace/dash. Compiled with re.MULTILINE."""
+    handles whitespace/dash. Compiled with re.MULTILINE.
+
+    MINOR (victim-lane hiding): the notes column was anchored on the row's
+    closing pipe via ``(?P<notes>.*?)\\s*\\|\\s*$``. A row with trailing junk
+    AFTER its 5th-column closing pipe (e.g. ``| note | extra``) then failed to
+    match at all, so the lane silently vanished from /coordination ``lanes``.
+    The notes cell is now captured as ``[^|]*?`` (a markdown table cell never
+    contains an unescaped ``|``; SIG tokens carry no pipes), and any content
+    after the closing ``|`` is tolerated with ``.*``. This recovers the 5
+    canonical columns even when junk trails — WITHOUT reintroducing the
+    closing-pipe-anchor spoof (the signal binder line-binds the owning lane
+    independently via ``_owning_lane_on_line``)."""
     pattern = (
         r"^\|\s*(?P<lane>[A-Z][A-Z\- ]*?)\s*\|\s*"
         r"(?P<agent>[^|]+?)\s*\|\s*"
         r"(?P<state>[^|]+?)\s*\|\s*"
         r"(?P<last_utc>[^|]+?)\s*\|\s*"
-        r"(?P<notes>.*?)\s*\|\s*$"
+        r"(?P<notes>[^|]*?)\s*\|.*$"
     )
     return re.compile(pattern, re.MULTILINE)
 

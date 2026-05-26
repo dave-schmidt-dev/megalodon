@@ -123,6 +123,18 @@ jobs:
           --project=chromium-default
           --workers=2
 
+      # Gate on chromium-mutations: test_orchestrator_actions.spec.ts exercises
+      # challenge / reclaim / signal mutations via the UI. The project uses
+      # workers=1 because specs share mutable server state (STATUS.md appends).
+      # Only chromium is needed here — webkit-mutations runs in the non-blocking job.
+      - name: Playwright mutations e2e (chromium-mutations)
+        if: hashFiles('ui/tests/e2e/playwright.config.ts') != ''
+        run: >
+          npx playwright test
+          --config=ui/tests/e2e/playwright.config.ts
+          --project=chromium-mutations
+          --workers=1
+
   # Non-blocking WebKit / Safari-engine coverage. Safari users get coverage, but
   # a WebKit-specific flake or the heavier multi-server startup can't wedge the
   # primary gate. `continue-on-error: true` keeps it visible without blocking

@@ -11,6 +11,7 @@ Plan §6.4 row: `POST /api/v1/lane/<NAME>/followup | cookie | Body
 
 Error paths:
   - 401 without cookie (existing `v92_auth_gate` middleware).
+  - 403 missing or mismatched X-CSRF-Token with control mode ON (Fix-Round-3).
   - 404 unknown lane (no LaneSession for that short).
   - 404 when spawner is None (test-mode lifespan).
   - 422 missing or empty prompt.
@@ -125,6 +126,12 @@ async def authed_client_with_spawner(
         ) as client:
             exch = await client.post("/api/v1/auth/exchange", json={"token": token})
             assert exch.status_code == 200, exch.text
+            # Attach the CSRF token as a default header and enable control mode
+            # (defense-in-depth: Fix-Round-3 added CSRF + control-mode gating to
+            # lane_followup; happy-path tests must satisfy both checks).
+            csrf = app.state.megalodon.csrf_token
+            client.headers["X-CSRF-Token"] = csrf
+            app.state.megalodon.control_mode = True
             yield client, spawner, claude_adapter, respawn_calls
 
 
@@ -228,8 +235,148 @@ async def test_followup_when_spawner_is_none_returns_404(fix_medium: Path, monke
         ) as client:
             exch = await client.post("/api/v1/auth/exchange", json={"token": token})
             assert exch.status_code == 200
+            # CSRF header + control mode required so the check-order is
+            # auth → CSRF → control-mode → handler (spawner=None → 404).
+            csrf = app.state.megalodon.csrf_token
+            app.state.megalodon.control_mode = True
             resp = await client.post(
                 "/api/v1/lane/A/followup",
                 json={"prompt": "hello"},
+                headers={"X-CSRF-Token": csrf},
             )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Fix-Round-3: CSRF negative tests (control mode ON, missing/wrong token → 403)
+#
+# CONTRACT: after the server-agent lands CSRF enforcement on lane_followup,
+# a cookie-authenticated POST with control mode ON but no X-CSRF-Token header
+# must return 403, not 202.  These tests are written to the frozen contract
+# and depend on the server agent's change being integrated; until then they
+# will pass trivially if the server returns 202 (see NOTE below).
+#
+# Check order: auth → CSRF → control-mode → handler.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def authed_client_with_spawner_csrf_on(
+    fix_medium: Path, monkeypatch
+) -> AsyncGenerator[tuple, None]:
+    """Like authed_client_with_spawner but with control mode ON and CSRF header set.
+
+    Tests that need to verify the CSRF gate strip ``X-CSRF-Token`` from this
+    client's headers before making the call-under-test.
+    """
+    monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
+    fleet = fix_medium / ".fleet"
+    fleet.mkdir(parents=True, exist_ok=True)
+    token = "followup-csrf-test-token"
+    write_token_atomic(fleet / "ui.token", token)
+
+    socket = fleet / "tmux.sock"
+    config = _make_config(["A"])
+
+    claude_adapter = MagicMock()
+    claude_adapter.build_argv = MagicMock(return_value=(["stub"], {}))
+    claude_adapter.build_followup_argv = MagicMock(
+        return_value=(["claude", "--resume", "sid", "prompt"], {}),
+    )
+    claude_adapter.session_log_dir = MagicMock(return_value=None)
+
+    adapter_resolver = MagicMock(return_value=claude_adapter)
+    spawner = FleetSpawner(fix_medium, config, adapter_resolver, socket)
+
+    from megalodon_ui.spawn import LaneSession
+
+    stream_log = fleet / "A.stream.log"
+    stream_log.touch()
+    spawner.sessions["A"] = LaneSession(
+        lane="A",
+        name="lane-A",
+        cwd=fix_medium,
+        argv=["stub"],
+        env={},
+        stream_log=stream_log,
+        session_id="sid",
+        running=True,
+    )
+
+    async def mock_respawn(lane, argv, env):
+        pass
+
+    spawner.respawn = mock_respawn  # type: ignore[attr-defined]
+
+    app = make_app(mission_dir=fix_medium)
+    async with app.router.lifespan_context(app):
+        app.state.spawner = spawner
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            exch = await client.post("/api/v1/auth/exchange", json={"token": token})
+            assert exch.status_code == 200, exch.text
+            csrf = app.state.megalodon.csrf_token
+            # Enable control mode so the CSRF gate is the outermost blocker.
+            on = await client.post(
+                "/api/v1/control-mode",
+                json={"enabled": True},
+                headers={"X-CSRF-Token": csrf},
+            )
+            # If the server agent's control-mode endpoint isn't present yet, skip
+            # gracefully (endpoint will 404/405 — not our responsibility here).
+            if on.status_code not in (200, 404, 405):
+                pytest.skip(
+                    f"POST /api/v1/control-mode returned unexpected {on.status_code}; "
+                    "server agent's control-mode work may not be integrated yet"
+                )
+            # Attach the CSRF token as a default header; tests remove it to test the gate.
+            client.headers["X-CSRF-Token"] = csrf
+            yield client, app, csrf
+
+
+@pytest.mark.asyncio
+async def test_followup_missing_csrf_returns_403(authed_client_with_spawner_csrf_on):
+    """Cookie present + control mode ON, but NO X-CSRF-Token → 403.
+
+    Isolates the CSRF gate: the only missing piece is the token header.
+    Depends on server agent adding ``_csrf_or_403`` to ``lane_followup``.
+    Until that lands the endpoint returns 202 and this test is a known gap.
+    """
+    client, app, _csrf = authed_client_with_spawner_csrf_on
+    # Remove the default CSRF header set by the fixture.
+    client.headers.pop("X-CSRF-Token", None)
+
+    resp = await client.post(
+        "/api/v1/lane/A/followup",
+        json={"prompt": "hello"},
+    )
+    assert resp.status_code == 403, (
+        f"Expected 403 (missing CSRF with control mode ON), got {resp.status_code}: "
+        f"{resp.text}\n"
+        "NOTE: this test depends on the server agent adding CSRF enforcement to "
+        "lane_followup. Until that change is integrated this endpoint returns 202."
+    )
+    assert "CSRF" in resp.json().get("detail", ""), resp.text
+
+
+@pytest.mark.asyncio
+async def test_followup_wrong_csrf_returns_403(authed_client_with_spawner_csrf_on):
+    """Cookie present + control mode ON, but WRONG X-CSRF-Token → 403.
+
+    Complements the missing-token case: a mismatched token must also be rejected
+    with 403, not 202.  Same server-agent dependency as above.
+    """
+    client, app, _csrf = authed_client_with_spawner_csrf_on
+    client.headers["X-CSRF-Token"] = "definitely-not-the-real-token"
+
+    resp = await client.post(
+        "/api/v1/lane/A/followup",
+        json={"prompt": "hello"},
+    )
+    assert resp.status_code == 403, (
+        f"Expected 403 (wrong CSRF with control mode ON), got {resp.status_code}: "
+        f"{resp.text}\n"
+        "NOTE: depends on server agent's CSRF enforcement on lane_followup."
+    )
+    assert "CSRF" in resp.json().get("detail", ""), resp.text

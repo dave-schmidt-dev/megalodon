@@ -27,8 +27,15 @@ _APP_CONFIG = AppConfig(csrf_token=_CSRF, poll_interval_seconds=0.05)
 
 
 def _auth(app, client) -> None:
-    """Attach a valid mui_session cookie — every /api/** call is now gated."""
+    """Attach a valid mui_session cookie + CSRF token — every /api/** call is gated.
+
+    The canonical mutation routes (``/challenge``, ``/inject-task`` …) are now
+    CSRF-protected (Fix R3), so attach the token as a default header. Control
+    mode is ON via scripts/tests/conftest autouse, so write paths reach the
+    handler; GET-only tests are unaffected by the extra header.
+    """
     client.cookies.set("mui_session", app.state.megalodon.session_store.create())
+    client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
 
 
 async def _wait_for_applied(

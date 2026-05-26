@@ -112,6 +112,10 @@ async def authed_teardown_client(
             # DELETE /api/v1/fleet is now CSRF-protected (defense-in-depth);
             # attach the token as a default header for the happy-path tests.
             client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
+            # ...and control-mode gated (Fix R3, read-only by default). Flip the
+            # flag ON per-fixture (NOT via a shared conftest) so the default-OFF
+            # assertions in test_control_mode_server.py — same dir — stay valid.
+            app.state.megalodon.control_mode = True
             yield client, app, spawner, fleet
 
 

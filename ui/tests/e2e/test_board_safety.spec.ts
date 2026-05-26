@@ -19,7 +19,7 @@
 // test does not actually tear down the shared worker server.
 
 import { test, expect, Page } from '@playwright/test';
-import { readUiToken, republishUntil } from './_helpers';
+import { readUiToken, republishUntil, setControlMode } from './_helpers';
 
 async function gotoBoard(page: Page, token: string): Promise<void> {
   // The activity wall now auto-opens on mount (default-open). Its fixed panel
@@ -111,10 +111,10 @@ test.describe('Wave 3: board safety UI', () => {
     await seedNarrative(page, {
       C: { lane: 'C', lane_name: 'agent-c', state: 'done', last: null, now: null, goal: null, tokens: null, narrator_ok: true, governed: true, liveness: 'unknown' },
     });
-    // Reset control mode to read-only (localStorage) for hermeticity.
-    await page.evaluate(() => {
-      try { localStorage.setItem('controlMode', 'false'); } catch (_) { /* ignore */ }
-    });
+    // Reset the SERVER-SIDE control-mode flag to OFF for hermeticity.
+    // The old localStorage-only reset left the server flag ON after tests (b)
+    // and (c), causing subsequent read-only assertions to see enabled buttons.
+    await setControlMode(page, false);
   });
 
   test('(a) liveness:"dead" → DEAD pill visible; EXITED for "exited"', async ({ page }, testInfo) => {
@@ -122,6 +122,8 @@ test.describe('Wave 3: board safety UI', () => {
     await stubStale(page);
     await stubAlerts(page, []);
     await gotoBoard(page, token);
+    // Read-only test: ensure server control-mode is OFF for hermeticity.
+    await setControlMode(page, false);
 
     const dead = page.locator('[data-testid="board-liveness-C"]');
     // Re-publish until the board's narrative SSE subscription is live and the
@@ -153,6 +155,9 @@ test.describe('Wave 3: board safety UI', () => {
     await stubStale(page);
     await stubAlerts(page, []);
     await gotoBoard(page, token);
+    // Explicitly set server control-mode OFF so read-only assertions are valid
+    // regardless of what a previous test left behind (workers:1, shared server).
+    await setControlMode(page, false);
 
     // Kill-switch disabled in read-only (default).
     const kill = page.locator('[data-testid="board-kill-switch"]');
@@ -191,11 +196,13 @@ test.describe('Wave 3: board safety UI', () => {
       await route.continue();
     });
 
-    // Enter control mode before navigating so the kill-switch is enabled.
     await gotoBoard(page, token);
-    await page.locator(ENABLE_CONTROL).click();
+    // Ensure server control-mode is ON so the kill-switch is enabled. Use the
+    // helper (server-side flip + localStorage mirror) rather than the UI toggle
+    // so this test is independent of the toggle's own click handler.
+    await setControlMode(page, true);
     const kill = page.locator('[data-testid="board-kill-switch"]');
-    await expect(kill).toBeEnabled();
+    await expect(kill).toBeEnabled({ timeout: 5_000 });
 
     // Click → confirm modal appears.
     await kill.click();
@@ -220,6 +227,9 @@ test.describe('Wave 3: board safety UI', () => {
       { ts: '2026-05-25T12:00:00Z', lane: 'C', kind: 'CRASHED', severity: 'blocking', evidence: ['rc=17'], message: 'Lane C process crashed (rc=17).' },
     ]);
     await gotoBoard(page, token);
+    // Read-only test (just checks banner rendering): ensure server control-mode
+    // is OFF for hermeticity.
+    await setControlMode(page, false);
 
     const banner = page.locator('[data-testid="alert-banner-C-CRASHED"]');
     await expect(banner).toBeVisible({ timeout: 8_000 });
@@ -236,6 +246,9 @@ test.describe('Wave 3: board safety UI', () => {
     await stubStale(page, [{ lane: 'C', consecutive_denies: 7 }]);
     await stubAlerts(page, []);
     await gotoBoard(page, token);
+    // Read-only test (just checks badge rendering): ensure server control-mode
+    // is OFF for hermeticity.
+    await setControlMode(page, false);
 
     const deny = page.locator('[data-testid="board-denyloop-C"]');
     await expect(deny).toBeVisible({ timeout: 8_000 });

@@ -668,8 +668,13 @@ function applyStatusBaseline(refs, row) {
       refs.nowEl.style.fontStyle = "";
       refs.nowEl.dataset.baseline = "true";
     } else {
-      // No live work reported yet — say the narrator is warming up.
-      refs.nowEl.textContent = "narrator warming up…";
+      // Lane is idle/non-working per STATUS.md (now=None / no active task).
+      // Show a neutral placeholder — "narrator warming up…" only makes sense
+      // for an ACTIVELY-working lane whose narrator hasn't spoken yet.
+      // Fix: only set "warming up" when the lane appears to be running but the
+      // narrator hasn't delivered a phrase yet; for a genuinely idle lane use
+      // a neutral dash so the board never says "warming up…" indefinitely.
+      refs.nowEl.textContent = "— idle";
       refs.nowEl.style.fontStyle = "italic";
       refs.nowEl.dataset.baseline = "true";
     }
@@ -933,10 +938,12 @@ export async function render(root, _params) {
 
   // Activity toggle button — placed in the header, built before missionHeader so
   // the onclick closure can reference _closeActivityPanel / _openActivityPanel.
+  // Fix R3-6: add aria-expanded and toggle label text to reflect open/closed state.
   const activityToggleBtn = el("button", {
     type: "button",
     class: "button",
     "data-testid": "board-activity-toggle",
+    "aria-expanded": "false",
     title: "Toggle activity wall.",
     onclick: () => {
       if (activityPanel) {
@@ -946,9 +953,13 @@ export async function render(root, _params) {
         // teardown, so board.js records the explicit close here.
         _persistActivityWallClosed();
         _closeActivityPanel();
+        activityToggleBtn.setAttribute("aria-expanded", "false");
+        activityToggleBtn.textContent = "activity ▸";
         return;
       }
       _openActivityPanel();
+      activityToggleBtn.setAttribute("aria-expanded", "true");
+      activityToggleBtn.textContent = "activity ▾";
     },
   }, "activity ▸");
 
@@ -1297,6 +1308,8 @@ export async function render(root, _params) {
   // closed next mount. This uses the same open path the toggle uses.
   if (activityWallShouldDefaultOpen()) {
     _openActivityPanel();
+    activityToggleBtn.setAttribute("aria-expanded", "true");
+    activityToggleBtn.textContent = "activity ▾";
   }
 
   /**

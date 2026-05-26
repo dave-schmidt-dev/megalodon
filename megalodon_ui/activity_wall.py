@@ -1,13 +1,14 @@
 """Activity wall: ring buffer + fan-in task + subscriber fanout.
 
-The activity wall aggregates events from 7 sources into a shared in-memory
+The activity wall aggregates events from 8 sources into a shared in-memory
 ring buffer (deque, maxlen=500) and fans them out to per-connection asyncio
 queues for SSE clients.
 
-The seven sources are: findings, signals, status_notes, history, queue_applier,
-inject_log, and governor_log (the PreToolUse governor's audit log — see Phase 3
-governor hook). The governor-log source is what makes a governed lane's
-allow/deny activity visible on the board.
+The eight sources are: findings, signals, status_notes, history, mission_events,
+queue_applier, inject_log, and governor_log (the PreToolUse governor's audit log
+— see Phase 3 governor hook). The governor-log source is what makes a governed
+lane's allow/deny activity visible on the board; the mission-events source
+surfaces ``POST /api/v1/mission-event`` writes (mission phase timeline).
 
 SCHISM FIX — live signals for ALL THREE comms channels. A signal can arrive via
 three channels and ALL THREE now emit a live ``type:"signal"`` event:
@@ -47,6 +48,7 @@ Event shape (all sources)
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -82,6 +84,30 @@ _APPLIER_LANE_RE = re.compile(r"(?<!\w)lane=(\S+)")
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _status_note_signal_id(
+    from_lane: str, claimed_from: str, to: str, text: str
+) -> str:
+    """CONTRACT-SIGNAL-ID: stable content-hash id for a status-note signal.
+
+    Mirrors server.py verbatim::
+
+        id = "sig-" + sha1(f"{from_lane}|{claimed_from}|{to}|{text}"
+                           .encode()).hexdigest()[:12]
+
+    Content-addressed (not positional) so the id is STABLE across STATUS.md
+    generations: the FE keys live signals on this id, so a positional key would
+    collide across rewrites and the FE would drop the earlier signal. Two events
+    with identical content share an id (idempotent); any change to sender / target
+    / text yields a new id.
+    """
+    return (
+        "sig-"
+        + hashlib.sha1(f"{from_lane}|{claimed_from}|{to}|{text}".encode()).hexdigest()[
+            :12
+        ]
+    )
 
 
 # Small pure helpers, mirrored from server.py so SIGNAL-class finding events and
@@ -178,10 +204,10 @@ def _parse_lane_from_filename(name: str) -> str | None:
 
 
 class ActivityWall:
-    """Central fan-in hub for the 7 activity-wall event sources.
+    """Central fan-in hub for the 8 activity-wall event sources.
 
-    Sources: findings, signals, status_notes, history, queue_applier,
-    inject_log, governor_log.
+    Sources: findings, signals, status_notes, history, mission_events,
+    queue_applier, inject_log, governor_log.
 
     Parameters
     ----------
@@ -198,7 +224,7 @@ class ActivityWall:
     Fan-in task
     -----------
     ``start()`` launches a single asyncio.Task (``_fan_in_task``) that drives
-    all 7 source coroutines via ``asyncio.gather``. Each source is its own
+    all 8 source coroutines via ``asyncio.gather``. Each source is its own
     inner coroutine that loops on its generator and calls ``_emit``.
     ``stop()`` cancels the task and awaits it.
     """
@@ -210,6 +236,36 @@ class ActivityWall:
         self._task: asyncio.Task | None = None
         # Counter exposed for tests (GC/cleanup assertions)
         self.subscriber_count: int = 0
+        # Lazily-loaded roster of valid lane labels (CONTRACT-ROSTER). ``None``
+        # until first read; reloaded best-effort on STATUS-note parse.
+        self._roster: frozenset[str] | None = None
+
+    def _load_roster(self) -> frozenset[str]:
+        """Set of valid lane labels (``LANE-<SHORT>`` and ``LANE-<NAME>``).
+
+        CONTRACT-ROSTER: mirrors how server.py reads ``ctx.mission_config.lanes``
+        — read the mission config from disk (the wall is constructed with only
+        ``mission_dir``) and normalize each lane to the canonical ``LANE-<X>``
+        labels a STATUS row's first cell can name. ``LANE-ORCH`` is always valid
+        (server-written orchestrator tokens). Best-effort: an unreadable config
+        yields an empty roster (every lane then reads as unknown, fail-safe).
+        """
+        if self._roster is not None:
+            return self._roster
+        labels: set[str] = {"LANE-ORCH"}
+        try:
+            from .mission_config import load_mission_config
+
+            mc = load_mission_config(self._mission_dir)
+            for lc in mc.lanes:
+                if lc.short:
+                    labels.add(_normalize_lane_label(lc.short, ""))
+                if lc.name:
+                    labels.add(_normalize_lane_label(lc.name, ""))
+        except Exception:
+            _log.exception("activity-wall: roster load failed")
+        self._roster = frozenset(labels)
+        return self._roster
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -380,7 +436,7 @@ class ActivityWall:
     # ------------------------------------------------------------------
 
     async def _fan_in(self) -> None:
-        """Run all 7 source coroutines concurrently; restart on unexpected exit."""
+        """Run all 8 source coroutines concurrently; restart on unexpected exit."""
         try:
             await asyncio.gather(
                 self._source_findings(),
@@ -390,6 +446,7 @@ class ActivityWall:
                 self._source_queue_applier(),
                 self._source_inject_log(),
                 self._source_governor_log(),
+                self._source_mission_events(),
                 return_exceptions=True,
             )
         except asyncio.CancelledError:
@@ -616,8 +673,9 @@ class ActivityWall:
                     return lane
             return None
 
+        roster = self._load_roster()
         events: list[dict] = []
-        for idx, m in enumerate(_SIG_TOKEN_RE.finditer(text)):
+        for m in _SIG_TOKEN_RE.finditer(text):
             from_raw = (m.group(1) or "").strip()
             to_raw = (m.group(2) or "").strip()
             sig_text = (m.group(3) or "").strip()
@@ -636,6 +694,7 @@ class ActivityWall:
                 else None
             )
             from_unverified = False
+            roster_unknown = False
             if from_raw.upper() in _ORCH_SENDER_LABELS:
                 from_lane = "LANE-ORCH"
             elif owning_lane is None:
@@ -648,17 +707,26 @@ class ActivityWall:
                 if claimed_from != owning_lane:
                     from_unverified = True
 
+            # CONTRACT-ROSTER: validate the authoritative owning lane against the
+            # configured roster. A token sitting in a fabricated row owned by a
+            # lane that is not in the mission config (e.g. ``| LANE-Z | ...``) can
+            # never be trusted — flag it so the FE can render it as unverified.
+            if from_lane not in roster:
+                from_unverified = True
+                roster_unknown = True
+
             topic = _slugify(" ".join(sig_text.split()[:5]))
-            # Identity is the authoritative sender + target + text, so re-saving
-            # STATUS.md with the same tokens does not re-emit, but a genuinely new
-            # token (different text/target) does.
-            identity = f"{from_lane}|{to_lane}|{sig_text}"
-            # Unique per-token id so concurrent status-note signals don't collide
-            # on the FE (which keys live signals on ``filename || id``). The
-            # ordinal index keeps it stable across re-polls of the same file yet
-            # distinct across different tokens. ``filename`` carries the same
-            # unique value (server.py contract: ``status-note-<idx>``).
-            note_id = f"status-note-{idx}"
+            # CONTRACT-SIGNAL-ID: content-hash id, STABLE across STATUS.md
+            # generations (a positional ``status-note-<idx>`` collides across
+            # rewrites, so the FE — which keys live signals on this id — drops
+            # the earlier signal). The id is idempotent for identical content and
+            # distinct for any change to sender / target / text.
+            note_id = _status_note_signal_id(from_lane, claimed_from, to_lane, sig_text)
+            # Identity gates re-emit (the ring is NOT deduped server-side, but a
+            # bare re-save of STATUS.md must not replay unchanged tokens). It is
+            # the content-hash id, so a genuinely new token (different text /
+            # target / sender) re-emits while an unchanged one does not.
+            identity = note_id
             events.append(
                 {
                     "type": "signal",
@@ -672,9 +740,13 @@ class ActivityWall:
                         "from_lane": from_lane,
                         "claimed_from": claimed_from,
                         "from_unverified": from_unverified,
+                        "roster_unknown": roster_unknown,
                         "to_lane": to_lane,
                         "topic": topic,
-                        "utc": "",
+                        # COSMETIC FIX: populate ``utc`` with the STATUS.md mtime
+                        # (same value as ``ts``) so ordering is deterministic
+                        # rather than an empty string.
+                        "utc": ts,
                         "source": "status-note",
                         "excerpt": sig_text[:200],
                     },
@@ -793,6 +865,58 @@ class ActivityWall:
             raise
         except Exception:
             _log.exception("activity-wall: history source crashed")
+
+    # ------------------------------------------------------------------
+    # Source 3b: .mission-events tail (mission phase / orchestrator timeline)
+    # ------------------------------------------------------------------
+
+    async def _source_mission_events(self) -> None:
+        """Tail ``.mission-events`` → ``type:"mission-event"`` events.
+
+        ``POST /api/v1/mission-event`` (server.py) appends to ``.mission-events``
+        via the queue applier; without this source those writes never reach the
+        live wall. Format-tolerant like ``_read_mission_events_tail``: each line
+        is parsed as JSON when possible (``{ts, lane, line, ...}``) and otherwise
+        kept as raw text (the live v9.2/v9.3 file writes plain
+        ``YYYY-MM-DDTHH:MM:SSZ <prose>`` lines), with the leading ISO timestamp
+        lifted out for ordering.
+        """
+        from .event_tail import tail_file_lines
+
+        events_path = self._mission_dir / ".mission-events"
+        try:
+            async for line in tail_file_lines(events_path):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                lane = None
+                ts = ""
+                summary = stripped[:200]
+                payload: dict = {"raw": stripped}
+                try:
+                    obj = json.loads(stripped)
+                except (json.JSONDecodeError, ValueError):
+                    obj = None
+                if isinstance(obj, dict):
+                    lane = obj.get("lane")
+                    ts = str(obj.get("ts") or "").strip()
+                    summary = str(obj.get("line") or stripped)[:200]
+                    payload = dict(obj)
+                if not ts:
+                    ts = _parse_history_ts(stripped) or _now_utc_iso()
+                self._emit(
+                    {
+                        "type": "mission-event",
+                        "lane": lane,
+                        "ts": ts,
+                        "summary": summary,
+                        "payload": payload,
+                    }
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("activity-wall: mission-events source crashed")
 
     # ------------------------------------------------------------------
     # Source 4: .fleet/queue-applier.log tail

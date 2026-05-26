@@ -502,6 +502,48 @@ def test_deny_mutation_fail_closed_on_unparseable(project_dir):
     _assert_deny(_bash("cp /etc/passwd", project_dir), "write-out-of-scope")
 
 
+# `-t`/`--target-directory <dir>` for cp/mv/install makes <dir> the WRITE
+# destination and turns every positional operand into a SOURCE. The target dir
+# MUST be scope-checked; previously it was consumed as an opaque value-flag and
+# discarded, so the out-of-scope write slipped past (verified hole).
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cp -t /etc/ a b",
+        "cp -t /etc/cron.d f1 f2",
+        "mv -t /etc/ a b",
+        "install -t /etc/cron.d f1 f2",
+        "cp --target-directory=/etc/cron.d f1 f2",
+        "cp --target-directory /etc x y",
+        "mv --target-directory=/etc/cron.d a b",
+        "install -t /etc/evil README.md",
+    ],
+)
+def test_deny_mutation_target_directory_out_of_scope(cmd, project_dir):
+    _assert_deny(_bash(cmd, project_dir), "write-out-of-scope")
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cp -t build a b",  # in-scope target dir, sources de-scoped at cwd
+        "mv -t build a b",
+        "cp --target-directory=build f1 f2",
+        "cp --target-directory build x y",
+        "install -t build README.md",
+        "cp -t /tmp a b",  # /tmp scratch is allowed
+    ],
+)
+def test_allow_mutation_target_directory_in_scope(cmd, project_dir):
+    _assert_allow(_bash(cmd, project_dir))
+
+
+def test_deny_mutation_target_directory_single_operand_still_denies(project_dir):
+    # The previously-already-denied single-operand path (`cp -t /etc a`) must
+    # still deny: /etc target is out of scope regardless of source count.
+    _assert_deny(_bash("cp -t /etc a", project_dir), "write-out-of-scope")
+
+
 # ---------------------------------------------------------------------------
 # ALLOW — legitimate in-scope mutation usage must still pass (no fleet-bricking).
 # ---------------------------------------------------------------------------

@@ -495,6 +495,45 @@ body {
   border-style: dashed;
 }
 
+/* ---------- Connection / disconnect toast (#toast-region) -------------------
+ * Baseline: empty + invisible when connected. When data-conn-visible is present
+ * (connecting / lagging / disconnected) the region becomes a fixed prominent
+ * banner consistent with the activity-wall's amber aw-status style.
+ * Fix R3-5: the previous invisible default meant the disconnect indicator was
+ * easy to miss; the new style gives it amber/red contrast and a sticky position
+ * so it is always reachable. */
+#toast-region {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 3000;
+  pointer-events: none;
+}
+
+#toast-region:empty,
+#toast-region:not([data-conn-visible]) {
+  display: none;
+}
+
+#toast-region[data-conn-visible] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  border-top: 2px solid var(--sev-major);
+  background: color-mix(in srgb, var(--sev-major) 18%, var(--surface));
+  color: var(--text);
+}
+
+#toast-region[data-conn-status="disconnected"][data-conn-visible] {
+  border-top-color: var(--sev-blocking);
+  background: color-mix(in srgb, var(--sev-blocking) 18%, var(--surface));
+}
+
 /* ---------- Fleet alarm strip ---------------------------------------------- */
 [data-testid="board-alarm-strip"] {
   animation: alarm-pulse 2s ease-in-out infinite;
@@ -606,4 +645,62 @@ body:has([data-testid="board-activity-panel"]) [data-testid="alert-banner-stack"
  * (The panel sets z-index:100 inline; raise it past the alert stack's 1500.) */
 [data-testid="board-activity-panel"] {
   z-index: 1600 !important;
+}
+
+/* ---------- S6 Mobile header reflow (375px) ---------------------------------
+ * The 10-segment phase strip in .app-header__center pushes .app-header__right
+ * (control-mode toggle + nav links) off-screen on narrow viewports. Fix:
+ *   1. At ≤600px: constrain .app-header__center so it can't expand past its
+ *      share of the header row; use overflow:hidden + min-width:0 so the phase
+ *      strip ellipsis-clips rather than forcing the layout wider.
+ *   2. At ≤480px: stack the header into two rows — title/toggle on top, phase
+ *      strip below — so neither row overflows on a 375px screen.
+ * The control-mode toggle and nav links stay reachable at 375px. */
+.app-header__center {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app-header__right {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 600px) {
+  .app-header__center {
+    max-width: 45vw;
+  }
+  /* Reduce gap so the toggle + center fit beside the title. */
+  .app-header {
+    gap: var(--sp-2);
+    padding: 0 var(--sp-2);
+  }
+}
+
+@media (max-width: 480px) {
+  .app-header {
+    height: auto;
+    flex-wrap: wrap;
+    padding: var(--sp-1) var(--sp-2);
+    gap: var(--sp-1);
+  }
+  .app-header__left {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .app-header__right {
+    flex: 0 0 auto;
+    order: 1;
+  }
+  .app-header__center {
+    order: 2;
+    flex: 0 0 100%;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  /* Phase strip scrolls horizontally rather than pushing the layout. */
+  .phase-strip {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
 }

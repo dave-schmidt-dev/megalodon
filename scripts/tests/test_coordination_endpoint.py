@@ -65,6 +65,10 @@ async def coord_client(tmp_path: Path, monkeypatch) -> AsyncGenerator[tuple, Non
         ) as client:
             r = await client.post("/api/v1/auth/exchange", json={"token": TOKEN})
             assert r.status_code == 200, f"auth failed: {r.text}"
+            # POST /api/v1/signal is now CSRF-protected (Fix R3); attach the
+            # token as a default header so the signal-posting tests reach the
+            # handler. Control mode is ON via scripts/tests/conftest autouse.
+            client.headers["X-CSRF-Token"] = app.state.megalodon.csrf_token
             yield client, app, tmp_path
 
 

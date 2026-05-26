@@ -349,17 +349,23 @@ export async function render(root, _params) {
   const liveByFilename = new Map();
 
   /**
-   * Merge the store snapshot with live SSE signals. Dedupe by filename
-   * (live wins — it is the freshest), newest-first by UTC.
+   * Merge the store snapshot with live SSE signals. Dedupe on the new stable
+   * `id` (CONTRACT-SIGNAL-ID: "sig-<sha1[:12]>") when present, falling back to
+   * `filename` for legacy file-signals that carry no `id`. Live entries win over
+   * snapshot (they are the freshest). Two signals with DIFFERENT ids are always
+   * both kept — the old filename-only key collapsed two distinct status-notes
+   * that happened to share a synthetic "status-note" filename into one entry.
    * @returns {Array<object>}
    */
   function mergedSignals() {
-    const byFilename = new Map();
+    const byKey = new Map();
     for (const s of store.get("signals.list") || []) {
-      if (s && s.filename) byFilename.set(s.filename, s);
+      if (!s) continue;
+      const key = s.id || s.filename;
+      if (key) byKey.set(key, s);
     }
-    for (const [fn, s] of liveByFilename) byFilename.set(fn, s);
-    const all = [...byFilename.values()];
+    for (const [k, s] of liveByFilename) byKey.set(k, s);
+    const all = [...byKey.values()];
     // Newest-first by best-available time (M2). Status-note/finding signals
     // often have an empty `utc`; without a fallback they sort to the bottom and
     // never surface. Use the resolved signal UTC, falling back to the event ts

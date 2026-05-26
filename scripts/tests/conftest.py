@@ -26,9 +26,19 @@ def _lifespan_test_mode(monkeypatch):
 
     Tests that need to exercise the real fleet-spawn path explicitly unset
     ``MEGALODON_LIFESPAN_TEST_MODE`` via ``monkeypatch.delenv(..., raising=False)``.
+
+    Also seeds ``MEGALODON_CONTROL_MODE=1`` so ``make_app`` builds with the
+    server-side control-mode flag ON. Every destructive ``/api/**`` endpoint is
+    now ``_control_mode_or_403``-gated (read-only by default); the mutation tests
+    under ``scripts/tests/`` exercise the write paths and would otherwise all 403.
+    Default-OFF behaviour is asserted by ``ui/tests/integration/
+    test_control_mode_server.py`` (a different conftest scope, unaffected here);
+    any ``scripts/tests`` test needing the OFF path opts out via
+    ``monkeypatch.delenv("MEGALODON_CONTROL_MODE", raising=False)``.
     """
     monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
     monkeypatch.setenv("MEGALODON_SKIP_SOCKET_BUDGET", "1")
+    monkeypatch.setenv("MEGALODON_CONTROL_MODE", "1")
 
 
 FIXTURE_SRC = Path(__file__).parent / "fixtures" / "minimal_mission"

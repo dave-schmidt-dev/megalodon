@@ -205,6 +205,69 @@ export async function establishSession(page: Page, testInfo: TestInfo): Promise<
 }
 
 /**
+ * Flip the GLOBAL control-mode flag to the desired state, updating both the
+ * SPA's in-memory store and the server in one atomic operation.
+ *
+ * Control mode is now server-enforced: every destructive endpoint returns 403
+ * unless the server's GLOBAL control-mode flag is ON. The old
+ * `localStorage.setItem('controlMode', 'true')` trick flipped only the client
+ * UI and left the server returning 403 on all mutations.
+ *
+ * Mechanism: this helper drives the control-mode toggle element directly (the
+ * same UI affordance the operator uses). The toggle's click handler in app.js:
+ *   1. Does an optimistic `store.set("ui.controlMode", next)` (immediate).
+ *   2. POSTs {enabled} to /api/v1/control-mode with the CSRF token.
+ *   3. Confirms with `store.set("ui.controlMode", data.control_mode)` on 200.
+ *   4. Rolls back on any error.
+ * Driving the toggle therefore keeps the SPA's in-memory store, the server,
+ * and `document.body.dataset.controlMode` in sync — unlike a direct
+ * `page.request.post` call which would update only the server and leave the
+ * SPA store stale.
+ *
+ * Precondition: the page must be loaded with an authenticated session (after
+ * `gotoAuthed`, `establishSession`, or `page.goto('/#t=<token>')`), and the
+ * toggle element (`[data-testid="action-toggle-control-mode"]`) must be in
+ * the DOM (it lives in the persistent app header, so it is present on every
+ * SPA route).
+ *
+ * Tests that assert READ-ONLY behaviour must call `await setControlMode(page,
+ * false)` in their setup to guarantee the server flag is OFF regardless of
+ * whatever a sibling test left behind (workers:1, shared process).
+ */
+export async function setControlMode(page: Page, on: boolean): Promise<void> {
+  const toggle = page.locator('[data-testid="action-toggle-control-mode"]');
+  // Use toBeAttached (not toBeVisible) so this works in dashboards that
+  // CSS-hide the toggle (e.g. v92-dashboard hides the header controls).
+  await expect(toggle).toBeAttached({ timeout: 5_000 });
+
+  // Only click if the current state differs from the desired state.
+  const currentChecked = await toggle.getAttribute('aria-checked');
+  const current = currentChecked === 'true';
+
+  if (current !== on) {
+    // force:true bypasses Playwright's visibility guard so the click fires
+    // even when the element is CSS-hidden (visibility:hidden / display:none).
+    await toggle.click({ force: true });
+    // Wait for the toggle to reflect the server-confirmed new state.
+    await expect(toggle).toHaveAttribute(
+      'aria-checked',
+      on ? 'true' : 'false',
+      { timeout: 5_000 },
+    );
+  }
+
+  // Final sanity-check: verify the server flag matches what we intended.
+  // This catches cases where the toggle click was rolled back (server error).
+  const configResp = await page.request.get('/api/v1/config');
+  const config = await configResp.json();
+  if (config.control_mode !== on) {
+    throw new Error(
+      `setControlMode(${on}): server control_mode=${config.control_mode} after toggle — possible CSRF or auth failure`,
+    );
+  }
+}
+
+/**
  * Click `submit` (typically a form submit button) and wait until the resulting
  * 202-queued mutation has been applied by the in-process queue drain loop.
  *

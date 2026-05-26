@@ -263,9 +263,20 @@ async def test_status_note_trailing_pipe_spoof_not_attributed(aw_client):
 async def test_status_note_distinct_tokens_get_distinct_ids(aw_client):
     """Two distinct status-note tokens yield two events with DISTINCT ids.
 
-    The FE keys live signals on ``filename || id``; a hardcoded id would make
+    The FE keys live signals on ``filename || id``; a colliding id would make
     concurrent status-note signals collide so all but the last are dropped.
+    CONTRACT-SIGNAL-ID: the id is a content hash
+    ``"sig-" + sha1(f"{from_lane}|{claimed_from}|{to}|{text}").hexdigest()[:12]``,
+    so distinct content yields distinct ids (and ``id == payload.filename``).
     """
+    import hashlib
+
+    def _sig_id(from_lane: str, claimed: str, to: str, text: str) -> str:
+        digest = hashlib.sha1(
+            f"{from_lane}|{claimed}|{to}|{text}".encode()
+        ).hexdigest()[:12]
+        return f"sig-{digest}"
+
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
     await asyncio.sleep(0.3)
@@ -293,7 +304,11 @@ async def test_status_note_distinct_tokens_get_distinct_ids(aw_client):
                 ids.add(ev["payload"]["filename"])
                 # The top-level id mirrors the payload id for FE keying.
                 assert ev.get("id") == ev["payload"]["filename"]
-        assert ids == {"status-note-0", "status-note-1"}, f"ids collided: {ids}"
+        expected = {
+            _sig_id("LANE-C", "LANE-C", "LANE-A", "first"),
+            _sig_id("LANE-D", "LANE-D", "LANE-B", "second"),
+        }
+        assert ids == expected, f"ids collided: {ids}"
     finally:
         wall.unsubscribe(q)
 

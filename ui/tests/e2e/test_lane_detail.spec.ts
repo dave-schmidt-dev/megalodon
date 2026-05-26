@@ -14,7 +14,7 @@
 // Security: inject endpoint is mocked via page.route() so no real mutations occur.
 
 import { test, expect } from '@playwright/test';
-import { readUiToken } from './_helpers';
+import { readUiToken, setControlMode } from './_helpers';
 
 // Navigate to /lane/A and wait for the page to render.
 // Authenticate via the hash-token exchange first: the board's narrative /
@@ -27,9 +27,12 @@ async function gotoLaneA(page: import('@playwright/test').Page, testInfo: import
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
   // Wave 3 safety: the inject form + restart button are gated behind Control
-  // mode (READ-ONLY is the default). Enable Control mode so these tests can
-  // exercise the state-changing affordances they assert on.
-  await page.locator('[data-testid="action-toggle-control-mode"]').click();
+  // mode (READ-ONLY is the default). Enable Control mode via the SERVER so
+  // these tests can exercise the state-changing affordances they assert on.
+  // Using setControlMode (server-side flip + localStorage mirror) instead of
+  // clicking the toggle keeps these tests independent of the toggle's own
+  // click-handler behavior (that is tested separately in test_board_fix_round3).
+  await setControlMode(page, true);
   await page.locator('[data-testid="board-row-A"]').click();
   await expect(page).toHaveURL(/\/lane\/A$/, { timeout: 5_000 });
   await expect(page.locator('[data-testid="lane-detail-page"]')).toBeVisible({ timeout: 8_000 });
@@ -66,6 +69,8 @@ test.describe('lane_detail: goal / progress / tokens from narrative (audit I2)',
     await page.goto(`/#t=${token}`);
     await expect(page).toHaveURL('/', { timeout: 10_000 });
     await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+    // Read-only test: ensure server control-mode is OFF for hermeticity.
+    await setControlMode(page, false);
 
     await seedNarrative(page, {
       A: {

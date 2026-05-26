@@ -12,7 +12,7 @@
 // All page mounts use safe DOM APIs only — no innerHTML with user-influenced content.
 
 import { store } from "./store.js";
-import { whenAuthReady } from "./auth.js";
+import { whenAuthReady, authedFetch } from "./auth.js";
 import { loadConfig } from "./config.js";
 
 const ROUTES = [
@@ -184,12 +184,62 @@ function attachControlToggle() {
     toggle.setAttribute("aria-pressed", on ? "true" : "false");
     document.body.dataset.controlMode = on ? "true" : "false";
   };
-  toggle.addEventListener("click", () => {
-    const next = !store.get("ui.controlMode");
+
+  // CONTRACT-CONTROL-MODE: toggle calls POST /api/v1/control-mode (server owns
+  // the global control-mode flag). On success the response body carries the new
+  // state; on failure the store stays at its current value (no optimistic flip
+  // that gets rolled back). The CSRF token comes from config.csrf_token (the same
+  // token the board's action buttons use) via the <meta name="csrf-token"> tag.
+  toggle.addEventListener("click", async () => {
+    const current = !!store.get("ui.controlMode");
+    const next = !current;
+    // Optimistic UI update for responsiveness — rolled back on error.
     store.set("ui.controlMode", next);
+    try {
+      const meta = /** @type {HTMLMetaElement|null} */ (
+        document.querySelector('meta[name="csrf-token"]')
+      );
+      const csrf = meta ? (meta.getAttribute("content") ?? "") : "";
+      const resp = await authedFetch("/api/v1/control-mode", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrf ? { "X-CSRF-Token": csrf } : {}),
+        },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (resp.ok) {
+        const data = await resp.json().catch(() => null);
+        // Authoritative server state wins over the optimistic flip.
+        if (data && typeof data.control_mode === "boolean") {
+          store.set("ui.controlMode", data.control_mode);
+        }
+      } else {
+        // Server rejected — roll back.
+        store.set("ui.controlMode", current);
+        console.warn("[app] control-mode toggle rejected by server:", resp.status);
+      }
+    } catch (err) {
+      // Network error — roll back.
+      store.set("ui.controlMode", current);
+      console.warn("[app] control-mode toggle error:", err);
+    }
   });
+
   store.subscribe("ui.controlMode", reflectFromStore);
   reflectFromStore();
+}
+
+/**
+ * Seed the store's control-mode from the server's authoritative config value
+ * (CONTRACT-CONTROL-MODE: GET /api/v1/config returns "control_mode": bool).
+ * Called once at bootstrap after loadConfig() resolves.
+ * @param {{ control_mode?: boolean }} config
+ */
+function seedControlModeFromConfig(config) {
+  if (config && typeof config.control_mode === "boolean") {
+    store.set("ui.controlMode", config.control_mode);
+  }
 }
 
 /**
@@ -294,6 +344,8 @@ function attachPhaseIndicator() {
 
 function attachConnectionIndicator() {
   // Repurpose the toast region for connection-status announcements.
+  // Fix R3-5: "Disconnected" state must be visually prominent — use the
+  // aw-status amber/red style rather than the invisible transparent default.
   const toast = document.getElementById("toast-region");
   let lastStatus = null;
   store.subscribe("ui.connectionStatus", (status) => {
@@ -302,12 +354,20 @@ function attachConnectionIndicator() {
     if (!toast) return;
     if (status === "connected") {
       toast.textContent = "";
+      toast.dataset.connStatus = "connected";
+      toast.removeAttribute("data-conn-visible");
     } else if (status === "connecting") {
       toast.textContent = "Connecting…";
+      toast.dataset.connStatus = "connecting";
+      toast.setAttribute("data-conn-visible", "");
     } else if (status === "lagging") {
-      toast.textContent = "Catching up…";
+      toast.textContent = "⚠ Catching up — events may be delayed";
+      toast.dataset.connStatus = "lagging";
+      toast.setAttribute("data-conn-visible", "");
     } else {
-      toast.textContent = "Disconnected — retrying";
+      toast.textContent = "⚠ Disconnected — retrying";
+      toast.dataset.connStatus = "disconnected";
+      toast.setAttribute("data-conn-visible", "");
     }
   });
 }
@@ -322,8 +382,13 @@ function bootstrap() {
   // in place (no regression to the no-config case). Single-flight loadConfig is
   // shared with the page modules, so this issues no extra network request.
   loadConfig()
-    .then((config) => reconcilePhaseStrip(config && config.phases))
-    .catch((err) => console.warn("[app] phase-strip reconcile skipped:", err));
+    .then((config) => {
+      reconcilePhaseStrip(config && config.phases);
+      // CONTRACT-CONTROL-MODE: seed the store from the server's authoritative
+      // control_mode value so the toggle reflects the real server state on load.
+      seedControlModeFromConfig(config);
+    })
+    .catch((err) => console.warn("[app] phase-strip / control-mode seed skipped:", err));
 }
 
 if (document.readyState === "loading") {

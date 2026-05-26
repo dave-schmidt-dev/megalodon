@@ -12,7 +12,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { readUiToken } from './_helpers';
+import { readUiToken, setControlMode } from './_helpers';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,6 +26,9 @@ async function authenticateAndGotoGrid(
   await page.goto(`/#t=${token}`);
   await expect(page).toHaveURL('/', { timeout: 10_000 });
   await expect(page.locator('[data-testid="board-page"]')).toBeVisible({ timeout: 10_000 });
+  // Flip the SERVER-SIDE control-mode flag ON so approval-rules POST/DELETE
+  // endpoints return 201/204 instead of 403.
+  await setControlMode(page, true);
 }
 
 async function navigateToApprovalRules(

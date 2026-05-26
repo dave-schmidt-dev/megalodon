@@ -418,6 +418,10 @@ def assemble_lane_rows(
                 "phrase": None,
             }
 
+        # Default state before any STATUS or task-derived override.  Every path
+        # below either assigns state explicitly or relies on this safe baseline.
+        state = "open"
+
         # ------------------------------------------------------------------
         # CURRENT-ACTIVITY PRECEDENCE (B1/B2/I3 fix).
         #
@@ -434,7 +438,23 @@ def assemble_lane_rows(
         # coordination-signal note (``[SIG ...]``) is never used for the Goal
         # line (I3 — that text is routing chatter, not a work description).
         # ------------------------------------------------------------------
+        # STATUS lifecycle flags.
+        #
+        # ``status_working_fired``  — STATUS ``working:<id>`` is authoritative
+        #   for CURRENT activity; overrides any prior done/claimed task rows.
+        # ``status_idle_fired``     — STATUS explicitly says ``idle`` (agent
+        #   consciously paused).  Authoritative over a stale TASKS.md ``claimed``
+        #   row: the lane must render IDLE.  Does NOT fire for ``unclaimed`` /
+        #   ``awaiting-OPERATOR-ACK`` / unknown — those mean "no agent yet" and
+        #   TASKS.md still wins for state/now.  (HIGH fix.)
+        # ``status_gap_fill_fired`` — Non-working, non-idle STATUS state with
+        #   no task rows (INIT / pre-PLAN / BLOCKED before any task record);
+        #   used to carry the STATUS note into the goal (MEDIUM fix).
+        # ------------------------------------------------------------------
         status_working_fired = False
+        status_idle_fired = False
+        status_gap_fill_fired = False
+        status_gap_fill_note = ""
         if status_index:
             status_row = _lookup_status_row(cfg, status_index)
             if status_row is not None:
@@ -457,6 +477,17 @@ def assemble_lane_rows(
                     # working marker must not mask). The now/goal still reflect
                     # the live work; only the pill defers to blocked.
                     state = "blocked" if blocked_tasks else board_state
+                elif board_state == "open" and status_state.strip().lower() == "idle":
+                    # STATUS explicitly says ``idle`` — the agent is assigned and
+                    # has consciously returned to an idle state.  This is
+                    # authoritative over any stale TASKS.md ``claimed`` row: the
+                    # agent stopped working on it, so the lane must render IDLE.
+                    # NOTE: ``unclaimed`` / ``awaiting-OPERATOR-ACK`` / unknown all
+                    # also map to board_state "open" but are NOT authoritative over
+                    # a genuine claimed task — they mean "no agent assigned yet"
+                    # rather than "agent explicitly paused", so TASKS.md still wins.
+                    # (HIGH fix: STATUS idle beats stale claimed.)
+                    status_idle_fired = True
                 elif (
                     board_state != "open"
                     and not done_tasks
@@ -464,16 +495,39 @@ def assemble_lane_rows(
                     and not blocked_tasks
                 ):
                     # INIT / pre-PLAN gap-fill (initialized, no task rows): reflect
-                    # live activity rather than IDLE. Goal stays the lane role.
+                    # live activity rather than IDLE.  Record the clean note so the
+                    # goal block below can surface it (MEDIUM fix for BLOCKED lanes).
+                    status_gap_fill_fired = True
+                    status_gap_fill_note = clean_note or cfg.role or ""
                     state = board_state
                     desc = resolved_desc or clean_note or status_state.strip()
                     now = {"task_id": task_id, "desc": desc, "phrase": None}
 
+        # When STATUS explicitly says idle, it is authoritative: clear the now
+        # that was speculatively set from claimed tasks above so the FE sees
+        # now=None (IDLE signal) rather than a stale claimed task as the current
+        # activity.  (HIGH fix — part 2.)
+        if status_idle_fired:
+            now = None
+
         # Goal: live working desc > claimed/now desc > last done desc > role.
         # When the live STATUS working: marker fired, its now.desc IS the goal —
         # resolved from the task description (I3: not the raw signal note).
+        #
+        # Fix MEDIUM: when the gap-fill fired (e.g. a BLOCKED lane with no task
+        # rows), use the STATUS note (or role) — not last.desc — as the goal so
+        # the BLOCKED lane always has a meaningful, non-empty goal string.
+        #
+        # Fix LOW/HIGH: when STATUS explicitly said idle, stale claimed/done
+        # task descriptions must not become the goal — use the lane role so the
+        # goal is still informative but not misleadingly stale.
         if status_working_fired and now is not None:
             goal = now["desc"]
+        elif status_gap_fill_fired:
+            goal = status_gap_fill_note
+        elif status_idle_fired:
+            # STATUS idle is authoritative: role is the goal (not stale task desc).
+            goal = cfg.role or ""
         elif latest_claimed is not None:
             goal = latest_claimed.get("description", "") or (cfg.role or "")
         elif last is not None:
@@ -485,16 +539,18 @@ def assemble_lane_rows(
         # live STATUS working: marker already set RUNNING (which wins for the
         # "what is it doing now" question per the precedence above).
         # Precedence: blocked > claimed > done > open.
+        # When STATUS explicitly said idle, it is authoritative over a stale
+        # TASKS.md claimed row — suppress claimed promotion (HIGH fix).
         if not status_working_fired:
             if blocked_tasks:
                 state = "blocked"
-            elif claimed_tasks:
+            elif claimed_tasks and not status_idle_fired:
                 state = "claimed"
             elif done_tasks:
                 state = "done"
-            elif now is None:
+            elif now is None and not status_gap_fill_fired:
                 state = "open"
-            # else: state already set by the INIT gap-fill above.
+            # else: state already set by the INIT gap-fill above, or idle stays open.
 
         # Digest + tokens.
         digest = digests.get(short)

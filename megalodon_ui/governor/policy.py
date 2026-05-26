@@ -693,17 +693,32 @@ _MUTATION_VALUE_FLAGS: dict[str, frozenset[str]] = {
 }
 
 
-def _mutation_operands(head_base: str, tokens: list[str]) -> tuple[list[str], bool]:
+# `-t`/`--target-directory <dir>` (cp/mv/install) names the WRITE destination
+# directory and makes EVERY positional operand a source. Its value must NOT be
+# discarded as an opaque flag value (the prior bug: the out-of-scope target dir
+# was consumed and never scope-checked). We capture it for the caller to lock.
+_TARGET_DIR_FLAGS = frozenset({"-t", "--target-directory"})
+
+
+def _mutation_operands(
+    head_base: str, tokens: list[str]
+) -> tuple[list[str], str | None, bool]:
     """Extract the non-flag path operands of a mutation head.
 
-    Returns ``(operands, ok)``. ``ok`` is False when a value-consuming flag is
-    dangling (no value) — caller must fail closed. ``--`` ends option parsing;
-    everything after is a literal operand. Flags (``-r``, ``-f``, ``--``, glued
-    ``-rf``) are skipped; value-flags (``-s 0``, ``-m 600``, ``--mode=600``)
-    consume their value. Quoted operands are de-quoted by shlex already.
+    Returns ``(operands, target_dir, ok)``. ``ok`` is False when a
+    value-consuming flag is dangling (no value) — caller must fail closed.
+    ``target_dir`` is the ``-t``/``--target-directory`` value when present (and
+    relevant to ``head_base``), else ``None``; when set, EVERY operand is a
+    source and ``target_dir`` is the sole write destination. ``--`` ends option
+    parsing; everything after is a literal operand. Flags (``-r``, ``-f``,
+    ``--``, glued ``-rf``) are skipped; value-flags (``-s 0``, ``-m 600``,
+    ``--mode=600``) consume their value. Quoted operands are de-quoted by shlex
+    already.
     """
     value_flags = _MUTATION_VALUE_FLAGS.get(head_base, frozenset())
+    track_target = head_base in ("cp", "mv", "install")
     operands: list[str] = []
+    target_dir: str | None = None
     rest = tokens[1:]
     i = 0
     end_of_opts = False
@@ -718,14 +733,19 @@ def _mutation_operands(head_base: str, tokens: list[str]) -> tuple[list[str], bo
             i += 1
             continue
         if tok.startswith("-") and tok != "-":
-            # `--mode=600` style carries its own value — no following token.
+            # `--target-directory=/etc` style carries its own value inline.
             if "=" in tok and tok.startswith("--"):
+                name, _, val = tok.partition("=")
+                if track_target and name in _TARGET_DIR_FLAGS:
+                    target_dir = val
                 i += 1
                 continue
             if tok in value_flags:
                 # Consumes the next token as its value.
                 if i + 1 >= len(rest):
-                    return operands, False  # dangling value-flag → fail closed
+                    return operands, None, False  # dangling value-flag → fail
+                if track_target and tok in _TARGET_DIR_FLAGS:
+                    target_dir = rest[i + 1]
                 i += 2
                 continue
             # Plain flag (bundled short flags like `-rf`, or `-s`/`-f`/`-a`).
@@ -733,7 +753,7 @@ def _mutation_operands(head_base: str, tokens: list[str]) -> tuple[list[str], bo
             continue
         operands.append(tok)
         i += 1
-    return operands, True
+    return operands, target_dir, True
 
 
 def _adjudicate_mutation_head(
@@ -747,7 +767,7 @@ def _adjudicate_mutation_head(
     Decision, or ``None`` if every operand is in-scope/non-secret. FAIL CLOSED:
     unparseable operands → deny.
     """
-    operands, ok = _mutation_operands(head_base, tokens)
+    operands, target_dir, ok = _mutation_operands(head_base, tokens)
     if not ok:
         return _deny(
             f"mutation command with unparseable operands: {head_base}",
@@ -758,15 +778,29 @@ def _adjudicate_mutation_head(
     sources: list[str] = []
     dests: list[str] = []
     if head_base in ("cp", "mv", "install"):
-        # `cp SRC... DST` — last operand is the destination, the rest sources.
-        if len(operands) < 2:
-            # Single/zero operand for a copy/move is malformed → fail closed.
-            return _deny(
-                f"mutation command with too few operands: {head_base}",
-                "write-out-of-scope",
-            )
-        dests = [operands[-1]]
-        sources = operands[:-1]
+        if target_dir is not None:
+            # `cp -t DIR SRC...` — DIR is the sole write destination and EVERY
+            # positional operand is a source. The target dir was previously
+            # consumed as an opaque value-flag and NEVER scope-checked, so an
+            # out-of-scope `-t /etc/cron.d` slipped past. Scope-lock it now.
+            if not operands:
+                # `cp -t DIR` with no sources is malformed → fail closed.
+                return _deny(
+                    f"mutation command with too few operands: {head_base}",
+                    "write-out-of-scope",
+                )
+            dests = [target_dir]
+            sources = operands
+        else:
+            # `cp SRC... DST` — last operand is the destination, rest sources.
+            if len(operands) < 2:
+                # Single/zero operand for a copy/move is malformed → fail closed.
+                return _deny(
+                    f"mutation command with too few operands: {head_base}",
+                    "write-out-of-scope",
+                )
+            dests = [operands[-1]]
+            sources = operands[:-1]
     elif head_base == "ln":
         # `ln [-s] TARGET LINK` (or `ln TARGET` defaulting link to basename in
         # cwd). TARGET is the secret-source (symlink laundering: `ln -s

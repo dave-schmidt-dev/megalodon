@@ -231,25 +231,30 @@ def test_task_id_re_strips_leading_caret_trailing_dollar():
 
 
 # ---------------------------------------------------------------------------
-# Test 10: status_row_re byte-equal to v9.0 server.py shape
+# Test 10: status_row_re shape pin (Fix R3 trailing-junk-tolerant notes tail)
 # ---------------------------------------------------------------------------
 
 
-def test_status_row_re_byte_equal_to_v9_0(tmp_path):
+def test_status_row_re_matches_expected_shape(tmp_path):
     config = _default_v9_0(tmp_path)
     built = build_status_row_re(config)
 
-    # Exact pattern from megalodon_ui/server.py lines 64-71
-    v9_0_pattern = (
+    # The first four columns match the v9.0 server.py shape verbatim. The notes
+    # tail diverged in Fix R3: ``(?P<notes>.*?)\s*\|\s*$`` →
+    # ``(?P<notes>[^|]*?)\s*\|.*$`` so a STATUS row with junk appended after its
+    # 5th-column closing pipe still parses all five canonical columns (the lane
+    # no longer vanishes from /coordination). The closing-pipe anchor is NOT
+    # reintroduced for spoofing — the SIG binder line-binds the owner separately.
+    expected_pattern = (
         r"^\|\s*(?P<lane>[A-Z][A-Z\- ]*?)\s*\|\s*"
         r"(?P<agent>[^|]+?)\s*\|\s*"
         r"(?P<state>[^|]+?)\s*\|\s*"
         r"(?P<last_utc>[^|]+?)\s*\|\s*"
-        r"(?P<notes>.*?)\s*\|\s*$"
+        r"(?P<notes>[^|]*?)\s*\|.*$"
     )
-    assert built.pattern == v9_0_pattern, (
+    assert built.pattern == expected_pattern, (
         f"Status-row RE drift.\n  built:    {built.pattern!r}\n"
-        f"  expected: {v9_0_pattern!r}"
+        f"  expected: {expected_pattern!r}"
     )
     assert built.flags & re.MULTILINE
 

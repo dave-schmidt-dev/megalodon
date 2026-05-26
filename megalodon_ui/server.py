@@ -487,6 +487,12 @@ class MissionContext:
     status_row_re: re.Pattern = field(default=None)  # type: ignore[assignment]
     task_line_re: re.Pattern = field(default=None)  # type: ignore[assignment]
     session_store: "auth.SessionStore" = field(default=None)  # type: ignore[assignment]
+    # CONTRACT-CONTROL-MODE: GLOBAL, process-wide control-mode flag. Default OFF
+    # (read-only): every destructive / mutating endpoint fails closed with 403
+    # until an operator flips this ON via POST /api/v1/control-mode. Stored here
+    # (NOT per-session) so the gate is identical for every request in the
+    # process. Mutated in place by the toggle endpoint.
+    control_mode: bool = field(default=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1182,7 +1188,24 @@ def _owning_lane_on_line(text: str, pos: int) -> str | None:
     return lane_label
 
 
-def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
+def _signal_dict_id(from_lane: str, claimed_from: str, to: str, text: str) -> str:
+    """CONTRACT-SIGNAL-ID: stable content-addressed id for a signal/status-note.
+
+    ``"sig-" + sha1(f"{from_lane}|{claimed_from}|{to}|{text}").hexdigest()[:12]``.
+    Stable ACROSS STATUS.md generations — derived purely from the bound sender,
+    the claimed sender, the recipient, and the message text. Deliberately NOT a
+    positional ``status-note-<idx>`` index (which churns whenever rows are
+    reordered or inserted), so the FE can de-dupe / track a signal across polls.
+    """
+    digest = hashlib.sha1(
+        f"{from_lane}|{claimed_from}|{to}|{text}".encode()
+    ).hexdigest()
+    return "sig-" + digest[:12]
+
+
+def _parse_status_note_signals(
+    mission_dir: Path, roster: frozenset[str] | None = None
+) -> list[dict[str, Any]]:
     """Parse `[SIG ...]` tokens out of STATUS.md notes (``source:"status-note"``).
 
     SECURITY (anti-spoof): the ``from=`` field inside a ``[SIG ...]`` token is
@@ -1251,6 +1274,7 @@ def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
         )
 
         from_unverified = False
+        roster_unknown = False
         if from_raw.upper() in _ORCH_SENDER_LABELS:
             # Server-written orchestrator token (POST endpoints write from=ORCH
             # into the target's row). Trusted — keep the orchestrator sender.
@@ -1268,13 +1292,28 @@ def _parse_status_note_signals(mission_dir: Path) -> list[dict[str, Any]]:
             if claimed_from != owning_lane:
                 from_unverified = True
 
+        # CONTRACT-ROSTER: after determining the owning lane, validate it
+        # against the configured roster. An owning lane that is NOT a known
+        # roster member (e.g. a row forged for a lane that does not exist in
+        # this mission's config) is untrustworthy — flag both ``from_unverified``
+        # and ``roster_unknown``. LANE-ORCH is always a valid sender (server
+        # origin). When no roster is supplied (legacy callers) the check is
+        # skipped so behavior is unchanged.
+        if roster is not None and from_lane != "LANE-ORCH":
+            if from_lane not in roster:
+                from_unverified = True
+                roster_unknown = True
+
         topic = _slugify(" ".join(sig_text.split()[:5]))
         body = sig_text + (f" (cite: {cite})" if cite else "")
         rec: dict[str, Any] = {
+            # CONTRACT-SIGNAL-ID: stable, content-addressed id (not positional).
+            "id": _signal_dict_id(from_lane, claimed_from, to_lane, sig_text),
             "filename": f"status-note-{idx}",
             "from_lane": from_lane,
             "claimed_from": claimed_from,
             "from_unverified": from_unverified,
+            "roster_unknown": roster_unknown,
             "to_lane": to_lane,
             "to": to_lane,
             "topic": topic,
@@ -1356,7 +1395,26 @@ def _parse_finding_signals(mission_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
-def parse_signals(mission_dir: Path) -> list[dict[str, Any]]:
+def _roster_labels(mission_config: "MissionConfig | None") -> frozenset[str] | None:
+    """CONTRACT-ROSTER: the set of canonical ``LANE-<X>`` labels accepted as
+    valid signal senders for this mission.
+
+    Includes each configured lane's short code AND long name (both normalized
+    to ``LANE-<X>``) plus ``LANE-ORCH`` (the server-origin orchestrator sender).
+    Returns ``None`` when no config is available so the caller skips the check.
+    """
+    if mission_config is None:
+        return None
+    labels: set[str] = {"LANE-ORCH"}
+    for lane in mission_config.lanes:
+        labels.add(_normalize_lane_label(lane.short, "LANE-UNKNOWN"))
+        labels.add(_normalize_lane_label(lane.name, "LANE-UNKNOWN"))
+    return frozenset(labels)
+
+
+def parse_signals(
+    mission_dir: Path, mission_config: "MissionConfig | None" = None
+) -> list[dict[str, Any]]:
     """Return signal dicts unified from all THREE comms channels, newest-first.
 
     The three channels (the "schism" this fixes):
@@ -1379,7 +1437,9 @@ def parse_signals(mission_dir: Path) -> list[dict[str, Any]]:
     combined: list[dict[str, Any]] = []
     if signals_dir.is_dir():
         combined.extend(_parse_file_signals(signals_dir))
-    combined.extend(_parse_status_note_signals(mission_dir))
+    combined.extend(
+        _parse_status_note_signals(mission_dir, _roster_labels(mission_config))
+    )
     combined.extend(_parse_finding_signals(mission_dir))
     # Newest-first by best-available timestamp.
     combined.sort(key=_signal_sort_key, reverse=True)
@@ -1971,6 +2031,14 @@ def make_app(
 
     mc = load_mission_config(mission_dir)
 
+    # CONTRACT-CONTROL-MODE: default OFF (read-only). A single opt-in seam —
+    # ``MEGALODON_CONTROL_MODE=1`` — seeds the flag ON at build time so test
+    # fixtures and ops tooling can unlock mutations without an extra round-trip
+    # to POST /api/v1/control-mode. Production leaves this unset (OFF); the
+    # operator flips it explicitly via the endpoint.
+    _cm_raw = os.environ.get("MEGALODON_CONTROL_MODE", "").strip().lower()
+    _control_mode_default = _cm_raw in ("1", "true", "yes", "on")
+
     ctx = MissionContext(
         mission_dir=mission_dir,
         config=cfg,
@@ -1981,6 +2049,7 @@ def make_app(
         status_row_re=build_status_row_re(mc),
         task_line_re=build_task_line_re(mc),
         session_store=auth.SessionStore(),
+        control_mode=_control_mode_default,
     )
 
     @asynccontextmanager
@@ -2548,6 +2617,48 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             )
         return None
 
+    def _control_mode_or_403(request: Request) -> JSONResponse | None:
+        """Fail closed unless the GLOBAL control-mode flag is ON.
+
+        CONTRACT-CONTROL-MODE: returns ``None`` when control mode is enabled
+        (mutations allowed) and a 403 ``{"detail": "control mode required"}``
+        otherwise. Applied to EVERY destructive / mutating endpoint AFTER the
+        CSRF check so the order is auth (middleware) → CSRF → control-mode →
+        handler. The flag lives on ``ctx`` (process-wide), defaults OFF, and is
+        flipped only via ``POST /api/v1/control-mode``.
+        """
+        if not ctx.control_mode:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "control mode required"},
+            )
+        return None
+
+    @app.post("/api/v1/control-mode")
+    async def post_control_mode(request: Request):  # noqa: ANN201
+        """Toggle the GLOBAL, process-wide control-mode flag.
+
+        Auth-gated (middleware) + CSRF-protected. Body: ``{"enabled": bool}``.
+        Returns ``{"control_mode": bool}``. The flag is read-only by default
+        (OFF); flipping it ON unlocks every destructive / mutating endpoint for
+        the whole process (not just this session). Surfaced in
+        ``GET /api/v1/config`` and ``GET /api/v1/state`` as ``control_mode``.
+
+        NOTE: this endpoint is itself NOT control-mode-gated (it is the toggle),
+        but it IS CSRF-protected — a bare cookie must not be able to unlock
+        mutations cross-site.
+        """
+        denied = _csrf_or_403(request)
+        if denied is not None:
+            return denied
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        enabled = bool(body.get("enabled", False)) if isinstance(body, dict) else False
+        ctx.control_mode = enabled
+        return JSONResponse(content={"control_mode": ctx.control_mode})
+
     @app.post("/api/v1/auth/exchange")
     async def post_auth_exchange(req: Request) -> Response:
         """Validate bearer token against ``.fleet/ui.token``; mint a session cookie.
@@ -2695,6 +2806,13 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
           * 404 — unknown lane or spawner not initialized.
           * 422 — missing or whitespace-only prompt.
         """
+        # auth (middleware) → CSRF → control-mode → handler.
+        denied = _csrf_or_403(request)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(request)
+        if denied is not None:
+            return denied
         spawner = getattr(app.state, "spawner", None)
         if spawner is None or lane not in spawner.sessions:
             return JSONResponse(
@@ -2787,6 +2905,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                 status_code=403,
                 content={"detail": "CSRF token missing or invalid"},
             )
+        # CONTRACT-CONTROL-MODE: gate the real mutation (order: CSRF → control).
+        denied = _control_mode_or_403(request)
+        if denied is not None:
+            return denied
 
         # Lane / spawner resolution
         spawner = getattr(app.state, "spawner", None)
@@ -2878,6 +3000,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                 status_code=403,
                 content={"detail": "CSRF token missing or invalid"},
             )
+        # CONTRACT-CONTROL-MODE: gate the real mutation (order: CSRF → control).
+        denied = _control_mode_or_403(request)
+        if denied is not None:
+            return denied
 
         # Lane / spawner resolution
         spawner = getattr(app.state, "spawner", None)
@@ -2951,6 +3077,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         destructive endpoint; a bare cookie is replayable cross-site).
         """
         denied = _csrf_or_403(request)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(request)
         if denied is not None:
             return denied
         fleet_dir = ctx.mission_dir / ".fleet"
@@ -3099,11 +3228,15 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             "harnesses": list({lane.harness.cli for lane in ctx.mission_config.lanes}),
             "task_sections": ctx.mission_config.task_sections,
             "v92_dashboard": v92_dashboard,
+            "control_mode": ctx.control_mode,
         }
 
     @app.post("/api/tasks")
     async def post_task(req: Request):
         denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
         if denied is not None:
             return denied
         body = await req.json()
@@ -3135,7 +3268,15 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         )
 
     @app.post("/api/lanes/{lane}/reclaim")
-    async def post_reclaim(lane: str):
+    async def post_reclaim(lane: str, req: Request):
+        # BLOCKING (audit): this legacy mutation alias had NO CSRF guard.
+        # auth (middleware) → CSRF → control-mode → handler.
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
+        if denied is not None:
+            return denied
         # Find target lane's working task from STATUS, attempt reclaim.
         rows = parse_status(ctx.mission_dir, ctx)
         target = next((r for r in rows if r["lane"].upper() == lane.upper()), None)
@@ -3154,6 +3295,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     @app.post("/api/lanes/{lane}/signal")
     async def post_signal(lane: str, req: Request):
         denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
         if denied is not None:
             return denied
         body = await req.json()
@@ -3228,6 +3372,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     @app.post("/api/mission/flip")
     async def post_flip(req: Request):
         denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
         if denied is not None:
             return denied
         body = await req.json()
@@ -3326,12 +3473,13 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             # the store already has. (REPAIR-MUTATIONS-E2E-5-STATUS-VIEW
             # contract.)
             "findings": {"list": parse_findings(ctx.mission_dir, include_scratch=True)},
-            "signals": {"list": parse_signals(ctx.mission_dir)},
+            "signals": {"list": parse_signals(ctx.mission_dir, ctx.mission_config)},
             "claims": {"list": _list_claim_dirs(ctx.mission_dir)},
             "mission": mission_payload,
             "config": {
                 "csrf_token": ctx.csrf_token,
                 "poll_interval_seconds": ctx.config.poll_interval_seconds,
+                "control_mode": ctx.control_mode,
             },
         }
 
@@ -3397,6 +3545,14 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         Routes the signal into the target lane's STATUS row notes via
         STATUS_UPDATE intent. FE may poll /api/v1/queue/{rid}.
         """
+        # BLOCKING (audit): canonical mutation had NO CSRF guard.
+        # auth (middleware) → CSRF → control-mode → handler.
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         # api-contract.md: {to_lane, claim, evidence}
         to_lane = str(body.get("to_lane", "")).strip()
@@ -3520,7 +3676,7 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                 }
             )
 
-        signals_recent = parse_signals(ctx.mission_dir)[:20]
+        signals_recent = parse_signals(ctx.mission_dir, ctx.mission_config)[:20]
         return JSONResponse(
             content={
                 "lanes": lanes,
@@ -3536,6 +3692,13 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         If lane is already idle (no `working: <task>`), returns 204 as
         before — nothing to do.
         """
+        # BLOCKING (audit): canonical mutation had NO CSRF guard.
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         lane = str(body.get("lane", "")).strip()
         if not lane:
@@ -3582,6 +3745,13 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     @app.post(API_CHALLENGE)
     async def post_v1_challenge(req: Request):
         """V9 M1.5: now 202-async via queue (TASKS_INJECT)."""
+        # BLOCKING (audit): canonical mutation had NO CSRF guard.
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         finding = str(body.get("finding_filename", "")).strip()
         description = str(body.get("description", "")).strip()
@@ -3610,6 +3780,13 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
     @app.post(API_MISSION_STATUS)
     async def post_v1_mission_status(req: Request):
+        # BLOCKING (audit): canonical mutation had NO CSRF guard.
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         status = str(body.get("status", "")).strip().upper()
         if status not in ("IDLE", "ACTIVE", "DRAINING", "COMPLETE"):
@@ -3636,6 +3813,13 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         parses, route through queue. Free-form text is rejected (FE
         should use the canonical shape).
         """
+        # BLOCKING (audit): canonical mutation had NO CSRF guard.
+        denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         task_text = str(body.get("task_text", "")).strip()
         if not task_text:
@@ -3969,6 +4153,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         denied = _csrf_or_403(req)
         if denied is not None:
             return denied
+        denied = _control_mode_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         lane = str(body.get("lane", "")).strip()
         task_id = str(body.get("task_id", "")).strip()
@@ -3984,6 +4171,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         denied = _csrf_or_403(req)
         if denied is not None:
             return denied
+        denied = _control_mode_or_403(req)
+        if denied is not None:
+            return denied
         body = await req.json()
         lane = str(body.get("lane", "")).strip()
         task_id = str(body.get("task_id", "")).strip()
@@ -3997,6 +4187,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def post_v1_status_update(req: Request):  # noqa: ANN201
         """Update a lane row in STATUS.md via the queue. ``?wait=true`` for sync. CSRF-protected."""
         denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
         if denied is not None:
             return denied
         body = await req.json()
@@ -4018,6 +4211,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def post_v1_history_append(req: Request):  # noqa: ANN201
         """Append a completion entry to HISTORY.md via the queue. ``?wait=true`` for sync. CSRF-protected."""
         denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
         if denied is not None:
             return denied
         body = await req.json()
@@ -4045,6 +4241,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
     async def post_v1_mission_event(req: Request):  # noqa: ANN201
         """Append an event to .mission-events via the queue. ``?wait=true`` for sync. CSRF-protected."""
         denied = _csrf_or_403(req)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(req)
         if denied is not None:
             return denied
         body = await req.json()
@@ -4080,6 +4279,9 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         CSRF-protected via ``X-CSRF-Token``.
         """
         denied = _csrf_or_403(request)
+        if denied is not None:
+            return denied
+        denied = _control_mode_or_403(request)
         if denied is not None:
             return denied
         spawner = getattr(app.state, "spawner", None)
@@ -4372,6 +4574,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                 status_code=403,
                 content={"detail": "CSRF token missing or invalid"},
             )
+        # CONTRACT-CONTROL-MODE: gate the mutation (order: CSRF → control).
+        denied = _control_mode_or_403(request)
+        if denied is not None:
+            return denied
 
         rules = _read_approval_rules()
         for existing in rules:
@@ -4422,6 +4628,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
                 status_code=403,
                 content={"detail": "CSRF token missing or invalid"},
             )
+        # CONTRACT-CONTROL-MODE: gate the mutation (order: CSRF → control).
+        denied = _control_mode_or_403(request)
+        if denied is not None:
+            return denied
 
         pattern = request.query_params.get("pattern")
         if not pattern:

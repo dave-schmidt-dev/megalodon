@@ -13,7 +13,7 @@
 // flow before making any API calls.
 
 import { test, expect } from '@playwright/test';
-import { readUiToken } from './_helpers';
+import { readUiToken, setControlMode } from './_helpers';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -40,7 +40,9 @@ test.describe('stale badge: lane-detail toolbar Restart /loop', () => {
 
     // Wave 3 safety: Restart /loop is gated behind Control mode (READ-ONLY is
     // the default). Enable Control mode so the button is actionable.
-    await page.locator('[data-testid="action-toggle-control-mode"]').click();
+    // Use setControlMode (not raw .click()) so the server state is confirmed
+    // ON regardless of what a prior test may have left in the shared process.
+    await setControlMode(page, true);
 
     // Navigate to /lane/A by clicking the board row for lane A.
     await page.locator('[data-testid="board-row-A"]').click();

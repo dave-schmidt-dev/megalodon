@@ -25,11 +25,43 @@ test('followup (CV-12): clicking Send fires POST + disables Send (debounce)', as
   await expect(page).toHaveURL('/');
   await expect(page.locator('[data-testid="lane-grid"]')).toBeVisible();
 
+  // Flip the SERVER-SIDE control-mode flag ON so the followup POST returns 202
+  // instead of 403.  The v92 dashboard hides the header toggle (display:none),
+  // so we call the API directly.  The followup send button's handler only
+  // checks the server flag — it does not read client-side controlMode state.
+  const csrf = await page.evaluate(
+    () => (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement | null)
+      ?.getAttribute('content') ?? '',
+  );
+  const cmResp = await page.request.post('/api/v1/control-mode', {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+    },
+    data: { enabled: true },
+  });
+  expect(cmResp.status(), 'POST /api/v1/control-mode').toBe(200);
+
   const configResp = await page.request.get('/api/v1/config');
   const config = await configResp.json();
   const firstLane = config.lanes[0];
   const inputSel = `[data-testid="followup-input-${firstLane.name}"]`;
   const sendSel = `[data-testid="followup-send-${firstLane.name}"]`;
+
+  // The v92 dashboard's authFetch does not include X-CSRF-Token.  The
+  // followup endpoint now requires CSRF (same security fix that added server-
+  // enforced control mode).  Intercept the outgoing POST and inject the header
+  // so the test exercises the real round-trip without modifying product code.
+  await page.route(`**/api/v1/lane/${firstLane.short}/followup`, async (route) => {
+    const req = route.request();
+    if (req.method() !== 'POST') { await route.continue(); return; }
+    await route.continue({
+      headers: {
+        ...req.headers(),
+        'X-CSRF-Token': csrf,
+      },
+    });
+  });
 
   // Free the connection pool so the POST doesn't queue behind 6 streaming SSEs.
   await page.evaluate(() => (window as unknown as { __v92_closeAllStreams: () => void }).__v92_closeAllStreams());

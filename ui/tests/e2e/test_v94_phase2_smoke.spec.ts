@@ -46,7 +46,7 @@ import {
 } from 'node:fs';
 import * as path from 'node:path';
 
-import { fixtureRootForProject, readUiToken } from './_helpers';
+import { fixtureRootForProject, readUiToken, setControlMode } from './_helpers';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -179,6 +179,10 @@ test.describe('v94 phase2 smoke: Case A — activity wall multi-source', () => {
     const csrf = await readCsrfToken(page);
     expect(csrf, 'CSRF token must be present on the page').toBeTruthy();
 
+    // Enable server-side control mode — /api/v1/lane/{short}/inject now
+    // requires it (CONTRACT-CONTROL-MODE, added in server-enforcement round).
+    await setControlMode(page, true);
+
     const injectResp = await page.request.post('/api/v1/lane/A/inject', {
       data: { text: 'smoke-phase2-inject', enter: true },
       headers: {
@@ -257,6 +261,10 @@ test.describe('v94 phase2 smoke: Case A — activity wall multi-source', () => {
     expect(injectIdx, 'inject row should appear at or before finding row (newest-first)').toBeLessThanOrEqual(
       findingIdx >= 0 ? findingIdx : Number.MAX_SAFE_INTEGER,
     );
+
+    // Hermeticity: reset control mode to OFF so subsequent tests that assert
+    // read-only defaults don't see a stale ON state (workers:1, shared server).
+    await setControlMode(page, false);
   });
 
 });

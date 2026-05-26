@@ -10,6 +10,57 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-26 — UI/Visibility/Safety FIX CAMPAIGN: Re-audit Round 3 + Fix Round 3
+
+**Re-audit Round 3:** 6 blind read-only agents (one per dimension: live-activity, comms,
+goals/progress, autonomy/safety, UI-integrity, test-coverage), ports 8830–8835, each with
+its own fake fleet + own headless chromium. All 6 graded **PARTIAL**.
+
+**Fix Round 3 `(this session)`** — 6 file-partitioned implementer agents + 1 e2e-reconciliation
+agent, orchestrator integration. Fixes by file:
+- `server.py`: `_csrf_or_403` on the 6 canonical mutation routes (signal, reclaim, challenge,
+  mission-status, inject-task, legacy `/api/lanes/{lane}/reclaim`); NEW server-side control-mode
+  enforcement — `ctx.control_mode` flag (default OFF/read-only), `POST /api/v1/control-mode`
+  (CSRF-gated), `_control_mode_or_403` on every destructive endpoint, surfaced in `/config` +
+  `/state`; roster validation in the signal binder (foreign lane → `from_unverified` +
+  `roster_unknown`); content-stable signal id.
+- `regex_builder.py`: status-row regex tolerates trailing junk after the 5th-column pipe
+  (victim-lane no longer vanishes from `/coordination`).
+- `activity_wall.py`: cross-generation stable signal id `sig-<sha1(from|claimed|to|text)[:12]>`
+  (fixes silent live-signal drop); roster mirror; `.mission-events` added as 8th wall source;
+  status-note utc populated.
+- `narrator/board_state.py`: STATUS.md lifecycle made authoritative — `idle` no longer shows
+  RUNNING via a stale claimed TASKS row; BLOCKED lanes get a non-empty goal; a completed task
+  no longer leaks into the goal line.
+- `governor/policy.py`: closed the `-t`/`--target-directory` write-out-of-scope bypass
+  (cp/mv/install).
+- FE (`ui/static`: `app.js`, `board.js`, `signals.js`, `css/base.css`): control-mode toggle
+  wired to the server endpoint; live-signal merge dedupes on the stable id; idle lanes show
+  "— idle" not "narrator warming up…"; mobile header reflows at 375/480/600px so the control
+  toggle + nav stay reachable; disconnect toast made prominent; activity toggle gained
+  `aria-expanded` + label state.
+- Tests/CI: deleted 31 dead legacy `test_launch_fleet*` tests; added negative-403 CSRF tests
+  for followup + phase-flip; added `chromium-mutations` to the blocking CI Playwright job; new
+  files `test_csrf_canonical_routes.py`, `test_control_mode_server.py`,
+  `test_activity_wall_signal_id.py`, `test_board_state.py` lifecycle cases,
+  `test_signal_merge_dedupe.test.js`, `test_board_fix_round3.spec.ts`.
+- Orchestrator reconciliation: control-mode env in `scripts/tests/conftest.py` autouse; CSRF
+  headers + control_mode flips in affected integration fixtures; regex byte-equality test
+  updated; e2e specs use a shared `setControlMode` helper.
+
+**Authoritative gate (all green):** pytest non-isolated **1553/0** (3 documented xfails) ·
+isolated real-tmux **14 passed + 2 xfail** (SR-3 pass) · JS unit **67/0** · ruff + vulture
+clean · governor `decide()` deny/allow sweep all-pass (incl. new `-t` cases) ·
+auth/CSRF/control-mode curl sweep all-pass (deny-by-default 401s, CSRF-before-control-mode,
+default-OFF, toggle) · full chromium matrix **140/0/7** (incl. chromium-mutations).
+
+**Known finding logged (NOT fixed, deliberate):** `POST /api/v1/mission-status` writes
+`README.md` but the UI reads mission status from `MISSION.md` — a single-source-of-truth
+bug. Two e2e assertions (T-R11-a, T-A-MS) reframed to assert the POST response rather than
+UI reflection. Captured as a follow-up hardening item.
+
+---
+
 ## 2026-05-25 (PM/EVE) — UI/Visibility/Safety FIX CAMPAIGN (orchestrated, subagent-driven)
 
 **Why:** after the governor migration shipped, the operator reported that multi-hour runs

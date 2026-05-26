@@ -15,15 +15,6 @@ from ui.tests.integration.conftest import wait_for_queue_applied
 from ui.tests.integration._auth_helper import authenticate
 
 
-try:
-    from megalodon_ui.server import make_app  # type: ignore[import-not-found]
-
-    BACKEND_AVAILABLE = True
-except ImportError:
-    make_app = None  # type: ignore[assignment]
-    BACKEND_AVAILABLE = False
-
-
 pytestmark = pytest.mark.integration
 
 
@@ -37,10 +28,18 @@ def _auth_all(async_client_with_lifespan):
 
     Mutation POSTs (e.g. /api/mission/flip) are now CSRF-protected
     (defense-in-depth); attach the token as a default header too.
+
+    Control-mode is enabled globally for this suite so the existing happy-path
+    mutation tests reach their handlers.  The control-mode gate itself is
+    covered by test_control_mode_server.py.  The CSRF-negative test below
+    disables the token explicitly to isolate the CSRF gate.
     """
     authenticate(async_client_with_lifespan)
     ctx = async_client_with_lifespan._transport.app.state.megalodon
     async_client_with_lifespan.headers["X-CSRF-Token"] = ctx.csrf_token
+    # Enable control mode so mutation handlers are reachable; mirrors the
+    # per-process flag toggled by POST /api/v1/control-mode in production.
+    ctx.control_mode = True
 
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -57,7 +56,6 @@ def fix_failure_modes(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_A_CH_inject_appends_task_and_creates_claim(
     async_client_with_lifespan, fix_medium
 ):
@@ -88,7 +86,6 @@ async def test_A_CH_inject_appends_task_and_creates_claim(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_A_RC_reclaim_stale_row_retroactive(
     async_client_with_lifespan, fix_medium
 ):
@@ -107,7 +104,6 @@ async def test_A_RC_reclaim_stale_row_retroactive(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_A_RC_reclaim_stale_row_no_finding(
     async_client_with_lifespan, fix_medium
 ):
@@ -138,7 +134,6 @@ async def test_A_RC_reclaim_stale_row_no_finding(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_A_SG_post_signal_requires_cite(async_client_with_lifespan, fix_medium):
     """T-A-SG-int — POST /api/v1/signal rejects empty `evidence` (RULE 4).
 
@@ -153,7 +148,6 @@ async def test_A_SG_post_signal_requires_cite(async_client_with_lifespan, fix_me
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_A_SG_post_signal_appends_to_notes(
     async_client_with_lifespan, fix_medium
 ):
@@ -183,7 +177,6 @@ async def test_A_SG_post_signal_appends_to_notes(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_R11_int_flip_via_api(async_client_with_lifespan, fix_medium):
     """T-R11-a (integration) — POST /api/v1/phase-flip writes lock + event.
 
@@ -203,11 +196,48 @@ async def test_R11_int_flip_via_api(async_client_with_lifespan, fix_medium):
     assert "PHASE-PLAN->PHASE-CHALLENGE" in events
 
 
+@pytest.mark.asyncio
+async def test_R11_int_flip_missing_csrf_returns_403(
+    async_client_with_lifespan, fix_medium
+):
+    """T-R11-b (negative) — POST /api/v1/phase-flip with missing X-CSRF-Token → 403.
+
+    The ``_auth_all`` autouse fixture attaches both a session cookie and the
+    CSRF header.  This test removes the CSRF header to isolate the CSRF gate:
+    cookie present + control mode ON (or default state) + missing CSRF → 403.
+    The ``post_flip`` handler calls ``_csrf_or_403`` before any state mutation.
+    """
+    client = async_client_with_lifespan
+    # Save the real CSRF header and remove it so only the cookie remains.
+    saved_csrf = client.headers.pop("X-CSRF-Token", None)
+    try:
+        r = await client.post(
+            "/api/v1/phase-flip",
+            json={
+                "from": "PHASE-PLAN",
+                "to": "PHASE-CHALLENGE",
+                "reason": "csrf-negative-test",
+            },
+        )
+    finally:
+        # Restore so subsequent tests using the same client are unaffected.
+        if saved_csrf is not None:
+            client.headers["X-CSRF-Token"] = saved_csrf
+
+    assert r.status_code == 403, (
+        f"Expected 403 (missing CSRF), got {r.status_code}: {r.text}"
+    )
+    assert "CSRF" in r.json().get("detail", ""), r.text
+    # Side-effect guard: no event was written (flip did NOT execute).
+    events_path = fix_medium / ".mission-events"
+    if events_path.exists():
+        assert "csrf-negative-test" not in events_path.read_text()
+
+
 # ---------- API contract: read views ----------
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_GET_status_returns_parsed_rows(async_client_with_lifespan, fix_medium):
     """T-V-STATUS-int — GET /api/v1/status returns one entry per lane.
 
@@ -223,7 +253,6 @@ async def test_GET_status_returns_parsed_rows(async_client_with_lifespan, fix_me
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_GET_findings_filters_by_severity(async_client_with_lifespan, fix_medium):
     """T-V-FE-int — finding-explorer filter by severity returns subset.
 
@@ -240,7 +269,6 @@ async def test_GET_findings_filters_by_severity(async_client_with_lifespan, fix_
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C")
 async def test_GET_findings_includes_scratch_files(
     async_client_with_lifespan, fix_medium
 ):

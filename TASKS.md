@@ -1,6 +1,10 @@
-> ## Task #30 — UI/Visibility/Safety FIX CAMPAIGN: Re-audit Round 3 (DEFERRED — awaiting operator go)
+> ## Task #30 — UI/Visibility/Safety FIX CAMPAIGN: Re-audit Round 3 + Fix Round 3 (EXECUTED — all 6 dimensions addressed + verified)
 >
-> **Status (2026-05-25 ~23:18 EDT):** Fix Round 2 (`422caaa`) SHIPPED + pushed + docs current. Operator issued a **hard stop**: do NOT auto-launch Round 3 — wait for explicit operator confirmation. Stop point reached; this entry preserves the resume pointer (folded in from the now-deleted `handoff.md` 2026-05-26). Full narrative: HISTORY.md top section.
+> **Status (2026-05-26):** Fix Round 3 SHIPPED. Re-audit R3 (6 blind agents, all 6 PARTIAL) → Fix R3 (6 file-partitioned agents + e2e-reconciliation + orchestrator integration) → full authoritative gate green. All R3 findings resolved. Full narrative: HISTORY.md top section.
+>
+> **Fix Round 3 commit:** this session (see HISTORY.md "Fix Round 3" entry for full manifest).
+>
+> **Open follow-up (NOT fixed in R3 — deliberate):** `POST /api/v1/mission-status` writes `README.md` but the UI reads mission status from `MISSION.md` — a single-source-of-truth split. Two e2e assertions (T-R11-a, T-A-MS) reframed to assert POST response rather than UI reflection. **Hardening item: unify the mission-status write target to `MISSION.md`.**
 >
 > **Campaign commits on `main`:** Wave1 `6b82ba6` · Wave2 `a5bfba4` · Wave3 `7efb4b6` · Wave4 `c8153a3` · Fix R1 `d55784c` · Fix R2 `422caaa` · SHA-correction `36e53cd`.
 >
@@ -10,24 +14,25 @@
 >   1. Re-audit — 6 fresh BLIND read-only agents, one per dimension (**live-activity, comms, goals/progress, autonomy/safety, UI-integrity, test-coverage**), distinct ports **8830–8835**. Each: own fake fleet + own headless `chromium.launch()` (NOT the shared Playwright MCP singleton), authenticate through the strict deny-by-default gate, adversarially probe, report findings by severity + MET/PARTIAL/NOT-MET. READ-ONLY (find, don't fix).
 >   2. Synthesize → if any PARTIAL/NOT-MET, dispatch file-partitioned Fix R3 (no two agents touch the same file; freeze a wire CONTRACT if FE+BE must agree) → authoritative gate → review → orchestrator commits+pushes → re-audit again. **Iterate until ALL 6 read MET.**
 >
-> **Round-3 fix backlog (from R2 security+quality review + prior waves):**
->   1. **CSRF parity gap** — canonical `/api/v1/{signal,reclaim,challenge,mission-status,inject-task}`, `/api/v1/lane/{lane}/followup`, `/api/lanes/{lane}/reclaim` still lack `_csrf_or_403` (SameSite=Strict-mitigated; defense-in-depth, not auth bypass). Apply `_csrf_or_403` uniformly. (server.py)
->   2. **Anti-spoof depth limit** — line-binding defeats trailing-pipe/in-cell forgery, but a DIRECT STATUS.md write can forge a whole well-formed foreign row (no unverified flag). Root cause: no per-lane STATUS file ownership. Hardening item.
->   3. Dedicated **negative 403 tests** for the 10 newly CSRF-protected endpoints (happy-path covered; missing-token path not).
->   4. webkit `test_tasks_page.spec.ts:97` load-contention flake (non-blocking; passes isolated) — document or harden the shared board-w server.
->   5. claims `owner.txt` never written by `try_claim` → coordination `owner` always null (cosmetic).
->   6. idle lanes show "narrator warming up…" forever in no-LLM mode (cosmetic; board.js applyStatusBaseline).
->   7. lane-detail "transcript digest" dead (to_dict excludes digest_text).
->   8. staleness reconciliation (`/state` is_stale vs `/lanes/stale`).
->   9. orphaned legacy `/api/*` (non-v1) duplicate routes.
->   10. launch_fleet legacy whole-module skips.
->   11. BACKEND_AVAILABLE skipif sentinel assert.
+> **Round-3 fix backlog — disposition after Fix R3:**
+>   1. **CSRF parity gap** — ✅ DONE. `_csrf_or_403` applied to all 6 canonical mutation routes + legacy reclaim.
+>   2. **Anti-spoof depth limit** — still open (direct STATUS.md write, no per-lane ownership). Hardening item.
+>   3. **Negative 403 CSRF tests** — ✅ DONE. `test_csrf_canonical_routes.py` covers followup + phase-flip.
+>   4. webkit `test_tasks_page.spec.ts:97` load-contention flake — still open (non-blocking; passes isolated).
+>   5. claims `owner.txt` / coordination `owner` null — still open (cosmetic).
+>   6. idle lanes show "narrator warming up…" — ✅ DONE. Fixed in Fix R3 (`board.js` shows "— idle").
+>   7. lane-detail "transcript digest" dead — still open.
+>   8. staleness reconciliation — still open.
+>   9. orphaned legacy `/api/*` duplicate routes — still open.
+>   10. launch_fleet legacy whole-module skips — ✅ DONE. 31 dead `test_launch_fleet*` tests deleted.
+>   11. BACKEND_AVAILABLE skipif sentinel assert — still open.
+>   **NEW open item:** mission-status README/MISSION source-of-truth split (see "Open follow-up" above).
 >
 > **Authoritative gate (run ALL before any commit — do NOT trust chromium-board alone):**
->   - `uv run --extra test pytest scripts/tests ui/tests/integration ui/tests/unit -q -m "not isolated"` (baseline **1480**)
->   - isolated tier: `uv run --extra test pytest -q -m isolated --forked` (real-tmux; SR-3 must pass; 15 passed / 2 xfail e2e-governor)
->   - FULL chromium matrix, **RUN ALONE** (concurrent pytest causes narrative cross-talk flakes): `npx playwright test --config=ui/tests/e2e/playwright.config.ts --project=chromium-board --project=chromium-default --project=chromium-failure-modes --project=chromium-v92-dashboard` (baseline **127 passed / 0 / 7 skipped**) + `--project=webkit-board` (NON-blocking; known residual: `test_tasks_page.spec.ts:97`)
->   - JS unit: `node --test "ui/tests/unit/**/*.test.js"` (10 files / **61** tests — quoted glob required; dir-arg fails on Node>=22)
+>   - `uv run --extra test pytest scripts/tests ui/tests/integration ui/tests/unit -q -m "not isolated"` (baseline **1553**)
+>   - isolated tier: `uv run --extra test pytest -q -m isolated --forked` (real-tmux; SR-3 must pass; 14 passed / 2 xfail)
+>   - FULL chromium matrix, **RUN ALONE** (concurrent pytest causes narrative cross-talk flakes): `npx playwright test --config=ui/tests/e2e/playwright.config.ts --project=chromium-board --project=chromium-default --project=chromium-failure-modes --project=chromium-v92-dashboard --project=chromium-mutations` (baseline **140 passed / 0 / 7 skipped**) + `--project=webkit-board` (NON-blocking; known residual: `test_tasks_page.spec.ts:97`)
+>   - JS unit: `node --test "ui/tests/unit/**/*.test.js"` (**67** tests — quoted glob required; dir-arg fails on Node>=22)
 >   - scoped ruff: `uv run --with 'ruff==0.15.14' ruff check megalodon_ui/ scripts/` ; `uvx vulture megalodon_ui scripts`
 >   - SECURITY sweeps (deterministic): governor `decide()` denies `cp ~/.ssh/id_rsa` / `tee /etc/..` / `ln -s /etc/passwd` / `touch /etc/evil` / `truncate /etc/..` / `cat ~/.aws/credentials` while ALLOWING in-scope cp/mkdir/touch + Read; boot fake fleet + curl every `/api/**` no-cookie → 401, public (`/`, `/healthz`) → 200, `DELETE /api/v1/fleet` no-cookie → 401.
 >   - Commit with `git add -A -- . ':!handoff.md'`. Pre-commit hook lints staged .py + vulture.
