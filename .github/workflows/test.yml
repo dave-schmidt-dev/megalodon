@@ -144,7 +144,12 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 25
-    if: hashFiles('ui/tests/e2e/playwright.config.ts') != ''
+    # NOTE: no job-level `if: hashFiles(...)` — hashFiles() is only valid in
+    # step-level `if` (jobs.<id>.steps.if), NOT job-level `if` (jobs.<id>.if).
+    # A job-level hashFiles() makes GitHub reject the whole workflow at startup
+    # ("Unrecognized function: 'hashFiles'" → 0s failure), which silently broke
+    # CI from Fix R1 through R3. The playwright config always exists in-repo, so
+    # no guard is needed; the job is continue-on-error anyway.
 
     env:
       MEGALODON_KILL_ON_EXIT: "1"
