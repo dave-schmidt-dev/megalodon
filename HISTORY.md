@@ -26,11 +26,14 @@ excluded by the resolution cutoff), INV-2 = 0 (no matching entries yet). The fre
 megalodon plan touching CI must be a `consolidation` plan (re-enable CI safely + cost guardrails),
 not a feature plan, until INV-3 is resolved with a dated checkpoint.
 
-**Parser note (reality vs. plan):** the harvest HISTORY parser is single-line — it reads `files:`/`inv:`
-on the same physical line as `[bug]`. The two pre-existing bug entries wrapped `files:` onto a
-continuation line, so they first parsed as `files: []` and mapped to nothing (false `clear`). Reflowed
-both onto single lines with explicit `inv: INV-3` per the project convention; the verdict then correctly
-flipped to FROZEN. Going forward, bug entries must keep `[bug] ... | files: ... | inv: INV-x` on one line.
+**Parser hardening (found by this pilot):** dogfooding surfaced two real defects in the harvest
+HISTORY parser, both fixed in `~/.agent/harvest/history.py` via TDD (harvest suite now 20/0):
+(1) it read `files:`/`inv:` only from the single physical `[bug]` line, so wrapped markdown bullets
+parsed as `files: []` → a silent false-clear; it now accumulates a bug bullet's continuation lines.
+(2) `_BUG` matched `[bug]` anywhere, so prose merely *discussing* the convention spawned phantom
+entries (an earlier draft of this very note inflated INV-3 to 3); detection is now anchored to list
+items (`^\s*[-*]\s+\[bug\]`). Net: bug entries may wrap freely, and only `- [bug] …` list items count.
+(The two entries below are kept single-line with explicit `inv: INV-3` — clean and explicit, not required.)
 
 ---
 
