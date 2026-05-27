@@ -124,8 +124,6 @@ test('R3-3: idle lane shows "— idle" not "narrator warming up…"', async ({ p
   // Give the SSE frame time to land.
   await page.waitForTimeout(500);
 
-  // The board-now-A cell (or if not present, check the row for board-row-A).
-  const nowCell = page.locator('[data-testid="board-now-A"]');
   const rowText = page.locator('[data-testid="board-row-A"]');
 
   // Either the dedicated cell or the row should NOT contain "warming up".

@@ -15,6 +15,10 @@
 >
 > **VERIFIED BASELINES:** `pytest -m "not isolated"` = 1557 pass/3 xfail (2m42s); `-m isolated --forked` = 15 pass/2 xfail (82s, macOS, tmux 3.6b); JS = 67 tests; coverage 87.4%. No `pytest-xdist` installed yet (P2.1 adds it). No Makefile yet (P2.7 adds it).
 >
+> **SPAWNED FOLLOW-UPS (filed during P1 implementation):**
+> - `pending` **P1.1-followup — lifespan startup-timeout (exit 11) not propagated.** `sys.exit(11)` fires correctly inside `server.py` lifespan (stderr shows `SystemExit: 11`) but uvicorn catches it inside the lifespan context and the subprocess exits 0. Fix: intercept the timeout in `__main__.py` around `uvicorn.Server.serve()` and re-exit with the stored code. Repro: `uv run --extra test pytest ui/tests/integration/test_startup_timeout_cleans_up_token_and_listener.py --runxfail -q` (expect exit 11, get 0). Remove the `xfail(strict=True)` in that test when fixed. files: megalodon_ui/__main__.py, megalodon_ui/server.py
+> - `pending` **P1.2-followup — real SIGTERM-propagation coverage.** Replace the deleted hollow `assert False` stub with a real `@pytest.mark.isolated` real-tmux test: SIGTERM to the bash PID must reach the exec'd Python child in a long-running subprocess (no `assert False`/xfail). files: scripts/tests/test_launch_fleet_v92.py (or a new isolated test)
+>
 > ---
 >
 > ## Task #32 — Session 2026-05-26 (eve): CI cost-fix · closed-loop fixes · v10 design (DONE) + outstanding

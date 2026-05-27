@@ -7,18 +7,21 @@ timeout and a lifespan that sleeps past that timeout, then verifies:
   - .fleet/dashboard.url does not exist
   - the listener port is rebindable (no EADDRINUSE)
 
-NOTE: The lifespan timeout path (exit 11) is wired in Task 1.5. The current
-lifespan is a no-op that returns immediately, so the server exits 0 without
-triggering cleanup. This entire test is marked xfail until Task 1.5 lands.
-TODO: remove xfail marker when Task 1.5 lifespan timeout integration is merged.
+STATUS: xfail (strict=True) — the lifespan raises sys.exit(11) as expected but
+uvicorn catches SystemExit inside the lifespan context and the subprocess exits 0.
+The test is correctly written; the bug is in how __main__.py / uvicorn handles
+SystemExit from within lifespan (needs to propagate exit code 11 to the process).
+TODO: fix __main__.py to propagate exit 11 then remove the xfail marker.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -32,17 +35,32 @@ def _find_free_port() -> int:
 
 @pytest.mark.xfail(
     reason=(
-        "depends on Task 1.5 lifespan timeout integration: current lifespan is a "
-        "no-op and exits 0 without raising the startup-timeout error (exit 11). "
-        "Remove this xfail once LIFESPAN_STARTUP_TIMEOUT_SECONDS / "
-        "MEGALODON_LIFESPAN_TIMEOUT_S is honoured in the lifespan context."
+        "lifespan startup-timeout (exit 11) not honoured end-to-end: "
+        "sys.exit(11) is raised inside the lifespan context (visible in stderr as "
+        "'SystemExit: 11') but uvicorn catches it and the subprocess exits 0 instead. "
+        "Repro: uv run --extra test pytest "
+        "ui/tests/integration/test_startup_timeout_cleans_up_token_and_listener.py --runxfail -q"
     ),
-    strict=False,
+    strict=True,
 )
-def test_startup_timeout_cleans_up_token_and_listener(tmp_path: Path) -> None:
-    """Subprocess exits 11 and leaves no credential files or held port."""
+def test_startup_timeout_cleans_up_token_and_listener() -> None:
+    """Subprocess exits 11 and leaves no credential files or held port.
+
+    Uses a short /tmp mission dir so the socket path (/tmp/mgld-X/.fleet/tmux.sock)
+    stays well under the 100-byte sun_path limit.  The deep pytest tmp_path
+    (~120 bytes) would trip __main__'s pre-lifespan socket-path guard (exit 10)
+    before the startup-timeout logic is ever reached.
+    """
+    mission_dir = Path(tempfile.mkdtemp(prefix="mgld-st-", dir="/tmp"))
+    try:
+        _run_test(mission_dir)
+    finally:
+        shutil.rmtree(mission_dir, ignore_errors=True)
+
+
+def _run_test(mission_dir: Path) -> None:
     port = _find_free_port()
-    fleet_dir = tmp_path / ".fleet"
+    fleet_dir = mission_dir / ".fleet"
     token_path = fleet_dir / "ui.token"
     url_path = fleet_dir / "dashboard.url"
 
@@ -51,6 +69,9 @@ def test_startup_timeout_cleans_up_token_and_listener(tmp_path: Path) -> None:
     env["MEGALODON_LIFESPAN_SLEEP_S"] = "5"
     env["MEGALODON_LIFESPAN_TIMEOUT_S"] = "0.5"
     env["MEGALODON_DEBUG"] = "0"
+    # Explicitly unset in case the parent environment has it set — we need the
+    # real __main__.py socket-path guard to pass (short path), not be skipped.
+    env.pop("MEGALODON_SKIP_SOCKET_BUDGET", None)
 
     proc = subprocess.run(
         [
@@ -58,7 +79,7 @@ def test_startup_timeout_cleans_up_token_and_listener(tmp_path: Path) -> None:
             "-m",
             "megalodon_ui",
             "--mission-dir",
-            str(tmp_path),
+            str(mission_dir),
             "--port",
             str(port),
             "--host",

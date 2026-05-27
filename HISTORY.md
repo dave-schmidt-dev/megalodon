@@ -10,6 +10,31 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-27 — Test-suite + governor hardening (Phase 4 of the audit plan)
+
+Implementation of `docs/superpowers/plans/2026-05-27-test-suite-and-governor-hardening.md`. Subagent-driven; P0 hardened over 4 red-team review rounds.
+
+### P0 — governor sandbox escapes (PRODUCT security bugs)
+
+- [bug] Governor Bash policy allowed ~33 sandbox escapes — arbitrary code exec + writes/deletes outside `project_dir` | files: megalodon_ui/governor/policy.py, scripts/tests/test_governor_redteam.py
+  - **Root cause:** the Bash engine is allow-by-default + deny-matched-dangerous, but the denylists were incomplete and several write-target/exec surfaces had ZERO tests. Confirmed live via direct `decide()`: floor bypass via unpeeled `setsid`/`watch`; shells `fish/csh/tcsh/nu/pwsh/elvish/xonsh -c` + `php -r`; `source`/`.` builtins; editors (`vim -c "!cmd"`); `make`/`parallel`; write-target escapes `ln -t`, `tar -C`, `mktemp -p`, `split`/`csplit`/`pv`, `sed -f`; plain `rm /etc/passwd`. A pre-existing `env <flag>` wrapper-peel hole (`env -i rm -rf /`) nullified the whole peel layer.
+  - **Fix:** extended `_DASH_C_SHELLS`/`_INTERPRETER_HEADS`; added `source`/`.` deny; peeled `setsid`/`watch`; write-target scope-checks for ln/tar/mktemp/split/csplit/pv (incl. GNU bundled short-flag forms `-xCf`/`-pVALUE`/`-nf`); `sed -f` parity with awk; plain-`rm` scope/secret check; deny editors + build/exec-runners (non-floor, overridable). Rewrote the `env` wrapper-peel to a getopt-faithful flag parser (`_peel_env_flags`) — strips env's own bool/value flags incl. bundled groups, denies `-S`, re-adjudicates the real inner head.
+  - **Regression test:** `scripts/tests/test_governor_redteam.py` (78-case red-team matrix, was RED 33/33 → all green), `test_governor_override.py` (new denials overridable, floors are not), `test_governor_hook_subprocess.py` (real hook subprocess denies + audits). Governor suite 395 pass / 2 xfail (real-Claude e2e).
+  - **Residual (out of scope, flagged v10):** denylist can't converge — arbitrary script-head exec (`./x.sh`) stays ALLOW by design; converging fix is a Bash-head allowlist (bigger redesign).
+
+### P1 — broken/masked tests + product bugs
+
+- [bug] Queue applier logged `lane=?` on every APPLIED/REJECTED/EXCEPTION line | files: megalodon_ui/queue/applier.py, scripts/tests/test_queue_applier.py
+  - **Root cause:** three log sites read `req.get("submitting_lane", "?")` but the request dict key built by `queue_client` is `lane`. **Fix:** `submitting_lane` → `lane` (×3). Test `test_applied_log_records_real_lane` (note: applier logger sets `propagate=False`, so the test attaches `caplog.handler` directly).
+- [bug] MISSION.md mission-status write was non-atomic (truncated-read window) | files: megalodon_ui/server.py, ui/tests/integration/test_state_source_of_truth.py
+  - **Root cause:** `post_v1_mission_status` used `write_text`, so a mid-write failure / concurrent read could observe partial/empty MISSION.md (the SSOT, INV-2). **Fix:** temp-file `.md.tmp` + `os.replace` (same pattern as `_write_approval_rules`). Regression test monkeypatches `os.replace` to fail and asserts MISSION.md is fully-old or fully-new, never partial. INV-2 gate still 5/5.
+- [bug] `test_startup_timeout` xfail masked a real lifespan bug behind a FALSE reason | files: ui/tests/integration/test_startup_timeout_cleans_up_token_and_listener.py
+  - **Root cause:** the xfail claimed the feature was a "no-op exits 0"; under `--runxfail` it actually failed exit 10 (socket-path guard tripped by a deep pytest tmp_path, never reaching the timeout logic). **Fix:** short `/tmp`-rooted mission dir + explicit `MEGALODON_SKIP_SOCKET_BUDGET` handling un-masks it; revealed the REAL bug — `sys.exit(11)` fires inside the lifespan but uvicorn swallows it and the process exits 0. Re-marked `xfail(strict=True)` with the correct reason; lifespan fix filed as P1.1-followup (TASKS.md).
+- [remediation] Deleted hollow `assert False` SIGTERM placeholder (`test_sigterm_propagation_in_spawn_mode`) | files: scripts/tests/test_launch_fleet_v92.py — real coverage filed as P1.2-followup.
+- [remediation] Deleted 2 permanently-skipped Playwright specs asserting the dead `lane-row-*` testid (coverage redundant with `test_board_rows.spec.ts`/`test_board_phase_strip.spec.ts`); removed unused `board-now-A` locator | files: ui/tests/e2e/test_fe_renders_with_custom_3_lane_config.spec.ts, ui/tests/e2e/test_fe_phase_navigator_custom_config.spec.ts, ui/tests/e2e/test_board_fix_round3.spec.ts
+
+---
+
 ## 2026-05-27 — CI removed entirely; INV-3 retired
 
 - [decision] **Removed GitHub Actions / CI entirely** and retired **INV-3**. Same session as the re-enable below — the discussion that followed clarified the operator's actual goal: *push-time visibility on the local machine*, which a remote runner structurally cannot give, not cost (standard runners are free on this public repo; the May blowout was macOS minutes + hung runs, both already gone). Key realization: megalodon's CI never gated the fleet's autonomous output (that lands in the target repo, validated by `target.gates` + the target's own CI) — it only gated megalodon's own source. Deleted `.github/workflows/test.yml` + the now-obsolete guardrail meta-test; retired INV-3 in `INVARIANTS.md` (moved to a "Retired" section with reason) and removed its ledger entries. Successor: a parallelized local gate (Makefile + pytest-xdist + per-worker Playwright server isolation) — to be brainstormed/planned next. | files: .github/workflows/test.yml, scripts/tests/test_ci_workflow_guardrails.py, INVARIANTS.md, ledger.yaml, README.md

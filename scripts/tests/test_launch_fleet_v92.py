@@ -13,9 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import signal
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -222,41 +220,3 @@ def test_tmux_pre_flight(mission_3lane: Path, tmp_path: Path) -> None:
     assert "tmux not installed" in result.stderr, (
         f"Expected 'tmux not installed' in stderr:\n{result.stderr}"
     )
-
-
-# ---------------------------------------------------------------------------
-# test_sigterm_propagation_in_spawn_mode
-#
-# This test verifies that exec-based process replacement means SIGTERM sent
-# to the original bash PID reaches the Python child.  Marked xfail because
-# the MEGALODON_LAUNCH_DRY_EXEC path exits immediately (no long-running child
-# to signal), and wiring up a real uvicorn start in CI is out of scope here.
-# A proper integration test lives in test_real_tmux_spawn.py.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.nondestructive
-@pytest.mark.xfail(
-    reason=(
-        "SIGTERM propagation requires a long-running child process. "
-        "The dry-exec path exits before a signal can be observed. "
-        "Full integration coverage lives in test_real_tmux_spawn.py."
-    ),
-    strict=False,
-)
-def test_sigterm_propagation_in_spawn_mode(mission_3lane: Path) -> None:
-    """SIGTERM to the bash PID propagates to the exec'd Python child."""
-    # Start a spawn that sleeps (simulate server start) via dry-exec echo + sleep
-    proc = subprocess.Popen(
-        ["bash", str(SCRIPT), "--spawn", "--mission-dir", str(mission_3lane)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=os.environ | {"MEGALODON_LAUNCH_DRY_EXEC": "1"},
-    )
-    time.sleep(0.5)
-    proc.send_signal(signal.SIGTERM)
-    proc.wait(timeout=5)
-    # After exec the process group is the Python process.
-    # With MEGALODON_LAUNCH_DRY_EXEC=1 the script exits 0 before SIGTERM lands.
-    # This assertion intentionally fails to keep the xfail active.
-    assert False, "SIGTERM test requires a real long-running child — see xfail note."
