@@ -2,15 +2,29 @@ name: Test
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".archive/**"
   pull_request:
-    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".archive/**"
+
+# Cancel a still-running CI when a newer commit lands on the same ref. The May
+# blowout was partly runaway/superseded runs stacking billable minutes; this
+# keeps at most one live run per branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # Primary gate: runs on ubuntu-latest only. The previous matrix included
-  # macos-latest, which sat perpetually `queued` (no macOS runner available on
+  # Primary gate: runs on ubuntu-latest only. The previous matrix included a
+  # second OS runner that sat perpetually `queued` (no runner available on
   # this repo's plan), so every workflow hung indefinitely and `fail-fast:
-  # false` never let it conclude. macOS-specific behaviour (the 104-byte
+  # false` never let it conclude. OS-specific behaviour (the 104-byte
   # sun_path socket limit) is covered by the test fixtures regardless of runner
   # OS; Linux is sufficient for the gates that protect the product.
   test:
