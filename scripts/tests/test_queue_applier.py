@@ -619,6 +619,67 @@ def test_unknown_intent_rejected(queue_mission):
     assert "unknown-intent" in reason
 
 
+# ---- P3.7: corrupt pending + phase-mismatch precondition ----
+
+
+def test_corrupt_pending_json_is_rejected_not_crash(queue_mission):
+    """A pending/*.json that is not valid JSON must be journaled/archived as
+    REJECTED with reason 'json-decode-error' — the drain loop swallows the
+    decode error per-request and keeps going (no crash)."""
+    pending_dir = queue_mission / "queue" / "pending"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    bad = pending_dir / "corrupt-req.json"
+    bad.write_text("{ this is not valid json :::")
+
+    applier = Applier(queue_mission)
+    # drain_once must not raise on the corrupt file.
+    applier.drain_once()
+
+    # The file is moved to rejected/ under its stem (no request_id parseable).
+    rejected = queue_mission / "queue" / "rejected" / "corrupt-req.json"
+    assert rejected.exists(), "corrupt pending file was not archived to rejected/"
+    assert not bad.exists(), "corrupt file should have been moved out of pending/"
+    reason = (
+        queue_mission / "queue" / "rejected" / "corrupt-req-reason.txt"
+    ).read_text()
+    assert "json-decode-error" in reason
+
+
+def test_phase_mismatch_precondition_rejected(queue_mission):
+    """A request whose preconditions.required_phase differs from the mission's
+    current phase is rejected with a 'phase-mismatch' reason.
+
+    The queue_mission fixture's last .mission-events line is INIT->PHASE-PLAN,
+    so requiring PHASE-BUILD must fail the precondition check.
+    """
+    rid = queue_client.submit(
+        queue_mission,
+        "agent-aaaa",
+        "AUDIT",
+        "STATUS.md",
+        "STATUS_UPDATE",
+        {
+            "lane": "AUDIT",
+            "agent": "agent-aaaa",
+            "new_state": "working: P-PHASE",
+            "new_utc": queue_client.utc_now(),
+            "new_notes": "",
+        },
+        preconditions={"required_phase": "PHASE-BUILD"},
+    )
+    applier = Applier(queue_mission)
+    assert _drain_until(
+        applier,
+        lambda: (queue_mission / "queue" / "rejected" / f"{rid}.json").exists(),
+    )
+    reason = (queue_mission / "queue" / "rejected" / f"{rid}-reason.txt").read_text()
+    assert "phase-mismatch" in reason
+    assert "want=PHASE-BUILD" in reason
+    assert "got=PHASE-PLAN" in reason
+    # And the STATUS row was NOT mutated (precondition gate ran before apply).
+    assert "working: P-PHASE" not in (queue_mission / "STATUS.md").read_text()
+
+
 def test_singleton_lock_acquired(queue_mission):
     applier1 = Applier(queue_mission)
     assert applier1.acquire_singleton()

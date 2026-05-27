@@ -203,6 +203,25 @@ async def test_followup_empty_prompt_returns_422(authed_client_with_spawner):
 
 
 @pytest.mark.asyncio
+async def test_followup_malformed_json_body_returns_422(authed_client_with_spawner):
+    """P3.7 — a body that is not valid JSON hits the ``await request.json()``
+    except branch and returns 422 'invalid JSON body' (not a 500).
+
+    Passes auth + CSRF + control-mode (fixture sets those) and resolves a known
+    lane, so the only failure is the unparseable payload — isolating the
+    malformed-body path that the existing 422 tests (missing/empty prompt) skip.
+    """
+    client, _spawner, _adapter, _calls = authed_client_with_spawner
+    resp = await client.post(
+        "/api/v1/lane/A/followup",
+        content=b"{not valid json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "JSON" in resp.json().get("detail", ""), resp.text
+
+
+@pytest.mark.asyncio
 async def test_followup_without_cookie_returns_401(fix_medium: Path, monkeypatch):
     """The middleware gates /api/v1/lane/* — no cookie means no access."""
     monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")

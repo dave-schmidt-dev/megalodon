@@ -131,6 +131,54 @@ async def test_valid_csrf_not_403(csrf_client, route, body):
 
 
 # ---------------------------------------------------------------------------
+# P3.7 — CSRF-negative coverage for four additional mutation routes that were
+# not in the original ROUTES list above.  Each handler runs the CSRF gate
+# FIRST (auth → CSRF → control-mode → handler), so a missing or mismatched
+# X-CSRF-Token must surface as 403 before any handler-specific logic — no
+# STATUS row, spawner, or phase preconditions are required to reach the gate.
+#
+# These are kept as a SEPARATE parametrize block (not merged into ROUTES)
+# because their valid-token outcomes differ from the 200/202/204 the existing
+# test_valid_csrf_not_403 asserts (e.g. /api/tasks → 201, feedback → 404
+# without a spawner), and the task scope is the negative cases only.
+# ---------------------------------------------------------------------------
+
+EXTRA_ROUTES = [
+    ("/api/tasks", {"kind": "CHALLENGE", "target_finding": "findings/x.md"}),
+    (
+        "/api/lanes/AUDIT/signal",
+        {"text": "ping", "cite": "findings/x.md:1"},
+    ),
+    ("/api/v1/phase-flip", {"from": "PHASE-PLAN", "to": "PHASE-BUILD"}),
+    ("/api/v1/lane/AUDIT/feedback", {"message": "operator note"}),
+]
+
+EXTRA_ROUTE_IDS = [r[0] for r in EXTRA_ROUTES]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,body", EXTRA_ROUTES, ids=EXTRA_ROUTE_IDS)
+async def test_extra_missing_csrf_returns_403(csrf_client, route, body):
+    client, _csrf, _ = csrf_client
+    r = await client.post(route, json=body)  # no X-CSRF-Token
+    assert r.status_code == 403, f"{route}: expected 403, got {r.status_code}: {r.text}"
+    assert "CSRF" in r.json()["detail"], (
+        f"{route}: expected a CSRF detail, got {r.json()}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,body", EXTRA_ROUTES, ids=EXTRA_ROUTE_IDS)
+async def test_extra_wrong_csrf_returns_403(csrf_client, route, body):
+    client, _csrf, _ = csrf_client
+    r = await client.post(route, json=body, headers={"X-CSRF-Token": "nope"})
+    assert r.status_code == 403, f"{route}: expected 403, got {r.status_code}: {r.text}"
+    assert "CSRF" in r.json()["detail"], (
+        f"{route}: expected a CSRF detail, got {r.json()}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # MINOR finding #5 — victim-lane hiding via trailing-pipe junk.
 #
 # A STATUS row with trailing content after its closing 5th-column pipe used to
