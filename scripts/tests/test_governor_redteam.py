@@ -168,3 +168,25 @@ def test_fleet_gate_commands_still_allow(cmd):
     assert d.permission == "allow", (
         f"P0 broke the fleet gate: {cmd!r} -> {d.permission}/{d.category}"
     )
+
+
+# Known RESIDUAL escapes — destructive git porcelain the denylist does NOT yet
+# block (only git config-injection is denied today). These are documented as
+# out-of-scope residuals in the P0 plan ("Residual risk / non-goals"): an
+# allow-by-default Bash denylist cannot enumerate every escape; the converging
+# fix is a Bash-head allowlist (flagged v10 operator decision). They are tracked
+# here as xfail(strict=True) so the gap is MACHINE-VISIBLE, not just prose: the
+# day the engine starts denying one of these, the strict-xfail flips red and
+# forces this matrix to be updated (move the case to DENY_CASES).
+RESIDUAL_ESCAPES = ["git reset --hard", "git clean -fdx"]
+
+
+@pytest.mark.xfail(
+    strict=True, reason="known v10 residual: destructive git porcelain not denied"
+)
+@pytest.mark.parametrize("cmd", RESIDUAL_ESCAPES, ids=RESIDUAL_ESCAPES)
+def test_redteam_known_residuals_should_deny(cmd):
+    d = decide("Bash", {"command": cmd}, project_dir=PROJECT_DIR, lane="AUDIT")
+    assert d.permission == "deny", (
+        f"residual now denies — promote to DENY_CASES: {cmd!r}"
+    )

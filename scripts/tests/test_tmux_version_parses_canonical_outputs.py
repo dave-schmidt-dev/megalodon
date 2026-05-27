@@ -46,7 +46,7 @@ class TestProbeOrExit6:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "tmux 3.5a\n"
-            probe_or_exit_6()
+            assert probe_or_exit_6() is None
 
     def test_probe_exit_6_on_not_found(self):
         """probe_or_exit_6 exits 6 when tmux not on PATH."""
