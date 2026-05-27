@@ -12,6 +12,13 @@ from unittest.mock import patch
 
 import pytest
 
+# Every test here runs main(), which binds a real listener on the mission's
+# DEFAULT_PORT (8080). Under `pytest -n auto` two of these on different workers
+# collide → "port 8080 already in use" (exit 9). Pin the whole module to one
+# xdist worker via a shared group so they serialize. Requires `--dist loadgroup`
+# (the gate/Makefile sets it); harmless under serial runs.
+pytestmark = pytest.mark.xdist_group("megalodon_main_port_bind")
+
 # Pytest tmp_path is deep (~110 chars); patch the limit so it doesn't trip exit 10.
 _LARGE_PATH_LIMIT = 512
 

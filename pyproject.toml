@@ -24,6 +24,7 @@ test = [
     "pytest-asyncio",
     "freezegun",
     "pytest-forked",
+    "pytest-xdist",
     "fastapi",
     "uvicorn[standard]",
     "sse-starlette",
