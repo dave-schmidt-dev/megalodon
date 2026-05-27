@@ -3807,7 +3807,11 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             if new_text == text:
                 # No **Status:** line present — append one so write-then-read works.
                 new_text = text.rstrip("\n") + f"\n**Status:** {status}\n"
-            mission_md.write_text(new_text)
+            # Atomic write: write to a .tmp sibling then os.replace() to avoid
+            # a truncated-read window if the process dies mid-write (INV-2 / P1.4).
+            tmp = mission_md.with_suffix(".md.tmp")
+            tmp.write_text(new_text)
+            os.replace(tmp, mission_md)
         return {"ok": True, "status": status}
 
     @app.post(API_INJECT_TASK)

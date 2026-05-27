@@ -162,3 +162,63 @@ async def test_mission_md_appended_when_no_status_line(ssot_client):
     assert fields_after.get("status") == "COMPLETE", (
         f"Append case failed: expected COMPLETE, got {fields_after!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# P1.4: atomic write — partial-write safety
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mission_md_not_corrupted_on_mid_write_failure(ssot_client, monkeypatch):
+    """MISSION.md must be intact (old content) if the write fails partway.
+
+    Simulates a crash mid-write by intercepting ``os.replace`` to raise before
+    the rename completes.  With a non-atomic write (``write_text`` directly on
+    the final path) the file is already truncated/overwritten before this
+    point, so MISSION.md ends up with new content even though the "commit"
+    step failed.  With an atomic write (write to a .tmp sibling, then
+    ``os.replace``) the original file is untouched — ``os.replace`` is the
+    only thing that moves content to the final path.
+
+    Contract: after the failure MISSION.md must equal the original content,
+    never the new status value (and never empty/truncated).
+    """
+    import os as _os
+
+    client, _app, csrf, tmp_path = ssot_client
+    await _enable_control_mode(client, csrf)
+
+    original_content = (tmp_path / "MISSION.md").read_text()
+    mission_md = tmp_path / "MISSION.md"
+
+    original_replace = _os.replace
+
+    def _failing_replace(src, dst):
+        # Raise when the rename would land on MISSION.md to simulate a crash
+        # between the tmp write and the final rename.
+        if Path(dst).name == "MISSION.md":
+            raise OSError("simulated crash during os.replace")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(_os, "replace", _failing_replace)
+
+    try:
+        await client.post(
+            "/api/v1/mission-status",
+            json={"status": "ACTIVE"},
+            headers={"X-CSRF-Token": csrf},
+        )
+    except Exception:
+        pass  # server-side OSError propagation is acceptable
+
+    monkeypatch.undo()
+
+    content_after = mission_md.read_text()
+    assert content_after == original_content, (
+        f"MISSION.md was corrupted when os.replace was interrupted.\n"
+        f"Expected (original): {original_content!r}\n"
+        f"Got (after failure): {content_after!r}\n"
+        "Fix: use atomic write (write to .tmp sibling, then os.replace) so\n"
+        "the original is only replaced after a successful write."
+    )
