@@ -137,21 +137,13 @@ def _v92_path_is_gated(method: str, path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# v9.4 GET /api/v1/lanes/stale — module-level cache + test-override hook
+# v9.4 GET /api/v1/lanes/stale — tunables
 # ---------------------------------------------------------------------------
-
-# Per-app cache keyed by id(app). Each value: {"response": dict, "computed_at": float}.
-# Module-level so concurrent requests within the TTL window get a single
-# computation. Keys are cleaned up lazily — they accumulate only across
-# make_app() calls within a process (negligible for production; fine for tests).
-_stale_cache: dict[int, dict] = {}
-
-#: One-shot per-lane silent_seconds override, populated ONLY by the
-#: ``_test/stale_override`` endpoint. Consumed once on the next
-#: ``GET /api/v1/lanes/stale`` call and then cleared. Setting
-#: ``_TEST_STALE_OVERRIDES["A"] = 1200.0`` makes lane "A" appear 1200 s
-#: stale in the next response.
-_TEST_STALE_OVERRIDES: dict[str, float] = {}
+#
+# The per-app stale cache and the one-shot test-override map used to live here
+# as module globals; they now live on ``MissionContext`` (``ctx.stale_cache`` /
+# ``ctx.test_stale_overrides``) so two app instances in one process never share
+# state (P2.4). Only the dimensionless tunables remain module-level.
 
 _STALE_THRESHOLD_SECONDS: float = 900.0
 _STALE_CACHE_TTL_SECONDS: float = 5.0
@@ -349,8 +341,14 @@ def _compute_stale_response(
     mission_dir: Path,
     lane_rows: list[dict[str, Any]],
     mission_config: "MissionConfig",
+    test_stale_overrides: dict[str, float],
 ) -> dict:
     """Compute the full stale-lanes payload (no caching here).
+
+    *test_stale_overrides* is the per-app (``MissionContext``) one-shot override
+    map. Any lane present in it has its ``silent_seconds`` replaced and the
+    entry is CONSUMED (popped) here — the caller compares its length before/after
+    to know whether to skip caching.
 
     *Source priority* (all three are considered; the newest wins):
       1. status-md  — ``last_utc`` parsed from STATUS.md row.
@@ -433,8 +431,8 @@ def _compute_stale_response(
         # --- test-override hook (one-shot) ---
         # Note: caller (_compute_stale_response's caller) uses the return value
         # to detect which lanes had overrides consumed and invalidate the cache.
-        if short in _TEST_STALE_OVERRIDES:
-            silent_seconds = _TEST_STALE_OVERRIDES.pop(short)
+        if short in test_stale_overrides:
+            silent_seconds = test_stale_overrides.pop(short)
 
         # A governor-blocked lane is reported separately, never as plain stale,
         # so the operator does not kill it thinking it is merely silent.
@@ -493,6 +491,19 @@ class MissionContext:
     # (NOT per-session) so the gate is identical for every request in the
     # process. Mutated in place by the toggle endpoint.
     control_mode: bool = field(default=False)
+    # v9.4 stale-lane state, moved off module globals (P2.4) so two app
+    # instances in one process never share it.
+    #
+    # stale_cache: single-entry cache for GET /api/v1/lanes/stale within the
+    # TTL window: {"response": dict, "computed_mono": float} (empty until first
+    # compute). Per-ctx, so no id(app) keying / id-reuse hazard.
+    #
+    # test_stale_overrides: one-shot per-lane silent_seconds override, populated
+    # ONLY by the _test/stale_override endpoint and CONSUMED on the next read
+    # (consume-on-read .pop()). e.g. {"A": 1200.0} makes lane "A" appear 1200 s
+    # stale exactly once.
+    stale_cache: dict = field(default_factory=dict)
+    test_stale_overrides: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -3938,11 +3949,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         lane is treated as infinitely stale).
         """
         now_mono = time.monotonic()
-        app_key = id(app)
-        cached = _stale_cache.get(app_key)
+        cached = ctx.stale_cache.get("entry")
         # Use cache if it exists, is fresh, and there are no pending test overrides.
         # Pending overrides trigger fresh computation.
-        override_count_before = len(_TEST_STALE_OVERRIDES)
+        override_count_before = len(ctx.test_stale_overrides)
         if (
             cached is not None
             and (now_mono - cached["computed_mono"]) < _STALE_CACHE_TTL_SECONDS
@@ -3955,16 +3965,20 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
             ctx.mission_dir,
             lane_rows,
             ctx.mission_config,
+            ctx.test_stale_overrides,
         )
-        override_count_after = len(_TEST_STALE_OVERRIDES)
+        override_count_after = len(ctx.test_stale_overrides)
         # Cache only if no overrides were consumed in this computation.
         # If any were consumed (override_count_after < override_count_before),
         # don't cache so the next call recomputes with the override gone.
         if override_count_after >= override_count_before:
-            _stale_cache[app_key] = {"response": response, "computed_mono": now_mono}
+            ctx.stale_cache["entry"] = {
+                "response": response,
+                "computed_mono": now_mono,
+            }
         else:
             # Clear cache so next call recomputes.
-            _stale_cache.pop(app_key, None)
+            ctx.stale_cache.pop("entry", None)
         return JSONResponse(content=response)
 
     @app.get("/api/v1/alerts")
@@ -3992,13 +4006,13 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
         @app.post("/api/v1/_test/stale_override")
         async def post_stale_override(request: Request):  # noqa: ANN201
-            """Test-only — populate _TEST_STALE_OVERRIDES for the next stale check.
+            """Test-only — populate ctx.test_stale_overrides for the next stale check.
 
             Registered ONLY when ``MEGALODON_FAKE_SPAWNER=1``. Cookie-gated
             (deny-by-default; under ``/api/**``). Query params: ``lane`` (str), ``seconds``
             (float). Body: empty or `{}`. CSRF-protected via ``X-CSRF-Token``.
 
-            On success: sets ``_TEST_STALE_OVERRIDES[lane] = seconds`` and
+            On success: sets ``ctx.test_stale_overrides[lane] = seconds`` and
             returns 200 with ``{ok: true, lane, seconds}``. The next call to
             ``GET /api/v1/lanes/stale`` will pop this override and use it as
             the ``silent_seconds`` for the lane (one-shot).
@@ -4043,9 +4057,10 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
 
             # Set the override (one-shot, consumed by next GET /api/v1/lanes/stale).
             # Clear the stale-lanes cache so the next GET request recomputes
-            # with the new override applied.
-            _TEST_STALE_OVERRIDES[lane] = seconds
-            _stale_cache.pop(id(app), None)
+            # with the new override applied. Both live on this app's ctx (P2.4),
+            # so a second app instance in the same process is unaffected.
+            ctx.test_stale_overrides[lane] = seconds
+            ctx.stale_cache.pop("entry", None)
 
             return JSONResponse(
                 status_code=200,

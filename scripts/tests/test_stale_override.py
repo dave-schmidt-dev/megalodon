@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from megalodon_ui.auth import write_token_atomic
 from megalodon_ui.mission_config.schema import MissionConfig
-from megalodon_ui.server import make_app, _stale_cache, _TEST_STALE_OVERRIDES
+from megalodon_ui.server import make_app
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +117,7 @@ async def _make_fake_spawner_client(
     )
 
     app = make_app(mission_dir=mission_dir)
-
-    # Clear any stale module-level cache from prior tests.
-    _stale_cache.pop(id(app), None)
-    _TEST_STALE_OVERRIDES.clear()
+    # No teardown needed: stale cache + overrides are app-scoped on ctx (P2.4).
 
     async with app.router.lifespan_context(app):
         async with AsyncClient(
@@ -156,7 +153,6 @@ async def test_no_fake_spawner_env_returns_404(tmp_path, monkeypatch):
     )
 
     app = make_app(mission_dir=mission_dir)
-    _stale_cache.pop(id(app), None)
 
     async with app.router.lifespan_context(app):
         async with AsyncClient(
@@ -284,6 +280,88 @@ async def test_override_consumed_by_next_stale_call(tmp_path, monkeypatch):
         assert "A" not in stale_third, (
             f"A should not be stale after override consumed: {third.json()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 3b: two apps in one process do NOT share stale-override state
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_two_apps_do_not_share_override_state(tmp_path, monkeypatch):
+    """P2.4 isolation: an override set on app A must not leak into app B.
+
+    Both apps run in ONE process and define a lane "A" whose status is recent
+    (NOT stale). We set a stale-override for lane "A" on app A only. Because the
+    override storage used to be a lane-keyed module global (no app scoping), the
+    first read on EITHER app would consume it — so app B could see (or steal)
+    app A's override. After moving the storage onto each app's MissionContext,
+    app B's lane "A" must remain not-stale.
+    """
+    monkeypatch.setenv("MEGALODON_LIFESPAN_TEST_MODE", "1")
+    monkeypatch.setenv("MEGALODON_FAKE_SPAWNER", "1")
+    import yaml
+
+    now = _now_utc()
+    recent_ts = _utc_iso(now - timedelta(minutes=5))  # well within 900s threshold
+
+    def _build(sub: str):
+        mission_dir = _make_mission(tmp_path / sub, {"A": recent_ts})
+        # Fresh stream log so lane A is genuinely recent from all sources.
+        stream_log = mission_dir / ".fleet" / "A.stream.log"
+        stream_log.write_bytes(b"recent output")
+        two_min_ago = time.time() - 2 * 60
+        import os as os_module
+
+        os_module.utime(stream_log, (two_min_ago, two_min_ago))
+        (mission_dir / ".mission-config.yaml").write_text(
+            yaml.dump(_make_config().model_dump(mode="json"))
+        )
+        return make_app(mission_dir=mission_dir)
+
+    app_a = _build("app_a")
+    app_b = _build("app_b")
+
+    async with (
+        app_a.router.lifespan_context(app_a),
+        app_b.router.lifespan_context(app_b),
+    ):
+        async with (
+            AsyncClient(
+                transport=ASGITransport(app=app_a), base_url="http://a"
+            ) as client_a,
+            AsyncClient(
+                transport=ASGITransport(app=app_b), base_url="http://b"
+            ) as client_b,
+        ):
+            for c in (client_a, client_b):
+                exch = await c.post("/api/v1/auth/exchange", json={"token": TOKEN})
+                assert exch.status_code == 200, f"auth failed: {exch.text}"
+
+            csrf_a = (await client_a.get("/api/v1/config")).json()["csrf_token"]
+
+            # Set a stale override for lane "A" on app A ONLY.
+            ov = await client_a.post(
+                "/api/v1/_test/stale_override?lane=A&seconds=1200.0",
+                headers={"X-CSRF-Token": csrf_a},
+            )
+            assert ov.status_code == 200, ov.text
+
+            # App B reads first — it must NOT see/consume app A's override.
+            b_resp = await client_b.get("/api/v1/lanes/stale")
+            assert b_resp.status_code == 200, b_resp.text
+            b_stale = {e["lane"] for e in b_resp.json()["stale_lanes"]}
+            assert "A" not in b_stale, (
+                f"app B leaked app A's override (state shared): {b_resp.json()}"
+            )
+
+            # App A still has its override pending and consumes it on its own read.
+            a_resp = await client_a.get("/api/v1/lanes/stale")
+            assert a_resp.status_code == 200, a_resp.text
+            a_stale = {e["lane"] for e in a_resp.json()["stale_lanes"]}
+            assert "A" in a_stale, (
+                f"app A lost its own override (consumed elsewhere): {a_resp.json()}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +501,6 @@ async def test_auth_gate_no_cookie_returns_401(tmp_path, monkeypatch):
     )
 
     app = make_app(mission_dir=mission_dir)
-    _stale_cache.pop(id(app), None)
 
     async with app.router.lifespan_context(app):
         # Use a clean client with NO cookies.

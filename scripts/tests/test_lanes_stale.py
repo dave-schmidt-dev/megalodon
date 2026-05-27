@@ -31,7 +31,6 @@ from megalodon_ui.mission_config.schema import (
 )
 from megalodon_ui.server import (
     make_app,
-    _stale_cache,
     _compute_governor_blocked,
     _GOVERNOR_BLOCK_DENY_COUNT,
     _GOVERNOR_BLOCK_WINDOW_SECONDS,
@@ -139,9 +138,7 @@ async def _make_client(
     )
 
     app = make_app(mission_dir=mission_dir)
-
-    # Clear any stale module-level cache from prior tests.
-    _stale_cache.pop(id(app), None)
+    # No teardown needed: stale cache is app-scoped on ctx (P2.4).
 
     async with app.router.lifespan_context(app):
         async with AsyncClient(
@@ -259,8 +256,6 @@ async def test_cache_within_ttl_same_checked_at(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_cache_expires_after_ttl(tmp_path, monkeypatch):
     """After 6s the cache expires and a fresh checked_at_utc is returned."""
-    import megalodon_ui.server as server_mod
-
     now = _now_utc()
     old_ts = _utc_iso(now - timedelta(minutes=20))
     mission_dir = _make_mission(tmp_path, {"A": old_ts})
@@ -269,13 +264,14 @@ async def test_cache_expires_after_ttl(tmp_path, monkeypatch):
         r1 = await client.get("/api/v1/lanes/stale")
         assert r1.status_code == 200
         checked_at_1 = r1.json()["checked_at_utc"]
-        app_key = None
-        for k, v in server_mod._stale_cache.items():
-            app_key = k
-        assert app_key is not None
+
+        # The stale cache is app-scoped on ctx (P2.4): reach it via the app
+        # behind the client's ASGI transport.
+        ctx = client._transport.app.state.megalodon
+        assert "entry" in ctx.stale_cache, "expected a cached entry after first GET"
 
         # Expire the cache by backdating computed_mono by 6 seconds.
-        server_mod._stale_cache[app_key]["computed_mono"] -= 6.0
+        ctx.stale_cache["entry"]["computed_mono"] -= 6.0
 
         r2 = await client.get("/api/v1/lanes/stale")
         assert r2.status_code == 200
@@ -573,7 +569,6 @@ async def test_alerts_requires_auth(tmp_path, monkeypatch):
         yaml.dump(config.model_dump(mode="json"))
     )
     app = make_app(mission_dir=mission_dir)
-    _stale_cache.pop(id(app), None)
 
     async with app.router.lifespan_context(app):
         async with AsyncClient(
