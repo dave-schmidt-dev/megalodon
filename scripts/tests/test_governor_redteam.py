@@ -60,6 +60,36 @@ DENY_CASES = [
     # plain rm of out-of-scope / secret
     ("rm /etc/passwd", "rm-out-of-scope"),
     ("rm /root/.ssh/id_rsa", "rm-secret"),
+    # env's OWN flags must not defeat the wrapper-peel (C1)
+    ("env -i rm -rf /", "env-flag-bypass"),
+    ("env -u PATH rm -rf /", "env-flag-bypass"),
+    ("env --ignore-environment rm -rf /", "env-flag-bypass"),
+    ("env -i cat /etc/shadow", "env-flag-bypass"),
+    ('env -i fish -c "rm -rf /"', "env-flag-then-shell"),
+    ("timeout 5 env -i rm -rf /", "env-flag-bypass"),
+    # bundled/glued short-flag forms must not bypass scope checks (C2/C3/C4)
+    ("tar -xCf /etc a.tar", "tar-bundled"),
+    ("tar -czf /etc/evil.tar a.txt", "tar-bundled-create"),
+    ("mktemp -p/etc x", "mktemp-glued"),
+    ("csplit -f/etc/out infile 10", "csplit-glued"),
+    ("pv -o/etc/x infile", "pv-glued"),
+    ("sed -nf /tmp/evil.sed in.txt", "sed-bundled"),
+    # csplit reads its input — must be source-read-checked (I1)
+    ("csplit /etc/passwd 10", "csplit-read"),
+    # env value-flag at the TAIL of a bundled short-flag group (separated value)
+    # must not leak the value as the inner head (C1 follow-up)
+    ("env -iu PATH rm -rf /", "env-bundle-bypass"),
+    # NOTE: `env -ui PATH rm -rf /` is NOT here — under the getopt model (round 3)
+    # `-ui` is `-u i` (value `i`), drawing ZERO positionals, so the head is `PATH`
+    # (unknown/inert) and `rm -rf /` are inert args. Same shape as the ALLOW
+    # example `env -uC X rm -rf /`. It lives in ALLOW_OK below.
+    ("env -0u PATH cat /etc/shadow", "env-bundle-bypass"),
+    ("env -iC /etc rm -rf /", "env-bundle-bypass"),
+    ("env -iuS rm", "env-bundle-split"),
+    # getopt: `-ui` is `-u i` (value `i`), 0 positionals drawn → head rm; `-uC`
+    # is `-u C` (value C) → head sh (a -c shell).
+    ("env -ui rm -rf /", "env-bundle-getopt"),
+    ('env -uC sh -c "rm -rf /"', "env-bundle-then-shell"),
 ]
 
 # Must still ALLOW (do not over-block in-scope work). NOTE: recursive rm is NOT
@@ -74,6 +104,18 @@ ALLOW_OK = [
     "cp a.txt b.txt",  # in-scope copy
     "rm a.txt",  # in-scope NON-recursive delete
     "grep -r foo .",
+    # legit glued/lone forms must NOT over-block (lock against the C2/C3/C4 fix)
+    "env -iu PATH ls",  # benign env bundle: value PATH consumed, inner head = ls
+    # getopt: a value letter consumes the rest of the bundle inline (C is `-u`'s
+    # value), drawing ZERO positionals, so the next token is the (unknown) HEAD
+    # and the destructive-looking tokens are inert args to it, not rm.
+    "env -uC X ls",  # `-u C` → head X (unknown) → allow
+    "env -uu A B ls",  # `-u u` → head A (unknown) → allow
+    "env -ui PATH rm -rf /",  # `-u i` → head PATH (unknown), rm/-rf/ inert args
+    "tar -czf out.tar a.txt",
+    "mktemp -d",
+    "split infile",
+    "sed -ne p f.txt",
 ]
 
 # Controls that already deny — must STAY denied (regression guard).

@@ -353,10 +353,26 @@ def _split_segments(command: str) -> list[str]:
 # Interpreter / unbounded heads. Matched against the segment head (token 0),
 # sometimes in combination with a following flag.
 _INTERPRETER_HEADS = frozenset(
-    {"python", "python2", "python3", "eval", "ruby", "perl", "node"}
+    {"python", "python2", "python3", "eval", "ruby", "perl", "node", "php"}
 )
 # Heads that are interpreters only with a code-exec flag (e.g. `bash -c`).
-_DASH_C_SHELLS = frozenset({"bash", "sh", "zsh", "ksh", "dash"})
+_DASH_C_SHELLS = frozenset(
+    {
+        "bash",
+        "sh",
+        "zsh",
+        "ksh",
+        "dash",
+        "fish",
+        "csh",
+        "tcsh",
+        "nu",
+        "pwsh",
+        "powershell",
+        "elvish",
+        "xonsh",
+    }
+)
 
 # Read-style heads whose path-like args get the secret/scope check (Layer 3).
 _READ_STYLE_HEADS = frozenset(
@@ -428,9 +444,24 @@ _DESTRUCTIVE_HEADS = frozenset(
     {"dd", "shred", "mkfs", "mkfs.ext4", "mkfs.ext3", "mkfs.xfs", "mkfs.vfat"}
 )
 
+# Editors: arbitrary-code surfaces (shell-out via `:!`/`-c`, ex commands, and
+# they write their file operand back). Denied outright — there is no safe form
+# under an autonomous agent. NOT a floor category (operator-overridable later).
+_EDITOR_HEADS = frozenset({"vim", "vi", "ex", "ed", "nano", "emacs"})
+
+# Build / task runners + GNU parallel: each reads a recipe/jobfile and executes
+# arbitrary commands (Makefile, justfile, Rakefile, build.gradle, pom.xml,
+# `parallel <cmd> ::: args`). Denied outright. `make test`/gate commands are
+# handled later by the allow-override layer, NOT special-cased here. NOT a floor.
+_EXEC_RUNNER_HEADS = frozenset(
+    {"make", "just", "task", "rake", "gradle", "mvn", "ant", "parallel"}
+)
+
 # Command-wrapper heads: they run a child command, so we adjudicate the wrapped
 # command instead of the wrapper.
-_WRAPPER_HEADS = frozenset({"nohup", "timeout", "env", "nice", "ionice", "stdbuf"})
+_WRAPPER_HEADS = frozenset(
+    {"nohup", "timeout", "env", "nice", "ionice", "stdbuf", "setsid", "watch"}
+)
 
 # Flag denylists per head (any flag that spawns a child or writes a file).
 _FIND_BAD_FLAGS = frozenset(
@@ -471,6 +502,31 @@ def _segment_destructive_rm(tokens: list[str], *, project_dir: Path) -> bool:
         return True
     # Denied unless EVERY target is an explicit scratch temp path.
     return any(not _is_explicit_temp_target(_strip_quotes(t)) for t in targets)
+
+
+def _plain_rm_violation(tokens: list[str], *, project_dir: Path) -> Decision | None:
+    """Scope/secret-check the targets of a PLAIN (non-recursive/force) ``rm``.
+
+    The recursive/force forms are handled by :func:`_segment_destructive_rm`;
+    this guards the plain form, which previously had NO scope/secret check at
+    all. Each non-flag operand is anchored at ``project_dir`` (the bash cwd) and
+    routed through the same secret/scope floor as ``cat``: a secret target
+    denies as ``secret-read`` (a floor), an out-of-scope target as
+    ``out-of-scope``. An in-scope ``rm file.txt`` raises no objection.
+    """
+    targets = [t for t in tokens[1:] if not t.startswith("-")]
+    for tgt in targets:
+        cand = _strip_quotes(tgt)
+        if not cand:
+            continue
+        blocked, reason, category = _path_is_secret_or_out_of_scope(
+            _anchor_to_project(cand, project_dir), project_dir=project_dir
+        )
+        if blocked:
+            return _deny(f"{reason} (via rm)", category)
+        if _SECRET_BASENAME_RE.match(cand):
+            return _deny(f"secret target basename: {cand} (via rm)", "secret-read")
+    return None
 
 
 def _segment_git_dangerous(tokens: list[str]) -> bool:
@@ -519,6 +575,18 @@ def _segment_sed_dangerous(tokens: list[str]) -> bool:
             or (a.startswith("-i") and len(a) > 2)
         ):
             return True
+    # `-f`/`--file <script>` runs an external sed program file = arbitrary sed
+    # code from an out-of-band file (parity with awk's `-f` deny). Deny outright
+    # BEFORE the script-body inspection (where `-f` would otherwise be consumed
+    # as a skipped value-flag and never adjudicated). The `f` flag can appear
+    # ANYWHERE in a bundled short-flag group (`-nf evil.sed`, `-senf evil.sed`),
+    # so scan the chars of every short-flag token, not just a leading `-f`.
+    for a in tokens[1:]:
+        if a in ("--file",) or a.startswith("--file="):
+            return True
+        if a.startswith("-") and not a.startswith("--") and len(a) > 1:
+            if "f" in a[1:]:
+                return True
     # Inspect script bodies (tokens that are not flags / not the file operand).
     scripts: list[str] = []
     skip_next = False
@@ -545,9 +613,110 @@ def _segment_sed_dangerous(tokens: list[str]) -> bool:
     return False
 
 
-def _segment_tar_dangerous(tokens: list[str]) -> bool:
+def _segment_tar_dangerous(tokens: list[str], *, project_dir: Path) -> bool:
+    """True if a tar invocation is exec-dangerous or writes/extracts out of scope.
+
+    Denied:
+      * exec-spawning flags (``--to-command``/``--checkpoint-action``/
+        ``--use-compress-program``);
+      * a ``-C``/``--directory`` whose value resolves outside the scope (extract
+        target dir — ``tar -C /etc -xf a.tar`` writes into ``/etc``);
+      * a create-mode archive output (``-f FILE`` with ``-c``) outside scope.
+    """
     for a in tokens[1:]:
         if any(a == p or a.startswith(p + "=") for p in _TAR_BAD_FLAG_PREFIXES):
+            return True
+    # Scope-check the change-directory value: tar -C DIR / --directory=DIR / -CDIR
+    # is where extracted files land, so an out-of-scope DIR is an out-of-scope
+    # write. tar's classic short form BUNDLES flags (`-xCf /etc a.tar`): within a
+    # bundle the value-consuming flags (`C`,`f`,...) draw their values, in order,
+    # from the following positional tokens. Decompose bundles so `-xCf` and
+    # `-czf` are handled the same as separated `-x -C ... -f ...`.
+    change_dirs: list[str] = []
+    archive_create = False
+    archive_file: str | None = None
+    rest = tokens[1:]
+    # tar short flags that consume a value (the value is the glued remainder of
+    # the bundle, else the next positional tokens in flag order).
+    # ...and the set of ALL recognized tar short option letters. A value flag's
+    # value is the glued bundle remainder ONLY when that remainder does not itself
+    # begin with another option letter (so `-Cdir` -> C=dir, but
+    # `-xCf /etc a.tar` -> C and f BOTH draw positionals because the char after C
+    # (`f`) is an option letter — tar's old-option rule). Keeps separated forms
+    # (`-C dir`, `-f name`) working too.
+    tar_value_short = {"C", "f", "T", "b", "X", "g", "F", "K", "N", "L"}
+    tar_option_letters = tar_value_short | set("cxtrudvzjJ")
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        # Long options.
+        if tok.startswith("--"):
+            if tok == "--directory" and i + 1 < len(rest):
+                change_dirs.append(rest[i + 1])
+                i += 2
+                continue
+            if tok.startswith("--directory="):
+                change_dirs.append(tok.partition("=")[2])
+            elif tok == "--file" and i + 1 < len(rest):
+                archive_file = rest[i + 1]
+                i += 2
+                continue
+            elif tok.startswith("--file="):
+                archive_file = tok.partition("=")[2]
+            elif tok == "--create":
+                archive_create = True
+            i += 1
+            continue
+        # Short flag bundle, e.g. `-xCf`, `-czf`, `-C`, `-f`, `-Cdir`.
+        if tok.startswith("-") and len(tok) > 1:
+            chars = tok[1:]
+            positional_value_flags: list[str] = []
+            k = 0
+            while k < len(chars):
+                ch = chars[k]
+                if ch == "c":
+                    archive_create = True
+                if ch in tar_value_short:
+                    remainder = chars[k + 1 :]
+                    if remainder and remainder[0] not in tar_option_letters:
+                        # Glued inline value, e.g. `-Cdir`, `-fname`.
+                        if ch == "C":
+                            change_dirs.append(remainder)
+                        elif ch == "f":
+                            archive_file = remainder
+                        break  # remainder consumed as this flag's value
+                    # Value comes from a following positional token (queued).
+                    positional_value_flags.append(ch)
+                k += 1
+            j = i + 1
+            for c in positional_value_flags:
+                if j >= len(rest):
+                    break
+                if c == "C":
+                    change_dirs.append(rest[j])
+                elif c == "f":
+                    archive_file = rest[j]
+                j += 1
+            i = j
+            continue
+        i += 1
+    for cd in change_dirs:
+        cand = _strip_quotes(cd)
+        if (
+            _adjudicate_write_target(
+                _anchor_to_project(cand, project_dir), project_dir=project_dir
+            ).permission
+            == "deny"
+        ):
+            return True
+    if archive_create and archive_file and archive_file not in ("-",):
+        cand = _strip_quotes(archive_file)
+        if (
+            _adjudicate_write_target(
+                _anchor_to_project(cand, project_dir), project_dir=project_dir
+            ).permission
+            == "deny"
+        ):
             return True
     return False
 
@@ -671,7 +840,20 @@ def _adjudicate_write_redirect_target(
 # secret-read floor used by `cat`. We FAIL CLOSED: if the operands cannot be
 # parsed confidently, the segment is denied (these are mutation/exfil commands).
 _MUTATION_HEADS = frozenset(
-    {"cp", "mv", "tee", "truncate", "touch", "mkdir", "ln", "install"}
+    {
+        "cp",
+        "mv",
+        "tee",
+        "truncate",
+        "touch",
+        "mkdir",
+        "ln",
+        "install",
+        "mktemp",
+        "split",
+        "csplit",
+        "pv",
+    }
 )
 
 # Flags that consume a following VALUE token (so the value is not mis-read as a
@@ -690,6 +872,53 @@ _MUTATION_VALUE_FLAGS: dict[str, frozenset[str]] = {
     "touch": frozenset({"-d", "--date", "-r", "--reference", "-t"}),
     "mkdir": frozenset({"-m", "--mode"}),
     "ln": frozenset({"-S", "--suffix", "-t", "--target-directory"}),
+    # `mktemp -p DIR` (a.k.a. --tmpdir) names the write directory; the trailing
+    # template positional is the write destination otherwise. `--suffix` consumes
+    # a value. `-d/-q/-u/-t` are no-value flags.
+    "mktemp": frozenset({"-p", "--tmpdir", "--suffix"}),
+    # `split` value flags carry sizes/counts; the LAST positional is the output
+    # prefix (write dest), the first positional the input.
+    "split": frozenset(
+        {
+            "-b",
+            "--bytes",
+            "-C",
+            "--line-bytes",
+            "-l",
+            "--lines",
+            "-n",
+            "--number",
+            "-a",
+            "--suffix-length",
+            "--additional-suffix",
+        }
+    ),
+    # `csplit -f PREFIX` is the output prefix (write dest); other value flags
+    # carry counts/widths.
+    "csplit": frozenset({"-f", "--prefix", "-b", "--suffix-format", "-n", "--digits"}),
+    # `pv -o FILE` is the write destination.
+    "pv": frozenset(
+        {
+            "-o",
+            "--output",
+            "-s",
+            "--size",
+            "-L",
+            "--rate-limit",
+            "-B",
+            "--buffer-size",
+            "-N",
+            "--name",
+            "-i",
+            "--interval",
+            "-w",
+            "--width",
+            "-H",
+            "--height",
+            "-l",
+            "--line-mode",
+        }
+    ),
 }
 
 
@@ -698,6 +927,17 @@ _MUTATION_VALUE_FLAGS: dict[str, frozenset[str]] = {
 # discarded as an opaque flag value (the prior bug: the out-of-scope target dir
 # was consumed and never scope-checked). We capture it for the caller to lock.
 _TARGET_DIR_FLAGS = frozenset({"-t", "--target-directory"})
+
+# Per-head flags whose VALUE is a WRITE destination (captured like target_dir,
+# never discarded as an opaque flag value): mktemp `-p DIR`, csplit `-f PREFIX`,
+# pv `-o FILE`. These heads have no positional destination when the flag is
+# present (mktemp/pv) or the prefix IS the destination (csplit). Captured into
+# the returned ``target_dir`` slot and scope-locked by the caller.
+_DEST_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "mktemp": frozenset({"-p", "--tmpdir"}),
+    "csplit": frozenset({"-f", "--prefix"}),
+    "pv": frozenset({"-o", "--output"}),
+}
 
 
 def _mutation_operands(
@@ -716,7 +956,10 @@ def _mutation_operands(
     already.
     """
     value_flags = _MUTATION_VALUE_FLAGS.get(head_base, frozenset())
-    track_target = head_base in ("cp", "mv", "install")
+    track_target = head_base in ("cp", "mv", "install", "ln")
+    # Per-head flags whose VALUE is the write destination (mktemp -p, csplit -f,
+    # pv -o). Captured into the same ``target_dir`` slot for the caller to lock.
+    dest_value_flags = _DEST_VALUE_FLAGS.get(head_base, frozenset())
     operands: list[str] = []
     target_dir: str | None = None
     rest = tokens[1:]
@@ -738,6 +981,8 @@ def _mutation_operands(
                 name, _, val = tok.partition("=")
                 if track_target and name in _TARGET_DIR_FLAGS:
                     target_dir = val
+                elif name in dest_value_flags:
+                    target_dir = val
                 i += 1
                 continue
             if tok in value_flags:
@@ -746,8 +991,30 @@ def _mutation_operands(
                     return operands, None, False  # dangling value-flag → fail
                 if track_target and tok in _TARGET_DIR_FLAGS:
                     target_dir = rest[i + 1]
+                elif tok in dest_value_flags:
+                    target_dir = rest[i + 1]
                 i += 2
                 continue
+            # Glued short value flag carrying its value inline: `-p/etc` (mktemp),
+            # `-f/etc/out` (csplit), `-o/etc/x` (pv), `-t/etc` (cp/mv/ln target).
+            # Without this the glued remainder was swallowed by the plain-flag
+            # fall-through and the out-of-scope destination never scope-checked.
+            if not tok.startswith("--") and len(tok) > 2:
+                short = tok[:2]
+                glued = tok[2:]
+                if track_target and short in _TARGET_DIR_FLAGS:
+                    target_dir = glued
+                    i += 1
+                    continue
+                if short in dest_value_flags:
+                    target_dir = glued
+                    i += 1
+                    continue
+                if short in value_flags:
+                    # Other glued value flags (e.g. `-b10`) carry their own value
+                    # inline — just consume the token.
+                    i += 1
+                    continue
             # Plain flag (bundled short flags like `-rf`, or `-s`/`-f`/`-a`).
             i += 1
             continue
@@ -804,17 +1071,63 @@ def _adjudicate_mutation_head(
     elif head_base == "ln":
         # `ln [-s] TARGET LINK` (or `ln TARGET` defaulting link to basename in
         # cwd). TARGET is the secret-source (symlink laundering: `ln -s
-        # /etc/passwd /tmp/leak`); LINK is the write target.
-        if not operands:
-            return _deny("ln with no operands", "write-out-of-scope")
-        sources = [operands[0]]
-        dests = operands[1:] if len(operands) > 1 else []
+        # /etc/passwd /tmp/leak`); LINK is the write target. With `-t DIR`
+        # (`ln -t /etc README.md`) DIR is the sole write destination and EVERY
+        # positional operand is a source — the target dir was previously consumed
+        # as an opaque value-flag and NEVER scope-checked.
+        if target_dir is not None:
+            if not operands:
+                return _deny(
+                    "mutation command with too few operands: ln", "write-out-of-scope"
+                )
+            dests = [target_dir]
+            sources = operands
+        else:
+            if not operands:
+                return _deny("ln with no operands", "write-out-of-scope")
+            sources = [operands[0]]
+            dests = operands[1:] if len(operands) > 1 else []
     elif head_base == "tee":
         # `tee FILE...` — every operand is a write destination (stdin → files).
         dests = operands
     elif head_base in ("truncate", "touch", "mkdir"):
         # All operands are write/create targets; no source operand.
         dests = operands
+    elif head_base == "mktemp":
+        # `mktemp -p DIR XXXXXX` — DIR (target_dir) is the write directory; with
+        # no `-p`, the template POSITIONAL is the write path (`mktemp /etc/tmpX`).
+        if target_dir is not None:
+            dests = [target_dir]
+        elif operands:
+            dests = [operands[-1]]
+        else:
+            dests = []
+    elif head_base == "split":
+        # `split [OPTS] INPUT PREFIX` — the LAST positional is the output prefix
+        # (write dest); a preceding positional is the input source.
+        if not operands:
+            return _deny(
+                "mutation command with too few operands: split", "write-out-of-scope"
+            )
+        dests = [operands[-1]]
+        sources = operands[:-1]
+    elif head_base == "csplit":
+        # `csplit -f PREFIX INPUT PATTERNS...` — `-f` value (target_dir) is the
+        # output prefix (write dest). The FIRST positional is the INPUT file
+        # (read-exfil vector: `csplit /etc/passwd 10`); remaining positionals are
+        # split patterns (`10`, `/re/`) and are NOT paths.
+        if target_dir is not None:
+            dests = [target_dir]
+        else:
+            dests = []
+        if operands:
+            sources = [operands[0]]
+    elif head_base == "pv":
+        # `pv -o FILE INPUT` — `-o` value (target_dir) is the write dest; the
+        # positional is the input source.
+        if target_dir is not None:
+            dests = [target_dir]
+        sources = operands
     else:  # pragma: no cover — defensive
         dests = operands
 
@@ -870,6 +1183,79 @@ def _anchor_to_project(path: str, project_dir: Path) -> str:
     return os.path.join(str(project_dir), expanded)
 
 
+# `env`'s OWN options (consumed by env, NOT part of the inner command). Boolean
+# flags take no value; value flags consume the following token (or carry it
+# inline as `--flag=val` / `-uVAL`). `-S`/`--split-string` is an arbitrary-code
+# surface (env parses+execs a single string) and is denied, not peeled.
+_ENV_BOOL_FLAGS = frozenset(
+    {"-i", "--ignore-environment", "-0", "--null", "-v", "--debug"}
+)
+_ENV_VALUE_FLAGS = frozenset({"-u", "--unset", "-C", "--chdir"})
+
+
+def _peel_env_flags(rest: list[str]) -> tuple[list[str], Decision | None]:
+    """Strip a leading ``env`` invocation's VAR=val assignments AND own options.
+
+    Returns ``(remaining_tokens, deny_or_None)``. The remaining tokens begin at
+    the REAL inner command so the peel loop re-adjudicates it (e.g. ``env -i
+    setsid rm -rf /`` → ``setsid rm -rf /`` → floor). ``-S``/``--split-string``
+    is denied (arbitrary-code surface), not peeled.
+    """
+    i = 0
+    n = len(rest)
+    while i < n:
+        tok = rest[i]
+        # Leading VAR=val environment assignments.
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
+            i += 1
+            continue
+        if not tok.startswith("-") or tok == "-":
+            break  # reached the inner command head
+        # `-S`/`--split-string` (and glued `-S...` / `--split-string=...`): env
+        # parses+execs an arbitrary command string — deny outright.
+        if (
+            tok in ("-S", "--split-string")
+            or tok.startswith("--split-string=")
+            or (tok.startswith("-S") and len(tok) > 2)
+        ):
+            return rest[i:], _deny("env -S arbitrary-code surface", "bash-exec-runner")
+        # Long value flag with inline value: `--unset=PATH`, `--chdir=/x`.
+        if tok.startswith("--") and "=" in tok:
+            name = tok.partition("=")[0]
+            if name in _ENV_VALUE_FLAGS:
+                i += 1
+                continue
+            # Unknown long flag — skip it (boolean-ish) and keep peeling.
+            i += 1
+            continue
+        # Short flag bundle (`-i`, `-iu PATH`, `-iuPATH`, `-ui`, `-iC /etc`).
+        # Decompose char-by-char with the standard GETOPT rule (same as tar C2):
+        # boolean letters are consumed in place; when a VALUE letter (`u`/`C`) is
+        # hit, the REST of the bundle is its inline value (regardless of whether
+        # those chars look like option letters) and scanning stops — so `-ui` is
+        # `-u i` (value `i`), drawing ZERO positionals; only a value letter that
+        # is the LAST char of the bundle draws ONE following positional token.
+        # `S` anywhere is the split-string arbitrary-code surface → deny.
+        chars = tok[1:]
+        if "S" in chars:
+            return rest[i:], _deny("env -S arbitrary-code surface", "bash-exec-runner")
+        tail_value = False
+        k = 0
+        while k < len(chars):
+            ch = chars[k]
+            if ("-" + ch) in _ENV_VALUE_FLAGS:
+                if k + 1 < len(chars):
+                    # Inline value: the rest of the bundle IS the value. Stop.
+                    break
+                # Value letter is the last char → its value is the next token.
+                tail_value = True
+            k += 1
+        # Consume the flag token, plus ONE positional iff a tail value letter
+        # draws its value from the following token.
+        i += 2 if tail_value else 1
+    return rest[i:], None
+
+
 def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
     """Adjudicate one Bash segment. Return a deny Decision or None (segment ok).
 
@@ -917,15 +1303,16 @@ def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
         while tokens and tokens[0] in _WRAPPER_HEADS:
             head = tokens[0]
             rest = tokens[1:]
-            # `env VAR=val cmd ...` — drop leading VAR=val assignments.
+            # `env VAR=val cmd ...` — drop leading VAR=val assignments AND env's
+            # OWN options (else `env -i rm -rf /` left `-i` as the head → ALLOW).
             if head == "env":
-                j = 0
-                while j < len(rest) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", rest[j]):
-                    j += 1
-                rest = rest[j:]
-            # `timeout 5 cmd ...` / `nice -n 5 cmd` — drop the wrapper's own args
-            # until a token that is not a flag/number.
-            elif head in ("timeout", "nice", "ionice", "stdbuf"):
+                rest, env_deny = _peel_env_flags(rest)
+                if env_deny is not None:
+                    return env_deny
+            # `timeout 5 cmd ...` / `nice -n 5 cmd` / `watch -n 5 cmd` — drop the
+            # wrapper's own args until a token that is not a flag/number. `setsid`
+            # takes no args of its own (like nohup) so it peels with no skipping.
+            elif head in ("timeout", "nice", "ionice", "stdbuf", "watch"):
                 j = 0
                 while j < len(rest) and (
                     rest[j].startswith("-") or rest[j].replace(".", "").isdigit()
@@ -946,6 +1333,10 @@ def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
     if head_base in _PRIVILEGE_HEADS:
         return _deny(f"privilege escalation: {head_base}", "bash-privilege")
 
+    # --- source / . builtins: sourcing a file executes its contents ---
+    if head_base in ("source", ".") and len(tokens) > 1:
+        return _deny(f"source/dot file execution: {head_base}", "bash-interpreter")
+
     # --- Interpreter heads / shells with -c / eval ---
     if head_base in _INTERPRETER_HEADS:
         return _deny(f"interpreter head: {head_base}", "bash-interpreter")
@@ -961,6 +1352,14 @@ def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
     # bare pytest (missing test deps / arbitrary code via conftest).
     if head_base == "pytest":
         return _deny("bare pytest", "bash-interpreter")
+
+    # --- Editors: arbitrary-code surface (shell-out + write-back) ---
+    if head_base in _EDITOR_HEADS:
+        return _deny(f"editor exec/write surface: {head_base}", "bash-editor")
+
+    # --- Build / task runners + parallel: run arbitrary recipe commands ---
+    if head_base in _EXEC_RUNNER_HEADS:
+        return _deny(f"arbitrary-code runner: {head_base}", "bash-exec-runner")
 
     # --- Privilege via chmod/chown (any permission/owner change is denied;
     # this is stricter than the prior allowlist, never looser). ---
@@ -986,6 +1385,13 @@ def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
             # HEAD-only reason (never the untrusted segment, which could carry a
             # secret target path): safe to retain in the durable audit log.
             return _deny(f"destructive fs command: {head_base}", "bash-destructive")
+        # Plain (non-recursive/non-force) rm: still scope/secret-check each target.
+        # A bounded in-scope `rm file.txt` is allowed, but `rm /etc/passwd`
+        # (out-of-scope delete) and `rm /root/.ssh/id_rsa` (secret) must deny —
+        # the same scope/secret floor every other path-touching head enforces.
+        plain = _plain_rm_violation(tokens, project_dir=project_dir)
+        if plain is not None:
+            return plain
 
     # --- xargs runs an arbitrary command ---
     if head_base == "xargs":
@@ -1016,8 +1422,8 @@ def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
         return _deny(f"awk exec/io program: {segment!r}", "bash-flag-exec")
     if head_base == "sed" and _segment_sed_dangerous(tokens):
         return _deny(f"sed exec/write program: {segment!r}", "bash-flag-exec")
-    if head_base == "tar" and _segment_tar_dangerous(tokens):
-        return _deny(f"tar exec flag: {segment!r}", "bash-flag-exec")
+    if head_base == "tar" and _segment_tar_dangerous(tokens, project_dir=project_dir):
+        return _deny(f"tar exec/out-of-scope: {segment!r}", "bash-flag-exec")
 
     # --- Mutation heads: write-target scope-lock + secret-source floor ---
     # cp/mv/tee/truncate/touch/mkdir/ln/install WRITE or CREATE their operands
