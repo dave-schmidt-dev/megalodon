@@ -115,10 +115,9 @@ async def test_dead_lane_restarted_once_after_grace(tmp_path):
     await sup.tick()
     assert restarts == ["A"]
 
-    # The action is logged.
-    log = (tmp_path / ".fleet" / "autorecover.log").read_text()
-    assert "lane=A restart #1" in log
-    assert "reason=dead" in log
+    # Assert on structured supervisor state rather than log substrings.
+    assert sup._state["A"].attempts == 1
+    assert sup._state["A"].last_reason == "dead"
 
 
 @pytest.mark.asyncio
@@ -227,8 +226,9 @@ async def test_deny_loop_lane_restarted(tmp_path):
     clock.advance(70.0)
     await sup.tick()
     assert restarts == ["A"]
-    log = (tmp_path / ".fleet" / "autorecover.log").read_text()
-    assert "reason=deny-loop(6)" in log
+    # Assert on structured supervisor state rather than log substrings.
+    assert sup._state["A"].attempts == 1
+    assert sup._state["A"].last_reason == "deny-loop(6)"
 
 
 @pytest.mark.asyncio

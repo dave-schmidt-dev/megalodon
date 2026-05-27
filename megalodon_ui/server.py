@@ -1715,6 +1715,9 @@ class _LaneRecoverState:
     unhealthy_since: float | None = None  # monotonic ts of first unhealthy sighting
     attempts: int = 0  # restarts fired this process
     next_allowed_mono: float = 0.0  # earliest monotonic ts the next restart may fire
+    last_reason: str | None = (
+        None  # reason string of the most-recent restart ("dead" or "deny-loop(N)")
+    )
 
 
 class AutoRecoverSupervisor:
@@ -1849,6 +1852,7 @@ class AutoRecoverSupervisor:
                 # Still advance backoff/attempt so a persistently-failing restart
                 # cannot busy-loop.
             st.attempts += 1
+            st.last_reason = reason
             backoff = min(
                 self.backoff_base_seconds * (2 ** (st.attempts - 1)),
                 self.backoff_cap_seconds,
