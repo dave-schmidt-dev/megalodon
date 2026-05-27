@@ -10,6 +10,12 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-27 — CI re-enable consolidation (INV-3 resolved)
+
+- [fix] CI re-enabled with cost guardrails; INV-3 freeze lifted. Added top-level `concurrency` (cancel-in-progress) + scoped `push` to `main` + docs `paths-ignore`; renamed `test.yml.disabled` → `test.yml`. Regression-locked by an offline PyYAML meta-test asserting no-macos / concurrency / scoped-triggers / per-job timeouts / INV-guarded Playwright projects gated / dated INV-3 resolution. | files: .github/workflows/test.yml, scripts/tests/test_ci_workflow_guardrails.py, ledger.yaml, README.md | inv: INV-3
+
+---
+
 ## 2026-05-26 — SSOT fix: mission-status write/read parity (INV-2)
 
 - [bug] mission-status wrote README.md but UI reads MISSION.md (SSOT split) | files: megalodon_ui/server.py | inv: INV-2

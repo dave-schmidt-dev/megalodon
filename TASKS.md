@@ -8,7 +8,7 @@
 >   1. **writing-plans** on the v10 spec → split into (a) a small **CI re-enable consolidation plan** that clears the INV-3 freeze (no macOS, `concurrency: cancel-in-progress`, scoped triggers, budget cap, dated INV-3 `resolutions:` checkpoint) — natural prerequisite/safety-net for v10; (b) the v10 generalization plan (build order = spec §7).
 >   2. Then the `:megalodon` prompt + the first live wilted run (human pulls the trigger).
 >
-> **Standing FREEZE: INV-3** (CI-gate-covers-every-project) until CI re-enable lands with a dated resolution. **Deferred nit:** legacy `filename` field rename — localStorage read-state migration risk, needs its own plan. **CI currently DISABLED** (`test.yml.disabled`); the authoritative-gate note below predates this session — its quoted-glob recommendation is stale (CI now uses the unquoted shell-expanded form per `f313a09`).
+> **FREEZE LIFTED 2026-05-27: INV-3** — CI re-enabled with cost guardrails (ubuntu-only, `concurrency: cancel-in-progress`, scoped `push` to `main`, docs `paths-ignore`, per-job `timeout-minutes`); dated INV-3 resolution written to `ledger.yaml`; guardrails regression-locked by `scripts/tests/test_ci_workflow_guardrails.py`. The v10 external-target generalization plan (track b) is now **unblocked**. **Deferred nit:** legacy `filename` field rename — localStorage read-state migration risk, needs its own plan. **CI now RE-ENABLED** (`test.yml`); the authoritative-gate note below predates this session — its quoted-glob recommendation is stale (CI now uses the unquoted shell-expanded form per `f313a09`).
 >
 > ---
 >
@@ -16,7 +16,7 @@
 >
 > **Status (2026-05-26):** Opted in. Seeded `INVARIANTS.md` (INV-1/2/3) + `ledger.yaml`; wired tracked `hooks/pre-push` (best-effort `~/.agent/bin/harvest`; megalodon uses `core.hooksPath=hooks` so `.git/hooks/` would never fire). README convention note added. Harvest pilot: **FROZEN — `INV-3 recurrence=2 >= threshold 2`** (CI-gate-covers-every-project; both `.github/workflows/test.yml` bug entries from 2026-05-26, no resolution checkpoint). INV-1=0 (resolved 2026-05-26), INV-2=0.
 >
-> **Freeze implication:** the next plan touching CI must be a `consolidation` plan (re-enable CI safely + cost guardrails), NOT a feature plan, until INV-3 is resolved with a dated `resolutions:` checkpoint in `ledger.yaml`. INV-2 gate (`test_state_source_of_truth.py`) is still `missing` — open hardening item (mission-status README/MISSION split).
+> **Freeze implication:** the next plan touching CI must be a `consolidation` plan (re-enable CI safely + cost guardrails), NOT a feature plan, until INV-3 is resolved with a dated `resolutions:` checkpoint in `ledger.yaml`. INV-2 gate (`test_state_source_of_truth.py`) is still `missing` — open hardening item (mission-status README/MISSION split). **INV-3 RESOLVED 2026-05-27** by the CI re-enable consolidation (ubuntu-only + concurrency + scoped triggers + per-job timeouts + offline guardrail meta-test; dated resolution in `ledger.yaml`).
 >
 > ---
 >

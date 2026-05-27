@@ -645,3 +645,22 @@ When mission deliverables are complete:
 ## Closed-loop convention
 
 Commit convention: Conventional Commits (`fix:` for remediation). HISTORY bug entries use `[bug] ... | files: ... | inv: INV-x`.
+
+## Continuous Integration
+
+GitHub Actions workflow: `.github/workflows/test.yml`. Cost guardrails (after the
+May 2026 Actions blowout — $1,031, 91% macOS + runaway runs):
+
+- **ubuntu-only** — no macOS runner (sat perpetually `queued` on this plan).
+- **concurrency: cancel-in-progress** — a newer push cancels the in-flight run.
+- **scoped triggers** — `push` runs on `main` only; `paths-ignore` skips
+  doc-only commits (`**.md`, `docs/**`, `.archive/**`).
+- **per-job `timeout-minutes`** — 30 (test) / 25 (webkit).
+- **budget cap** — operator-set account-level Actions spending limit (GitHub
+  Settings → Billing). Not in-repo; verify it is still set after re-enable.
+
+Blocking gate: ubuntu `test` job (pytest baseline + forked-isolated tier +
+ruff + vulture + chromium-board/default/mutations Playwright). Non-blocking:
+`playwright-webkit` (`continue-on-error: true`). These guardrails are
+regression-locked by `scripts/tests/test_ci_workflow_guardrails.py` and the
+INV-3 charter.
