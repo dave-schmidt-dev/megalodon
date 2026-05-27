@@ -1,6 +1,7 @@
 """V9 M1 applier tests — including S-8 T1-T4 + Q1 intents + B3/B4."""
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -600,3 +601,49 @@ def test_singleton_lock_acquired(queue_mission):
     # Second instance should fail to acquire while first is "alive" (PID).
     assert not applier2.acquire_singleton()
     applier1.release_singleton()
+
+
+# ---- P1.3 regression: applier logs real lane name, not "?" ----
+
+
+def test_applied_log_records_real_lane(queue_mission, caplog):
+    """P1.3 — APPLIED log line must show the request's lane, not '?'.
+
+    The applier used req.get("submitting_lane", "?") at three log sites but the
+    request dict key is 'lane'.  After the fix req.get("lane", "?") is used and
+    the log line must show lane=A (not lane=?).
+    """
+    applier = Applier(queue_mission)
+    rid = queue_client.history_append(
+        queue_mission,
+        "agent-aaaa",
+        "A",
+        "Q-FIXTURE-1",
+        "findings/p1-3-test.md",
+        "MINOR",
+    )
+
+    # The applier logger sets propagate=False with its own handler, so caplog's
+    # root handler never sees its records — attach caplog's handler directly.
+    applier_logger = logging.getLogger("megalodon.queue.applier")
+    applier_logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.INFO, logger="megalodon.queue.applier"):
+            assert _drain_until(
+                applier,
+                lambda: (queue_mission / "queue" / "applied" / f"{rid}.json").exists(),
+            )
+    finally:
+        applier_logger.removeHandler(caplog.handler)
+
+    applied_lines = [
+        r.getMessage() for r in caplog.records if "APPLIED" in r.getMessage()
+    ]
+    assert applied_lines, "No APPLIED log line found"
+    # Must record the real lane, not the fallback sentinel.
+    assert any("lane=A" in line for line in applied_lines), (
+        f"Expected 'lane=A' in APPLIED log line; got: {applied_lines}"
+    )
+    assert not any("lane=?" in line for line in applied_lines), (
+        f"Got 'lane=?' (wrong key used) in APPLIED log line: {applied_lines}"
+    )
