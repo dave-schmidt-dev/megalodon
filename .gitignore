@@ -59,6 +59,8 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.coverage
+htmlcov/
 
 # v9 M3 helper-script journal state (per spec §5.4)
 .scripts-journal/
