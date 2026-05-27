@@ -60,7 +60,11 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .coverage
+.coverage.*
+.coverage*
 htmlcov/
+ui/tests/e2e/test-results/
+ui/tests/e2e/playwright-report/
 
 # v9 M3 helper-script journal state (per spec §5.4)
 .scripts-journal/
