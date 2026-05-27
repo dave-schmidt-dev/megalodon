@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,8 +15,15 @@ from megalodon_ui.spawn import FleetSpawner, LaneSession
 # Helpers
 # ---------------------------------------------------------------------------
 
-SOCKET = Path("/tmp/test-fleet.sock")
-MISSION_DIR = Path("/tmp/test-mission")
+
+@pytest.fixture
+def socket_path(tmp_path):
+    return tmp_path / ".fleet" / "tmux.sock"
+
+
+@pytest.fixture
+def mission_dir(tmp_path):
+    return tmp_path / "mission"
 
 
 def _make_config(lane_shorts: list[str] | None = None) -> MissionConfig:
@@ -76,12 +82,12 @@ def _make_resolver(adapter: MagicMock | None = None) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_start_all_calls_new_session_once_per_lane():
+async def test_start_all_calls_new_session_once_per_lane(socket_path, mission_dir):
     """start_all must call tmux.new_session exactly once per configured lane."""
     config = _make_config(["A", "B", "C"])
     adapter = _make_adapter()
     resolver = _make_resolver(adapter)
-    spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
+    spawner = FleetSpawner(mission_dir, config, resolver, socket_path)
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
@@ -98,7 +104,7 @@ async def test_start_all_calls_new_session_once_per_lane():
 
     for call in mock_new.call_args_list:
         assert call.kwargs["argv"] == ["stub", "arg"]
-        assert call.kwargs["cwd"] == MISSION_DIR
+        assert call.kwargs["cwd"] == mission_dir
         assert call.kwargs["cols"] == 200
         assert call.kwargs["rows"] == 50
 
@@ -112,7 +118,7 @@ async def test_start_all_calls_new_session_once_per_lane():
     assert set(seen) == {"role-a", "role-b", "role-c"}, "prompt = lane role"
     for prompt, kwargs in seen.items():
         assert kwargs["model"] == "sonnet"
-        assert kwargs["cwd"] == MISSION_DIR
+        assert kwargs["cwd"] == mission_dir
         assert "governor_settings" not in kwargs
         assert "live_repl" not in kwargs
 
@@ -123,11 +129,11 @@ async def test_start_all_calls_new_session_once_per_lane():
 
 
 @pytest.mark.asyncio
-async def test_lane_session_carries_v92_fields():
+async def test_lane_session_carries_v92_fields(socket_path, mission_dir):
     """LaneSession must have exited_rc, pane_dead_checked_at, and subscribers_lock defaults."""
     config = _make_config(["A"])
     resolver = _make_resolver()
-    spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
+    spawner = FleetSpawner(mission_dir, config, resolver, socket_path)
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
@@ -150,11 +156,11 @@ async def test_lane_session_carries_v92_fields():
 
 
 @pytest.mark.asyncio
-async def test_cancellation_cleans_up_spawned_sessions():
+async def test_cancellation_cleans_up_spawned_sessions(socket_path, mission_dir):
     """On cancellation, kill sessions that spawned successfully; skip those that did not."""
     config = _make_config(["A", "B"])
     resolver = _make_resolver()
-    spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
+    spawner = FleetSpawner(mission_dir, config, resolver, socket_path)
 
     # lane-A spawns instantly (rc=0); lane-B blocks indefinitely until cancelled.
     async def new_session_side_effect(**kwargs):
@@ -200,12 +206,12 @@ async def test_cancellation_cleans_up_spawned_sessions():
 
 
 @pytest.mark.asyncio
-async def test_orphan_purge_only_kills_marker_tagged_sessions():
+async def test_orphan_purge_only_kills_marker_tagged_sessions(socket_path, mission_dir):
     """Orphan purge must kill MEGALODON_FLEET_OWNED=1 sessions not in config;
     sessions without the marker are left alone."""
     config = _make_config(["X"])  # only lane-X is configured
     resolver = _make_resolver()
-    spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
+    spawner = FleetSpawner(mission_dir, config, resolver, socket_path)
 
     # Existing sessions: lane-A (fleet-owned orphan), lane-MANUAL (no marker)
     existing_sessions = ["lane-A", "lane-MANUAL"]
@@ -266,11 +272,13 @@ async def test_orphan_purge_only_kills_marker_tagged_sessions():
 
 
 @pytest.mark.asyncio
-async def test_reattach_branch_preserves_existing_marker_session():
+async def test_reattach_branch_preserves_existing_marker_session(
+    socket_path, mission_dir
+):
     """If a configured lane already has a fleet-owned session, do NOT spawn it again."""
     config = _make_config(["A", "B"])
     resolver = _make_resolver()
-    spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
+    spawner = FleetSpawner(mission_dir, config, resolver, socket_path)
 
     # lane-A already exists and is fleet-owned; lane-B does not exist
     existing_sessions = ["lane-A"]
@@ -317,11 +325,13 @@ async def test_reattach_branch_preserves_existing_marker_session():
 
 
 @pytest.mark.asyncio
-async def test_spawn_writes_pid_file_then_stop_removes_it(tmp_path):
+async def test_spawn_writes_pid_file_then_stop_removes_it(
+    tmp_path, socket_path, mission_dir
+):
     """A fresh spawn writes ``<PID_DIR>/<lane_name>.pid``; stop_all removes it."""
     config = _make_config(["A"])
     resolver = _make_resolver()
-    spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
+    spawner = FleetSpawner(mission_dir, config, resolver, socket_path)
 
     pid_dir = tmp_path / "pids"
 
@@ -356,11 +366,13 @@ async def test_spawn_writes_pid_file_then_stop_removes_it(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_spawn_skips_pid_file_when_pane_pid_unavailable(tmp_path):
+async def test_spawn_skips_pid_file_when_pane_pid_unavailable(
+    tmp_path, socket_path, mission_dir
+):
     """A None pane pid (query failed) writes no file — watchdog falls back."""
     config = _make_config(["A"])
     resolver = _make_resolver()
-    spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
+    spawner = FleetSpawner(mission_dir, config, resolver, socket_path)
 
     pid_dir = tmp_path / "pids"
 

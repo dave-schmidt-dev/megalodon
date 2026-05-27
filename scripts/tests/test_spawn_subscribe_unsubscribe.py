@@ -24,7 +24,9 @@ from megalodon_ui.mission_config.schema import MissionConfig
 from megalodon_ui.spawn import FleetSpawner, TooManySubscribersError
 
 
-SOCKET = Path("/tmp/test-fleet-subs.sock")
+@pytest.fixture
+def socket_path(tmp_path: Path) -> Path:
+    return tmp_path / ".fleet" / "tmux.sock"
 
 
 def _make_config(shorts: list[str]) -> MissionConfig:
@@ -51,12 +53,12 @@ def _make_config(shorts: list[str]) -> MissionConfig:
     )
 
 
-def _spawner(mission_dir: Path, shorts: list[str]) -> FleetSpawner:
+def _spawner(mission_dir: Path, shorts: list[str], socket: Path) -> FleetSpawner:
     adapter = MagicMock()
     adapter.build_argv = MagicMock(return_value=(["stub"], {}))
     adapter.session_log_dir = MagicMock(return_value=None)
     return FleetSpawner(
-        mission_dir, _make_config(shorts), MagicMock(return_value=adapter), SOCKET
+        mission_dir, _make_config(shorts), MagicMock(return_value=adapter), socket
     )
 
 
@@ -74,11 +76,13 @@ async def _start(spawner: FleetSpawner) -> None:
 
 
 @pytest.mark.asyncio
-async def test_subscribe_returns_queue_appended_to_lane_list(tmp_path: Path) -> None:
+async def test_subscribe_returns_queue_appended_to_lane_list(
+    tmp_path: Path, socket_path: Path
+) -> None:
     """subscribe(lane) returns a fresh queue and appends it to the lane's subscribers."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     await _start(spawner)
 
     q = await spawner.subscribe("A")
@@ -88,11 +92,13 @@ async def test_subscribe_returns_queue_appended_to_lane_list(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_unsubscribe_removes_queue_from_list(tmp_path: Path) -> None:
+async def test_unsubscribe_removes_queue_from_list(
+    tmp_path: Path, socket_path: Path
+) -> None:
     """unsubscribe(lane, q) drops the queue from subscribers without affecting peers."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     await _start(spawner)
 
     q1 = await spawner.subscribe("A")
@@ -105,13 +111,15 @@ async def test_unsubscribe_removes_queue_from_list(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_subscribe_enforces_max_subscribers(tmp_path: Path, monkeypatch) -> None:
+async def test_subscribe_enforces_max_subscribers(
+    tmp_path: Path, socket_path: Path, monkeypatch
+) -> None:
     """The (max+1)th subscribe raises TooManySubscribersError; existing subscribers untouched."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
     # Patch to 3 so the test is quick.
     monkeypatch.setattr("megalodon_ui.spawn.SSE_MAX_SUBSCRIBERS_PER_LANE", 3)
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     await _start(spawner)
 
     qs = [await spawner.subscribe("A") for _ in range(3)]
@@ -123,11 +131,13 @@ async def test_subscribe_enforces_max_subscribers(tmp_path: Path, monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_subscribe_unknown_lane_raises_keyerror(tmp_path: Path) -> None:
+async def test_subscribe_unknown_lane_raises_keyerror(
+    tmp_path: Path, socket_path: Path
+) -> None:
     """Subscribing to a non-existent lane raises KeyError (matches FleetSpawner.get)."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     await _start(spawner)
 
     with pytest.raises(KeyError):
@@ -135,11 +145,13 @@ async def test_subscribe_unknown_lane_raises_keyerror(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_subscribe_blocks_while_subscribers_lock_held(tmp_path: Path) -> None:
+async def test_subscribe_blocks_while_subscribers_lock_held(
+    tmp_path: Path, socket_path: Path
+) -> None:
     """If the producer holds subscribers_lock, subscribe waits until release (SR-3)."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     await _start(spawner)
 
     lane = spawner.get("A")

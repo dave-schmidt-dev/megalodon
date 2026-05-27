@@ -16,7 +16,6 @@ This file adds two missing branches:
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,8 +23,15 @@ import pytest
 from megalodon_ui.mission_config.schema import MissionConfig
 from megalodon_ui.spawn import FleetSpawner, SpawnError
 
-SOCKET = Path("/tmp/test-fleet-err.sock")
-MISSION_DIR = Path("/tmp/test-mission-err")
+
+@pytest.fixture
+def socket_path(tmp_path):
+    return tmp_path / ".fleet" / "tmux.sock"
+
+
+@pytest.fixture
+def mission_dir(tmp_path):
+    return tmp_path / "mission"
 
 
 def _make_config(lane_shorts: list[str]) -> MissionConfig:
@@ -65,10 +71,10 @@ def _make_resolver() -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_spawn_error_on_nonzero_rc():
+async def test_spawn_error_on_nonzero_rc(socket_path, mission_dir):
     """start_all raises SpawnError when new_session returns rc != 0."""
     config = _make_config(["A"])
-    spawner = FleetSpawner(MISSION_DIR, config, _make_resolver(), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, _make_resolver(), socket_path)
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
@@ -85,14 +91,14 @@ async def test_spawn_error_on_nonzero_rc():
 
 
 @pytest.mark.asyncio
-async def test_spawn_error_kills_already_spawned_sessions():
+async def test_spawn_error_kills_already_spawned_sessions(socket_path, mission_dir):
     """When one lane's new-session fails, previously spawned lanes are killed (OW-3).
 
     lane-A spawns successfully (rc=0); lane-B fails (rc=2). The OW-3 cleanup
     block must kill lane-A (it was appended to `spawned` before lane-B failed).
     """
     config = _make_config(["A", "B"])
-    spawner = FleetSpawner(MISSION_DIR, config, _make_resolver(), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, _make_resolver(), socket_path)
 
     call_count = {"n": 0}
 

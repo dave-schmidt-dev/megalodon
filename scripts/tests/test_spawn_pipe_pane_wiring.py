@@ -18,7 +18,6 @@ guarded by ``skipif(tmux not on PATH)`` plus the
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,8 +26,14 @@ from megalodon_ui.mission_config.schema import MissionConfig
 from megalodon_ui.spawn import FleetSpawner
 
 
-SOCKET = Path("/tmp/test-fleet.sock")
-MISSION_DIR = Path("/tmp/test-mission")
+@pytest.fixture
+def socket_path(tmp_path):
+    return tmp_path / ".fleet" / "tmux.sock"
+
+
+@pytest.fixture
+def mission_dir(tmp_path):
+    return tmp_path / "mission"
 
 
 def _make_config(shorts: list[str]) -> MissionConfig:
@@ -64,11 +69,13 @@ def _make_resolver() -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_start_all_calls_pipe_pane_for_each_freshly_spawned_lane():
+async def test_start_all_calls_pipe_pane_for_each_freshly_spawned_lane(
+    socket_path, mission_dir
+):
     """For every newly-spawned lane, pipe_pane must be invoked exactly once with
     the lane's ``.fleet/<short>.stream.log`` path."""
     config = _make_config(["A", "B"])
-    spawner = FleetSpawner(MISSION_DIR, config, _make_resolver(), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, _make_resolver(), socket_path)
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
@@ -84,16 +91,16 @@ async def test_start_all_calls_pipe_pane_for_each_freshly_spawned_lane():
         (call.args + tuple(call.kwargs.values()))[-1]
         for call in mock_pipe.call_args_list
     }
-    assert MISSION_DIR / ".fleet" / "A.stream.log" in pipe_dests
-    assert MISSION_DIR / ".fleet" / "B.stream.log" in pipe_dests
+    assert mission_dir / ".fleet" / "A.stream.log" in pipe_dests
+    assert mission_dir / ".fleet" / "B.stream.log" in pipe_dests
 
 
 @pytest.mark.asyncio
-async def test_pipe_pane_called_after_new_session():
+async def test_pipe_pane_called_after_new_session(socket_path, mission_dir):
     """Ordering invariant — pipe_pane must NOT fire before new_session returns 0."""
     call_order: list[str] = []
     config = _make_config(["A"])
-    spawner = FleetSpawner(MISSION_DIR, config, _make_resolver(), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, _make_resolver(), socket_path)
 
     async def _record_new(**kwargs):
         call_order.append(f"new_session:{kwargs['name']}")
@@ -115,11 +122,13 @@ async def test_pipe_pane_called_after_new_session():
 
 
 @pytest.mark.asyncio
-async def test_reattach_skips_pipe_pane_when_pipe_already_active():
+async def test_reattach_skips_pipe_pane_when_pipe_already_active(
+    socket_path, mission_dir
+):
     """Idempotency: a reattach of a session whose pane already has an active
     pipe-pane must not call ``tmux.pipe_pane`` again."""
     config = _make_config(["A"])
-    spawner = FleetSpawner(MISSION_DIR, config, _make_resolver(), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, _make_resolver(), socket_path)
 
     with (
         # Existing session for lane-A discovered at startup.
@@ -147,12 +156,12 @@ async def test_reattach_skips_pipe_pane_when_pipe_already_active():
 
 
 @pytest.mark.asyncio
-async def test_reattach_wires_pipe_pane_when_pipe_inactive():
+async def test_reattach_wires_pipe_pane_when_pipe_inactive(socket_path, mission_dir):
     """If the existing session's pane has NO active pipe (e.g., the bytes file
     was deleted), reattach must re-wire pipe-pane so the SSE backend keeps
     receiving bytes."""
     config = _make_config(["A"])
-    spawner = FleetSpawner(MISSION_DIR, config, _make_resolver(), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, _make_resolver(), socket_path)
 
     with (
         patch(
@@ -178,14 +187,14 @@ async def test_reattach_wires_pipe_pane_when_pipe_inactive():
     assert mock_pipe.call_count == 1
     # Verify the pipe destination matches the stream log path.
     args = mock_pipe.call_args.args
-    assert args[-1] == MISSION_DIR / ".fleet" / "A.stream.log"
+    assert args[-1] == mission_dir / ".fleet" / "A.stream.log"
 
 
 @pytest.mark.asyncio
-async def test_stream_log_path_uses_lane_short_code():
+async def test_stream_log_path_uses_lane_short_code(socket_path, mission_dir):
     """Stream log filename is ``<short>.stream.log`` (not ``<name>.stream.log``)."""
     config = _make_config(["X", "Y"])
-    spawner = FleetSpawner(MISSION_DIR, config, _make_resolver(), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, _make_resolver(), socket_path)
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),

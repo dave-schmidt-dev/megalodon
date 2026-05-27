@@ -49,7 +49,11 @@ from megalodon_ui.server import make_app
 # Speed up polls so tests don't crawl.
 import megalodon_ui.event_tail as _et
 
-_et.POLL_INTERVAL_S = 0.05
+
+@pytest.fixture(autouse=True)
+def _fast_poll(monkeypatch):
+    monkeypatch.setattr(_et, "POLL_INTERVAL_S", 0.05)
+
 
 TOKEN = "aw-test-token"
 LANE_SHORT = "A"
@@ -103,9 +107,9 @@ async def _wait_for_event(
     """
     q = wall.subscribe()
     try:
-        deadline = asyncio.get_event_loop().time() + timeout_s
+        deadline = asyncio.get_running_loop().time() + timeout_s
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return None
             try:
@@ -116,6 +120,51 @@ async def _wait_for_event(
                 return None
     finally:
         wall.unsubscribe(q)
+
+
+async def _wait_dir_settle(wall, mission_dir: Path, timeout_s: float = 2.0) -> None:
+    """Poll until watch_dir_for_new_files has taken its initial snapshot.
+
+    Writes a sentinel finding file and polls until it arrives on the wall, which
+    proves the generator has completed its startup snapshot and is watching for
+    new files.  Cleans up the sentinel afterwards.
+    """
+    sentinel = mission_dir / "findings" / "_settle_sentinel_.md"
+    sentinel.write_text("---\nlane: A\n---\nsettle\n")
+    ev = await _wait_for_event(
+        wall,
+        lambda e: e["type"] == "finding" and e["payload"]["filename"] == sentinel.name,
+        timeout_s=timeout_s,
+    )
+    try:
+        sentinel.unlink(missing_ok=True)
+    except Exception:
+        pass
+    if ev is None:
+        raise RuntimeError(f"Wall dir-watcher did not settle within {timeout_s}s")
+
+
+async def _wait_tail_settle(
+    wall,
+    write_probe_fn,
+    event_predicate,
+    timeout_s: float = 2.0,
+    probe_interval_s: float = 0.05,
+) -> None:
+    """Poll until a tail_file_lines generator has opened *log_path* and is live.
+
+    tail_file_lines seeks to END on first open, so content written before it opens
+    is missed.  We write probe entries at *probe_interval_s* intervals until one
+    lands on the wall, confirming the tail is live.  *write_probe_fn()* writes one
+    probe line; *event_predicate(ev)* identifies the probe event.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
+        write_probe_fn()
+        ev = await _wait_for_event(wall, event_predicate, timeout_s=probe_interval_s)
+        if ev is not None:
+            return
+    raise RuntimeError(f"Tail did not become live within {timeout_s}s")
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +201,8 @@ async def test_source_finding_roundtrip(aw_client):
     wall = app.state.activity_wall
     findings_dir = mission_dir / "findings"
 
-    # Let the watch_dir_for_new_files generator take its initial snapshot
-    await asyncio.sleep(0.2)
+    # Wait until the watch_dir_for_new_files generator has taken its snapshot.
+    await _wait_dir_settle(wall, mission_dir)
 
     finding_file = findings_dir / "agent-abcd-A-P1-topic-2026-05-20T12-00-00Z.md"
     finding_file.write_text("---\nlane: A\n---\ncontent\n")
@@ -180,7 +229,7 @@ async def test_source_signal_roundtrip(aw_client):
     wall = app.state.activity_wall
     signals_dir = mission_dir / "signals"
 
-    await asyncio.sleep(0.2)
+    await _wait_dir_settle(wall, mission_dir)
 
     sig_file = signals_dir / "agent-abcd-A-P1-sig-2026-05-20T12-00-00Z.md"
     sig_file.write_text("---\nsignal-type: SIG-TEST\n---\n")
@@ -207,8 +256,19 @@ async def test_source_history_roundtrip(aw_client):
     wall = app.state.activity_wall
     history_path = mission_dir / "HISTORY.md"
 
-    # Let the tail_file_lines generator open and seek to end of existing file
-    await asyncio.sleep(0.3)
+    # Wait until the tail_file_lines generator has opened and seeked to end.
+    def _probe():
+        with history_path.open("a") as f:
+            f.write(
+                "2026-05-20T11:00:00Z | agent-0000 | LANE-Z | T0 | __settle__ | INFO\n"
+            )
+            f.flush()
+
+    await _wait_tail_settle(
+        wall,
+        _probe,
+        lambda e: e["type"] == "history" and "__settle__" in e["summary"],
+    )
 
     with history_path.open("a") as f:
         f.write("2026-05-20T12:00:00Z | agent-0001 | LANE-A | T1 | test event | INFO\n")
@@ -216,7 +276,7 @@ async def test_source_history_roundtrip(aw_client):
 
     ev = await _wait_for_event(
         wall,
-        lambda e: e["type"] == "history",
+        lambda e: e["type"] == "history" and "LANE-A" in e["summary"],
         timeout_s=3.0,
     )
     assert ev is not None, "No 'history' event received within 3 s"
@@ -237,8 +297,20 @@ async def test_source_queue_applier_roundtrip(aw_client):
     log_path = mission_dir / ".fleet" / "queue-applier.log"
     log_path.touch()
 
-    # Let the tail seek to end of existing (empty) file
-    await asyncio.sleep(0.3)
+    # Wait until the tail has opened and seeked to end of the (empty) file.
+    def _probe():
+        with log_path.open("a") as f:
+            f.write(
+                "2026-05-20T11:00:00Z | INFO | APPLIED rid=settle lane=Z "
+                "agent=agent-0000 task=T0\n"
+            )
+            f.flush()
+
+    await _wait_tail_settle(
+        wall,
+        _probe,
+        lambda e: e["type"] == "queue" and e["lane"] == "Z",
+    )
 
     with log_path.open("a") as f:
         f.write(
@@ -248,7 +320,7 @@ async def test_source_queue_applier_roundtrip(aw_client):
 
     ev = await _wait_for_event(
         wall,
-        lambda e: e["type"] == "queue",
+        lambda e: e["type"] == "queue" and e["lane"] == "A",
         timeout_s=3.0,
     )
     assert ev is not None, "No 'queue' event received within 3 s"
@@ -269,7 +341,23 @@ async def test_source_inject_log_roundtrip(aw_client):
     log_path = mission_dir / ".fleet" / f"inject-log-{today}.jsonl"
     log_path.touch()
 
-    await asyncio.sleep(0.3)
+    def _probe():
+        probe_entry = {
+            "ts": "2026-05-20T11:00:00Z",
+            "lane": "Z",
+            "text_sha256": "settle",
+            "byte_count": 1,
+            "enter": True,
+        }
+        with log_path.open("a") as f:
+            f.write(json.dumps(probe_entry) + "\n")
+            f.flush()
+
+    await _wait_tail_settle(
+        wall,
+        _probe,
+        lambda e: e["type"] == "inject" and e["lane"] == "Z",
+    )
 
     entry = {
         "ts": "2026-05-20T12:00:00Z",
@@ -284,7 +372,7 @@ async def test_source_inject_log_roundtrip(aw_client):
 
     ev = await _wait_for_event(
         wall,
-        lambda e: e["type"] == "inject",
+        lambda e: e["type"] == "inject" and e["lane"] == LANE_SHORT,
         timeout_s=3.0,
     )
     assert ev is not None, "No 'inject' event received within 3 s"
@@ -306,7 +394,25 @@ async def test_source_governor_log_roundtrip(aw_client):
     log_path = mission_dir / ".fleet" / f"governor-log-{today}.jsonl"
     log_path.touch()
 
-    await asyncio.sleep(0.3)
+    def _probe():
+        probe_entry = {
+            "ts": "2026-05-20T11:00:00Z",
+            "lane": "Z",
+            "tool": "Write",
+            "permission": "allow",
+            "category": "settle",
+            "reason": "settle probe",
+            "input_sha256": "settle",
+        }
+        with log_path.open("a") as f:
+            f.write(json.dumps(probe_entry) + "\n")
+            f.flush()
+
+    await _wait_tail_settle(
+        wall,
+        _probe,
+        lambda e: e["type"] == "governor" and e["lane"] == "Z",
+    )
 
     entry = {
         "ts": "2026-05-20T12:00:00Z",
@@ -323,7 +429,7 @@ async def test_source_governor_log_roundtrip(aw_client):
 
     ev = await _wait_for_event(
         wall,
-        lambda e: e["type"] == "governor",
+        lambda e: e["type"] == "governor" and e["lane"] == LANE_SHORT,
         timeout_s=3.0,
     )
     assert ev is not None, "No 'governor' event received within 3 s"
@@ -524,7 +630,25 @@ async def test_inject_log_restart_loop_type(aw_client):
     log_path = mission_dir / ".fleet" / f"inject-log-{today}.jsonl"
     log_path.touch()
 
-    await asyncio.sleep(0.3)
+    # Wait until the tail is live BEFORE subscribing, so probe events never reach
+    # this test's queue (settle uses its own internal subscription).
+    def _probe():
+        probe_entry = {
+            "ts": "2026-05-20T11:00:00Z",
+            "lane": "Z",
+            "text_sha256": "settle",
+            "byte_count": 1,
+            "enter": True,
+        }
+        with log_path.open("a") as f:
+            f.write(json.dumps(probe_entry) + "\n")
+            f.flush()
+
+    await _wait_tail_settle(
+        wall,
+        _probe,
+        lambda e: e["type"] == "inject" and e["lane"] == "Z",
+    )
 
     entry = {
         "ts": "2026-05-20T12:00:00Z",
@@ -541,8 +665,19 @@ async def test_inject_log_restart_loop_type(aw_client):
             f.write(json.dumps(entry) + "\n")
             f.flush()
 
-        ev = await asyncio.wait_for(q.get(), timeout=3.0)
-        assert ev["type"] == "restart-loop"
+        # Filter for the restart-loop event: a leftover settle probe (an "inject"
+        # event for lane Z) may still be queued ahead of it, so skip non-matches.
+        ev = None
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                candidate = await asyncio.wait_for(q.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            if candidate["type"] == "restart-loop":
+                ev = candidate
+                break
+        assert ev is not None, "No 'restart-loop' event received within 3 s"
         assert ev["payload"]["source"] == "restart-loop"
         assert ev["lane"] == LANE_SHORT
     finally:

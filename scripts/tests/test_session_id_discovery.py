@@ -24,7 +24,9 @@ from megalodon_ui.mission_config.schema import MissionConfig
 from megalodon_ui.spawn import FleetSpawner
 
 
-SOCKET = Path("/tmp/test-fleet.sock")
+@pytest.fixture
+def socket_path(tmp_path: Path) -> Path:
+    return tmp_path / ".fleet" / "tmux.sock"
 
 
 def _make_config(shorts: list[str]) -> MissionConfig:
@@ -60,7 +62,7 @@ def _adapter_with_session_dir(session_log_dir: Path | None) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_session_id_discovered_when_single_new_jsonl_appears(tmp_path: Path):
+async def test_session_id_discovered_when_single_new_jsonl_appears(tmp_path: Path, socket_path: Path):
     """Claude-style: one .jsonl shows up post-spawn → stem becomes session_id."""
     mission_dir = tmp_path / "mission"
     mission_dir.mkdir()
@@ -70,7 +72,7 @@ async def test_session_id_discovered_when_single_new_jsonl_appears(tmp_path: Pat
 
     config = _make_config(["A"])
     adapter = _adapter_with_session_dir(session_dir)
-    spawner = FleetSpawner(mission_dir, config, MagicMock(return_value=adapter), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, MagicMock(return_value=adapter), socket_path)
 
     async def _new_session_writes_log(**kwargs):
         # Simulate Claude writing its session log shortly after spawn.
@@ -90,14 +92,14 @@ async def test_session_id_discovered_when_single_new_jsonl_appears(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_session_id_none_when_adapter_returns_no_dir(tmp_path: Path):
+async def test_session_id_none_when_adapter_returns_no_dir(tmp_path: Path, socket_path: Path):
     """Adapters with ``session_log_dir() == None`` skip discovery entirely."""
     mission_dir = tmp_path / "mission"
     mission_dir.mkdir()
 
     config = _make_config(["A"])
     adapter = _adapter_with_session_dir(None)
-    spawner = FleetSpawner(mission_dir, config, MagicMock(return_value=adapter), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, MagicMock(return_value=adapter), socket_path)
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
@@ -110,7 +112,7 @@ async def test_session_id_none_when_adapter_returns_no_dir(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_session_id_none_when_zero_new_entries_appear(tmp_path: Path):
+async def test_session_id_none_when_zero_new_entries_appear(tmp_path: Path, socket_path: Path):
     """If the harness writes no new entry within timeout, id stays None.
     The test uses a tight timeout via patching so we don't wait 5 s."""
     mission_dir = tmp_path / "mission"
@@ -120,7 +122,7 @@ async def test_session_id_none_when_zero_new_entries_appear(tmp_path: Path):
 
     config = _make_config(["A"])
     adapter = _adapter_with_session_dir(session_dir)
-    spawner = FleetSpawner(mission_dir, config, MagicMock(return_value=adapter), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, MagicMock(return_value=adapter), socket_path)
 
     # No new file is written, but the test should not hang for 5s. Patch the
     # discovery timeout via constants reference (one short window is enough).
@@ -137,7 +139,7 @@ async def test_session_id_none_when_zero_new_entries_appear(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_session_id_none_on_ambiguous_diff_two_plus_entries(tmp_path: Path):
+async def test_session_id_none_on_ambiguous_diff_two_plus_entries(tmp_path: Path, socket_path: Path):
     """If two new entries land in the shared dir, neither lane gets resolved."""
     mission_dir = tmp_path / "mission"
     mission_dir.mkdir()
@@ -146,7 +148,7 @@ async def test_session_id_none_on_ambiguous_diff_two_plus_entries(tmp_path: Path
 
     config = _make_config(["A"])
     adapter = _adapter_with_session_dir(session_dir)
-    spawner = FleetSpawner(mission_dir, config, MagicMock(return_value=adapter), SOCKET)
+    spawner = FleetSpawner(mission_dir, config, MagicMock(return_value=adapter), socket_path)
 
     async def _new_session_writes_two(**kwargs):
         # Race-replica: simulate two files appearing during this lane's spawn
@@ -172,6 +174,7 @@ async def test_session_id_none_on_ambiguous_diff_two_plus_entries(tmp_path: Path
 @pytest.mark.asyncio
 async def test_concurrent_spawn_each_lane_discovers_own_id_when_dirs_distinct(
     tmp_path: Path,
+    socket_path: Path,
 ):
     """PM-6: ``asyncio.gather`` spawn of two lanes whose adapters return
     distinct session_log_dirs — each lane discovers its own new entry."""
@@ -192,7 +195,7 @@ async def test_concurrent_spawn_each_lane_discovers_own_id_when_dirs_distinct(
     adapters = iter([adapter_a, adapter_b])
     resolver = MagicMock(side_effect=lambda *_: next(adapters))
 
-    spawner = FleetSpawner(mission_dir, config, resolver, SOCKET)
+    spawner = FleetSpawner(mission_dir, config, resolver, socket_path)
 
     async def _new_session_writes_per_lane(**kwargs):
         if kwargs["name"] == "lane-A":

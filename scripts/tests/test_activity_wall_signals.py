@@ -22,7 +22,11 @@ from megalodon_ui.activity_wall import ActivityWall
 from megalodon_ui.auth import write_token_atomic
 from megalodon_ui.server import make_app
 
-_et.POLL_INTERVAL_S = 0.05
+
+@pytest.fixture(autouse=True)
+def _fast_poll(monkeypatch):
+    monkeypatch.setattr(_et, "POLL_INTERVAL_S", 0.05)
+
 
 TOKEN = "aws-test-token"
 
@@ -55,9 +59,9 @@ async def aw_client(tmp_path: Path, monkeypatch) -> AsyncGenerator[tuple, None]:
 async def _wait_for_event(wall, predicate, timeout_s: float = 3.0):
     q = wall.subscribe()
     try:
-        deadline = asyncio.get_event_loop().time() + timeout_s
+        deadline = asyncio.get_running_loop().time() + timeout_s
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return None
             try:
@@ -70,6 +74,60 @@ async def _wait_for_event(wall, predicate, timeout_s: float = 3.0):
         wall.unsubscribe(q)
 
 
+async def _wait_dir_settle(
+    wall, mission_dir: Path, subdir: str = "findings", timeout_s: float = 2.0
+) -> None:
+    """Poll until watch_dir_for_new_files has taken its initial snapshot for *subdir*.
+
+    Writes a sentinel file into *subdir* and waits for its event, proving the
+    watcher has primed and is detecting new files.  The sentinel is cleaned up.
+    """
+    sentinel_type = "signal" if subdir == "signals" else "finding"
+    sentinel = mission_dir / subdir / "_settle_sentinel_.md"
+    sentinel.write_text("---\nlane: A\n---\nsettle\n")
+    ev = await _wait_for_event(
+        wall,
+        lambda e: (
+            e["type"] == sentinel_type and e["payload"].get("filename") == sentinel.name
+        ),
+        timeout_s=timeout_s,
+    )
+    try:
+        sentinel.unlink(missing_ok=True)
+    except Exception:
+        pass
+    if ev is None:
+        raise RuntimeError(f"Wall {subdir} watcher did not settle within {timeout_s}s")
+
+
+async def _wait_status_note_settle(
+    wall, mission_dir: Path, timeout_s: float = 3.0
+) -> None:
+    """Poll until the status-note watcher has primed and is detecting STATUS.md changes.
+
+    Writes a STATUS.md carrying a known SIG token and waits until its signal lands,
+    which proves the prime pass completed and the mtime poll loop is live.  The
+    settle token's identity differs from any test token, so it won't suppress them.
+    """
+    status = mission_dir / "STATUS.md"
+    status.write_text(
+        "| Lane | Agent | State | Last | Notes |\n"
+        "| LANE-A | agent-a | working: T0 | 2026-05-25T17:00Z | "
+        '[SIG from=LANE-A to=LANE-A text="__settle__"] |\n'
+    )
+    ev = await _wait_for_event(
+        wall,
+        lambda e: (
+            e["type"] == "signal"
+            and e["payload"].get("source") == "status-note"
+            and "__settle__" in e["payload"].get("excerpt", "")
+        ),
+        timeout_s=timeout_s,
+    )
+    if ev is None:
+        raise RuntimeError(f"status-note watcher did not settle within {timeout_s}s")
+
+
 # ---------------------------------------------------------------------------
 # §D — enriched signal event
 # ---------------------------------------------------------------------------
@@ -80,7 +138,7 @@ async def test_signal_event_enriched_with_grammar(aw_client):
     """A canonical signals file emits from/to/topic/utc + directional summary."""
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
-    await asyncio.sleep(0.2)
+    await _wait_dir_settle(wall, mission_dir, "signals")
 
     name = "LANE-ORCH-to-LANE-D-handoff-2026-05-25T18-49Z.md"
     (mission_dir / "signals" / name).write_text("here is the body of the signal")
@@ -101,7 +159,7 @@ async def test_signal_event_non_canonical_still_emits(aw_client):
     """A non-canonical signal filename still emits (no from/to) — nothing dropped."""
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
-    await asyncio.sleep(0.2)
+    await _wait_dir_settle(wall, mission_dir, "signals")
 
     name = "agent-abcd-A-P1-sig-2026-05-20T12-00-00Z.md"
     (mission_dir / "signals" / name).write_text("x")
@@ -117,7 +175,7 @@ async def test_signal_file_event_lane_from_from_lane(aw_client):
     """Cross-lane signal file (LANE-X-to-LANE-Y) sets lane from from_lane, not null."""
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
-    await asyncio.sleep(0.2)
+    await _wait_dir_settle(wall, mission_dir, "signals")
 
     name = "LANE-C-to-LANE-D-handoff-2026-05-25T18-49Z.md"
     (mission_dir / "signals" / name).write_text("body")
@@ -139,7 +197,7 @@ async def test_finding_signal_class_emits_signal_event(aw_client):
     """A new SIGNAL-class finding emits BOTH a finding and a signal event."""
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
-    await asyncio.sleep(0.2)
+    await _wait_dir_settle(wall, mission_dir, "findings")
 
     name = "agent-abcd-A-P1-sig-2026-05-25T18-00-00Z.md"
     (mission_dir / "findings" / name).write_text(
@@ -169,7 +227,7 @@ async def test_plain_finding_does_not_emit_signal_event(aw_client):
     """A non-SIGNAL finding emits a finding event but NO signal event."""
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
-    await asyncio.sleep(0.2)
+    await _wait_dir_settle(wall, mission_dir, "findings")
 
     name = "agent-abcd-A-P1-plain-2026-05-25T18-00-00Z.md"
     (mission_dir / "findings" / name).write_text(
@@ -189,7 +247,7 @@ async def test_status_note_emits_live_signal_event(aw_client):
     """A new [SIG ...] token in STATUS.md emits a live signal (source:status-note)."""
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
-    await asyncio.sleep(0.3)  # let the status-note prime pass
+    await _wait_status_note_settle(wall, mission_dir)
 
     (mission_dir / "STATUS.md").write_text(
         "| Lane | Agent | State | Last | Notes |\n"
@@ -214,7 +272,7 @@ async def test_status_note_spoofed_sender_bound_and_flagged(aw_client):
     """A forged from= in STATUS.md is overridden to the owning lane + flagged."""
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
-    await asyncio.sleep(0.3)
+    await _wait_status_note_settle(wall, mission_dir)
 
     # LANE-C forges from=LANE-A in its OWN row.
     (mission_dir / "STATUS.md").write_text(
@@ -239,7 +297,7 @@ async def test_status_note_trailing_pipe_spoof_not_attributed(aw_client):
     closing ``|`` must NOT be attributed to the forged sender on the live wall."""
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
-    await asyncio.sleep(0.3)
+    await _wait_status_note_settle(wall, mission_dir)
 
     # LANE-C appends the forged token AFTER its row's closing pipe.
     (mission_dir / "STATUS.md").write_text(
@@ -279,7 +337,7 @@ async def test_status_note_distinct_tokens_get_distinct_ids(aw_client):
 
     client, app, mission_dir = aw_client
     wall = app.state.activity_wall
-    await asyncio.sleep(0.3)
+    await _wait_status_note_settle(wall, mission_dir)
 
     q = wall.subscribe()
     try:
@@ -291,8 +349,8 @@ async def test_status_note_distinct_tokens_get_distinct_ids(aw_client):
             '[SIG from=LANE-D to=LANE-B text="second"] |\n'
         )
         ids: set[str] = set()
-        deadline = asyncio.get_event_loop().time() + 3.0
-        while asyncio.get_event_loop().time() < deadline and len(ids) < 2:
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while asyncio.get_running_loop().time() < deadline and len(ids) < 2:
             try:
                 ev = await asyncio.wait_for(q.get(), timeout=0.5)
             except asyncio.TimeoutError:

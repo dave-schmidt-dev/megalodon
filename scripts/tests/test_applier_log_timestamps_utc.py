@@ -43,9 +43,8 @@ def test_applier_log_timestamp_is_actual_utc(tmp_path):
     # Capture wall-clock UTC before emission.
     before_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     logger.info("test-message-utc-check")
-    # Drain by sleeping a tick — most logging handlers flush synchronously,
-    # but writes happen in the OS layer so give time.sleep(0) a chance.
-    time.sleep(0.05)
+    # No wait needed: RotatingFileHandler flushes on emit, so the record is on
+    # disk by the time logger.info() returns.
     after_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
     assert log_path.exists(), "applier log file not created"
@@ -85,7 +84,7 @@ def test_applier_log_not_localtime_in_non_utc_zone(tmp_path, monkeypatch):
 
         before_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         logger.info("tz-aware-utc-check")
-        time.sleep(0.05)
+        # No wait needed: RotatingFileHandler flushes on emit.
 
         match = _TS_RE.search(log_path.read_text())
         assert match is not None

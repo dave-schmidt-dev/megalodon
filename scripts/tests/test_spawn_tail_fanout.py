@@ -24,7 +24,9 @@ from megalodon_ui.mission_config.schema import MissionConfig
 from megalodon_ui.spawn import FleetSpawner
 
 
-SOCKET = Path("/tmp/test-fleet-tail.sock")
+@pytest.fixture
+def socket_path(tmp_path: Path) -> Path:
+    return tmp_path / ".fleet" / "tmux.sock"
 
 
 def _make_config(shorts: list[str]) -> MissionConfig:
@@ -100,12 +102,12 @@ def _patch_tail_spawn(fake_proc: _FakeProc) -> Callable[..., Awaitable]:
     return _fake
 
 
-def _spawner(mission_dir: Path, shorts: list[str]) -> FleetSpawner:
+def _spawner(mission_dir: Path, shorts: list[str], socket: Path) -> FleetSpawner:
     adapter = MagicMock()
     adapter.build_argv = MagicMock(return_value=(["stub"], {}))
     adapter.session_log_dir = MagicMock(return_value=None)
     return FleetSpawner(
-        mission_dir, _make_config(shorts), MagicMock(return_value=adapter), SOCKET
+        mission_dir, _make_config(shorts), MagicMock(return_value=adapter), socket
     )
 
 
@@ -124,11 +126,13 @@ async def _start_with_fake_tail(spawner: FleetSpawner, fake_proc: _FakeProc) -> 
 
 
 @pytest.mark.asyncio
-async def test_tail_task_started_after_spawn(tmp_path: Path) -> None:
+async def test_tail_task_started_after_spawn(
+    tmp_path: Path, socket_path: Path
+) -> None:
     """``start_all`` launches a tail task per lane; the task is alive after start."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     fake_proc = _FakeProc()
     await _start_with_fake_tail(spawner, fake_proc)
 
@@ -143,11 +147,13 @@ async def test_tail_task_started_after_spawn(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fanout_delivers_to_all_subscribers(tmp_path: Path) -> None:
+async def test_fanout_delivers_to_all_subscribers(
+    tmp_path: Path, socket_path: Path
+) -> None:
     """Each chunk emitted by tail is delivered to every subscriber queue."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     fake_proc = _FakeProc()
     await _start_with_fake_tail(spawner, fake_proc)
 
@@ -172,14 +178,16 @@ async def test_fanout_delivers_to_all_subscribers(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_drop_oldest_when_subscriber_slow(tmp_path: Path, monkeypatch) -> None:
+async def test_drop_oldest_when_subscriber_slow(
+    tmp_path: Path, socket_path: Path, monkeypatch
+) -> None:
     """A slow consumer's queue caps at maxsize; producer doesn't stall."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
     # Tiny queue so we can exercise drop-oldest quickly.
     monkeypatch.setattr("megalodon_ui.spawn.SSE_PER_SUBSCRIBER_QUEUE_MAXSIZE", 2)
 
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     fake_proc = _FakeProc()
     await _start_with_fake_tail(spawner, fake_proc)
 
@@ -210,11 +218,13 @@ async def test_drop_oldest_when_subscriber_slow(tmp_path: Path, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_tail_task_cancelled_by_stop_all(tmp_path: Path) -> None:
+async def test_tail_task_cancelled_by_stop_all(
+    tmp_path: Path, socket_path: Path
+) -> None:
     """``stop_all`` cancels the per-lane tail task and the subprocess is reaped."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     fake_proc = _FakeProc()
     await _start_with_fake_tail(spawner, fake_proc)
 
@@ -229,11 +239,13 @@ async def test_tail_task_cancelled_by_stop_all(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unsubscribed_queue_stops_receiving(tmp_path: Path) -> None:
+async def test_unsubscribed_queue_stops_receiving(
+    tmp_path: Path, socket_path: Path
+) -> None:
     """After unsubscribe, the queue receives no further chunks."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
-    spawner = _spawner(mission_dir, ["A"])
+    spawner = _spawner(mission_dir, ["A"], socket_path)
     fake_proc = _FakeProc()
     await _start_with_fake_tail(spawner, fake_proc)
 

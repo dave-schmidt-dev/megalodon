@@ -33,7 +33,11 @@ from megalodon_ui.activity_wall import ActivityWall
 from megalodon_ui.auth import write_token_atomic
 from megalodon_ui.server import make_app
 
-_et.POLL_INTERVAL_S = 0.05
+
+@pytest.fixture(autouse=True)
+def _fast_poll(monkeypatch):
+    monkeypatch.setattr(_et, "POLL_INTERVAL_S", 0.05)
+
 
 TOKEN = "aw-sigid-test-token"
 
@@ -90,8 +94,8 @@ async def _collect_status_notes(wall, want: int, timeout_s: float = 3.0) -> list
     q = wall.subscribe()
     out: list[dict] = []
     try:
-        deadline = asyncio.get_event_loop().time() + timeout_s
-        while asyncio.get_event_loop().time() < deadline and len(out) < want:
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        while asyncio.get_running_loop().time() < deadline and len(out) < want:
             try:
                 ev = await asyncio.wait_for(q.get(), timeout=0.5)
             except asyncio.TimeoutError:
@@ -172,8 +176,8 @@ async def test_status_note_cross_generation_no_drop(aw_client):
         )
 
         ids: set[str] = set()
-        deadline = asyncio.get_event_loop().time() + 3.0
-        while asyncio.get_event_loop().time() < deadline and len(ids) < 2:
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while asyncio.get_running_loop().time() < deadline and len(ids) < 2:
             try:
                 ev = await asyncio.wait_for(q.get(), timeout=0.5)
             except asyncio.TimeoutError:
@@ -284,8 +288,8 @@ async def test_mission_event_appears_on_wall(aw_client):
             f.write(line)
 
         found = None
-        deadline = asyncio.get_event_loop().time() + 3.0
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while asyncio.get_running_loop().time() < deadline:
             try:
                 ev = await asyncio.wait_for(q.get(), timeout=0.5)
             except asyncio.TimeoutError:
@@ -315,8 +319,8 @@ async def test_mission_event_json_line_parsed(aw_client):
             f.write('{"ts": "2026-05-25T19:00:00Z", "line": "phase change"}\n')
 
         found = None
-        deadline = asyncio.get_event_loop().time() + 3.0
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while asyncio.get_running_loop().time() < deadline:
             try:
                 ev = await asyncio.wait_for(q.get(), timeout=0.5)
             except asyncio.TimeoutError:

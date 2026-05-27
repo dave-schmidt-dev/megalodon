@@ -37,8 +37,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import megalodon_ui.event_tail as _et
 
-# Speed up polls so the test doesn't crawl.
-_et.POLL_INTERVAL_S = 0.05
+
+@pytest.fixture(autouse=True)
+def _fast_poll(monkeypatch):
+    monkeypatch.setattr(_et, "POLL_INTERVAL_S", 0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -63,9 +65,9 @@ async def _wait_for_event(wall, predicate, timeout_s: float = 3.0) -> dict | Non
     """Subscribe to wall, return first event matching predicate, then unsubscribe."""
     q = wall.subscribe()
     try:
-        deadline = asyncio.get_event_loop().time() + timeout_s
+        deadline = asyncio.get_running_loop().time() + timeout_s
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return None
             try:
@@ -76,6 +78,47 @@ async def _wait_for_event(wall, predicate, timeout_s: float = 3.0) -> dict | Non
                 return None
     finally:
         wall.unsubscribe(q)
+
+
+async def _wait_for_drainer_ready(wall, log_path: Path, timeout_s: float = 4.0) -> bool:
+    """Poll until the inject-log drainer has opened *log_path* and is reading new lines.
+
+    tail_file_lines seeks to END on open, so any content written before it opens
+    is missed.  We detect readiness by writing a probe line and checking whether
+    an event arrives within a short window.  If not, we try again (the drainer
+    may not have opened yet).  Returns True once a probe is received, False on
+    overall timeout.
+    """
+    import json as _json
+
+    probe_counter = [0]
+    deadline = asyncio.get_running_loop().time() + timeout_s
+
+    while asyncio.get_running_loop().time() < deadline:
+        probe_counter[0] += 1
+        probe_lane = f"_PROBE_{probe_counter[0]}"
+        probe_entry = {
+            "ts": "2026-05-21T00:00:00Z",
+            "lane": probe_lane,
+            "text_sha256": "probe",
+            "byte_count": 1,
+            "enter": True,
+        }
+        with log_path.open("a") as fh:
+            fh.write(_json.dumps(probe_entry) + "\n")
+            fh.flush()
+
+        ev = await _wait_for_event(
+            wall,
+            lambda e, pl=probe_lane: e["type"] == "inject" and e["lane"] == pl,
+            timeout_s=0.5,
+        )
+        if ev is not None:
+            return True
+        # Drainer not ready yet; yield a tick and retry.
+        await asyncio.sleep(0.05)
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -133,8 +176,9 @@ async def test_inject_log_date_rollover_switches_to_new_file(
     await wall.start()
 
     try:
-        # Let the fan-in task start and the drainer for today's file open.
-        await asyncio.sleep(0.3)
+        # Wait until the fan-in task has started and today's drainer has opened.
+        ready = await _wait_for_drainer_ready(wall, today_log, timeout_s=4.0)
+        assert ready, "today's inject-log drainer did not open within 4 s"
 
         # --- Phase 1: write to today's log → event must arrive ---
         entry_today = _make_inject_entry(lane="A", byte_count=11)
@@ -155,9 +199,15 @@ async def test_inject_log_date_rollover_switches_to_new_file(
         # --- Phase 2: flip date to tomorrow and wait for the rollover check to fire ---
         # The outer while-loop polls datetime.now() at the top of each iteration.
         # With timeout=1.0 on the queue.get(), one iteration completes every ≤1 s.
-        # Flip the flag, then wait 1.5 s for the drainer to restart on tomorrow's file.
+        # Flip the flag, then poll until the new drainer picks up tomorrow's file.
+        # (tail_file_lines seeks to END on open, so we must write AFTER it opens.)
         use_tomorrow[0] = True
-        await asyncio.sleep(1.5)
+        _rollover_detected = await _wait_for_drainer_ready(
+            wall, tomorrow_log, timeout_s=4.0
+        )
+        assert _rollover_detected, (
+            "Drainer did not switch to tomorrow's file within 4 s after date flip"
+        )
 
         # Write to tomorrow's log — if rollover worked, event must arrive.
         entry_tomorrow = _make_inject_entry(lane="B", byte_count=22)

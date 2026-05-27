@@ -39,7 +39,9 @@ from megalodon_ui.governor.wiring import (
 from megalodon_ui.mission_config.schema import MissionConfig
 from megalodon_ui.spawn import FleetSpawner, LaneSession
 
-SOCKET = Path("/tmp/test-fleet-reattach.sock")
+@pytest.fixture
+def socket_path(tmp_path):
+    return tmp_path / ".fleet" / "tmux.sock"
 
 
 # ---------------------------------------------------------------------------
@@ -145,12 +147,12 @@ def test_remove_marker_is_idempotent(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_fresh_governed_spawn_writes_marker_and_sets_governed(tmp_path):
+async def test_fresh_governed_spawn_writes_marker_and_sets_governed(tmp_path, socket_path):
     """Governor on + claude lane → marker written, LaneSession.governed True."""
     config = _make_config(["A"], governor_enabled=True)
     adapter = _make_adapter(_governed_argv(tmp_path))
     resolver = MagicMock(return_value=adapter)
-    spawner = FleetSpawner(tmp_path, config, resolver, SOCKET)
+    spawner = FleetSpawner(tmp_path, config, resolver, socket_path)
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
@@ -167,7 +169,7 @@ async def test_fresh_governed_spawn_writes_marker_and_sets_governed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_fresh_ungoverned_spawn_removes_stale_marker(tmp_path):
+async def test_fresh_ungoverned_spawn_removes_stale_marker(tmp_path, socket_path):
     """Governor off → no marker (and a pre-existing stale one is removed)."""
     # Pre-seed a stale marker as if an earlier governed run wrote it.
     write_governed_marker(tmp_path, "A")
@@ -176,7 +178,7 @@ async def test_fresh_ungoverned_spawn_removes_stale_marker(tmp_path):
     config = _make_config(["A"], governor_enabled=False)
     adapter = _make_adapter(["stub", "arg"])
     resolver = MagicMock(return_value=adapter)
-    spawner = FleetSpawner(tmp_path, config, resolver, SOCKET)
+    spawner = FleetSpawner(tmp_path, config, resolver, socket_path)
 
     with (
         patch("megalodon_ui.spawn.tmux.list_sessions", new=AsyncMock(return_value=[])),
@@ -195,11 +197,11 @@ async def test_fresh_ungoverned_spawn_removes_stale_marker(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-async def _run_reattach(tmp_path, config) -> FleetSpawner:
+async def _run_reattach(tmp_path, config, socket_path) -> FleetSpawner:
     """Reattach lane-A (already running, fleet-owned); never spawn it."""
     adapter = _make_adapter(_governed_argv(tmp_path))  # rebuilt argv LIES: governed
     resolver = MagicMock(return_value=adapter)
-    spawner = FleetSpawner(tmp_path, config, resolver, SOCKET)
+    spawner = FleetSpawner(tmp_path, config, resolver, socket_path)
 
     with (
         patch(
@@ -234,11 +236,11 @@ async def _run_reattach(tmp_path, config) -> FleetSpawner:
 
 
 @pytest.mark.asyncio
-async def test_reattach_valid_marker_is_governed_and_not_respawned(tmp_path):
+async def test_reattach_valid_marker_is_governed_and_not_respawned(tmp_path, socket_path):
     """Valid governed marker → governed True; lane is NOT killed/respawned."""
     write_governed_marker(tmp_path, "A")  # the live process WAS born governed
     config = _make_config(["A"], governor_enabled=True)
-    spawner = await _run_reattach(tmp_path, config)
+    spawner = await _run_reattach(tmp_path, config, socket_path)
 
     assert spawner.sessions["A"].governed is True
     # In-flight work preserved: never killed, never re-newed.
@@ -249,10 +251,10 @@ async def test_reattach_valid_marker_is_governed_and_not_respawned(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reattach_no_marker_is_ungoverned_and_not_respawned(tmp_path):
+async def test_reattach_no_marker_is_ungoverned_and_not_respawned(tmp_path, socket_path):
     """No marker → governed False (ungoverned); lane is NOT killed/respawned."""
     config = _make_config(["A"], governor_enabled=True)
-    spawner = await _run_reattach(tmp_path, config)
+    spawner = await _run_reattach(tmp_path, config, socket_path)
 
     assert spawner.sessions["A"].governed is False
     assert "lane-A" not in [
@@ -262,7 +264,7 @@ async def test_reattach_no_marker_is_ungoverned_and_not_respawned(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reattach_stale_marker_is_ungoverned(tmp_path):
+async def test_reattach_stale_marker_is_ungoverned(tmp_path, socket_path):
     """Stale marker (fingerprint mismatch) → governed False; not respawned."""
     write_governed_marker(tmp_path, "A")
     marker = governed_marker_path(tmp_path, "A")
@@ -271,20 +273,20 @@ async def test_reattach_stale_marker_is_ungoverned(tmp_path):
     marker.write_text(json.dumps(data))
 
     config = _make_config(["A"], governor_enabled=True)
-    spawner = await _run_reattach(tmp_path, config)
+    spawner = await _run_reattach(tmp_path, config, socket_path)
 
     assert spawner.sessions["A"].governed is False
     assert "lane-A" not in [c.args[1] for c in spawner._mock_kill.call_args_list]
 
 
 @pytest.mark.asyncio
-async def test_reattach_governed_ignores_lying_argv(tmp_path):
+async def test_reattach_governed_ignores_lying_argv(tmp_path, socket_path):
     """Even though the rebuilt argv carries --settings, NO marker → ungoverned.
 
     This is the core invariant: the rebuilt argv lies; only the marker decides.
     """
     config = _make_config(["A"], governor_enabled=True)
-    spawner = await _run_reattach(tmp_path, config)
+    spawner = await _run_reattach(tmp_path, config, socket_path)
 
     # The stored argv is the would-be-governed template (correct for a future
     # respawn) — assert it DOES carry --settings...
@@ -299,12 +301,12 @@ async def test_reattach_governed_ignores_lying_argv(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_respawn_with_governed_argv_writes_marker(tmp_path):
+async def test_respawn_with_governed_argv_writes_marker(tmp_path, socket_path):
     """An operator respawn under the governor writes the marker + sets governed."""
     config = _make_config(["A"], governor_enabled=True)
     adapter = _make_adapter()
     resolver = MagicMock(return_value=adapter)
-    spawner = FleetSpawner(tmp_path, config, resolver, SOCKET)
+    spawner = FleetSpawner(tmp_path, config, resolver, socket_path)
     spawner.sessions["A"] = LaneSession(
         lane="A",
         name="lane-A",
@@ -332,12 +334,12 @@ async def test_respawn_with_governed_argv_writes_marker(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_respawn_with_ungoverned_argv_clears_marker(tmp_path):
+async def test_respawn_with_ungoverned_argv_clears_marker(tmp_path, socket_path):
     """A respawn whose argv lacks --settings clears any stale marker → ungoverned."""
     write_governed_marker(tmp_path, "A")
     config = _make_config(["A"], governor_enabled=True)
     resolver = MagicMock(return_value=_make_adapter())
-    spawner = FleetSpawner(tmp_path, config, resolver, SOCKET)
+    spawner = FleetSpawner(tmp_path, config, resolver, socket_path)
     spawner.sessions["A"] = LaneSession(
         lane="A",
         name="lane-A",

@@ -227,7 +227,7 @@ async def _capture_spawn_argv(tmp_path: Path, *, governor_enabled_flag: bool):
     run_dir = _run_dir_with_symlink(tmp_path)
     config = _live_repl_config(governor_enabled_flag=governor_enabled_flag)
     resolver = MagicMock(return_value=ClaudeAdapter())
-    spawner = FleetSpawner(run_dir, config, resolver, Path("/tmp/gov-killswitch.sock"))
+    spawner = FleetSpawner(run_dir, config, resolver, run_dir / ".fleet" / "tmux.sock")
 
     captured: list[str] = []
 

@@ -24,7 +24,9 @@ def _mock_proc(returncode: int = 0) -> MagicMock:
     return proc
 
 
-SOCKET = Path("/tmp/test.sock")
+@pytest.fixture
+def socket_path(tmp_path):
+    return tmp_path / ".fleet" / "tmux.sock"
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +35,7 @@ SOCKET = Path("/tmp/test.sock")
 
 
 @pytest.mark.asyncio
-async def test_new_session_two_calls():
+async def test_new_session_two_calls(socket_path):
     """new_session makes exactly 2 subprocess_exec calls in order:
 
     1. ``set-option -g remain-on-exit on`` CHAINED (``;``) ahead of
@@ -47,7 +49,7 @@ async def test_new_session_two_calls():
         asyncio, "create_subprocess_exec", new=AsyncMock(side_effect=procs)
     ) as mock_exec:
         rc = await tmux.new_session(
-            SOCKET, "lane-AUDIT", ["sleep", "30"], Path("/tmp"), {}, 80, 24
+            socket_path, "lane-AUDIT", ["sleep", "30"], Path("/tmp"), {}, 80, 24
         )
 
     assert rc == 0
@@ -82,7 +84,7 @@ async def test_new_session_two_calls():
 
 
 @pytest.mark.asyncio
-async def test_new_session_aborts_on_first_failure():
+async def test_new_session_aborts_on_first_failure(socket_path):
     """If the first chained (set-option + new-session) call fails (rc!=0), the
     follow-up set-environment call is NOT made."""
     fail_proc = _mock_proc(1)
@@ -91,7 +93,7 @@ async def test_new_session_aborts_on_first_failure():
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=fail_proc)
     ) as mock_exec:
         rc = await tmux.new_session(
-            SOCKET, "lane-AUDIT", ["sleep", "30"], Path("/tmp"), {}, 80, 24
+            socket_path, "lane-AUDIT", ["sleep", "30"], Path("/tmp"), {}, 80, 24
         )
 
     assert rc == 1
@@ -99,23 +101,23 @@ async def test_new_session_aborts_on_first_failure():
 
 
 @pytest.mark.asyncio
-async def test_new_session_socket_in_every_call():
+async def test_new_session_socket_in_every_call(socket_path):
     """Every call must include '-S' <socket_path>."""
     procs = [_mock_proc(0), _mock_proc(0), _mock_proc(0)]
 
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(side_effect=procs)
     ) as mock_exec:
-        await tmux.new_session(SOCKET, "s", ["true"], Path("/"), {}, 200, 50)
+        await tmux.new_session(socket_path, "s", ["true"], Path("/"), {}, 200, 50)
 
     for c in mock_exec.call_args_list:
         args = list(c[0])
         idx = args.index("-S")
-        assert args[idx + 1] == str(SOCKET)
+        assert args[idx + 1] == str(socket_path)
 
 
 @pytest.mark.asyncio
-async def test_new_session_env_overlay():
+async def test_new_session_env_overlay(socket_path):
     """Env overlay is merged into os.environ and passed as the env kwarg."""
     procs = [_mock_proc(0), _mock_proc(0), _mock_proc(0)]
 
@@ -123,7 +125,7 @@ async def test_new_session_env_overlay():
         asyncio, "create_subprocess_exec", new=AsyncMock(side_effect=procs)
     ) as mock_exec:
         await tmux.new_session(
-            SOCKET, "s", ["true"], Path("/"), {"MY_KEY": "my_val"}, 80, 24
+            socket_path, "s", ["true"], Path("/"), {"MY_KEY": "my_val"}, 80, 24
         )
 
     first_kwargs = mock_exec.call_args_list[0][1]
@@ -138,19 +140,19 @@ async def test_new_session_env_overlay():
 
 
 @pytest.mark.asyncio
-async def test_kill_session_argv():
+async def test_kill_session_argv(socket_path):
     proc = _mock_proc(0)
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ) as mock_exec:
-        rc = await tmux.kill_session(SOCKET, "lane-AUDIT")
+        rc = await tmux.kill_session(socket_path, "lane-AUDIT")
 
     assert rc == 0
     args = mock_exec.call_args[0]
     assert "kill-session" in args
     assert "-t" in args
     assert "lane-AUDIT" in args
-    assert str(SOCKET) in args
+    assert str(socket_path) in args
 
 
 # ---------------------------------------------------------------------------
@@ -159,32 +161,32 @@ async def test_kill_session_argv():
 
 
 @pytest.mark.asyncio
-async def test_has_session_true_on_rc0():
+async def test_has_session_true_on_rc0(socket_path):
     proc = _mock_proc(0)
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ):
-        result = await tmux.has_session(SOCKET, "lane-AUDIT")
+        result = await tmux.has_session(socket_path, "lane-AUDIT")
     assert result is True
 
 
 @pytest.mark.asyncio
-async def test_has_session_false_on_nonzero():
+async def test_has_session_false_on_nonzero(socket_path):
     proc = _mock_proc(1)
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ):
-        result = await tmux.has_session(SOCKET, "lane-AUDIT")
+        result = await tmux.has_session(socket_path, "lane-AUDIT")
     assert result is False
 
 
 @pytest.mark.asyncio
-async def test_has_session_argv():
+async def test_has_session_argv(socket_path):
     proc = _mock_proc(0)
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ) as mock_exec:
-        await tmux.has_session(SOCKET, "lane-AUDIT")
+        await tmux.has_session(socket_path, "lane-AUDIT")
     args = mock_exec.call_args[0]
     assert "has-session" in args
     assert "lane-AUDIT" in args
@@ -196,16 +198,16 @@ async def test_has_session_argv():
 
 
 @pytest.mark.asyncio
-async def test_pipe_pane_shell_cmd_no_stdbuf():
+async def test_pipe_pane_shell_cmd_no_stdbuf(socket_path, tmp_path):
     """pipe_pane shell command must be 'cat >> <quoted_dest>' with no stdbuf."""
     proc = _mock_proc(0)
-    dest = Path("/tmp/stream.log")
+    dest = tmp_path / "stream.log"
     expected_shell_cmd = f"cat >> {shlex.quote(str(dest))}"
 
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ) as mock_exec:
-        await tmux.pipe_pane(SOCKET, "lane-AUDIT", dest)
+        await tmux.pipe_pane(socket_path, "lane-AUDIT", dest)
 
     args = mock_exec.call_args[0]
     assert expected_shell_cmd in args, f"expected {expected_shell_cmd!r} in {args}"
@@ -214,14 +216,14 @@ async def test_pipe_pane_shell_cmd_no_stdbuf():
 
 
 @pytest.mark.asyncio
-async def test_pipe_pane_argv_structure():
+async def test_pipe_pane_argv_structure(socket_path, tmp_path):
     """pipe_pane must pass pipe-pane -O -t <name> to tmux via exec."""
     proc = _mock_proc(0)
-    dest = Path("/tmp/stream.log")
+    dest = tmp_path / "stream.log"
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ) as mock_exec:
-        await tmux.pipe_pane(SOCKET, "lane-AUDIT", dest)
+        await tmux.pipe_pane(socket_path, "lane-AUDIT", dest)
 
     args = mock_exec.call_args[0]
     assert "pipe-pane" in args
@@ -231,14 +233,14 @@ async def test_pipe_pane_argv_structure():
 
 
 @pytest.mark.asyncio
-async def test_pipe_pane_dest_with_spaces():
+async def test_pipe_pane_dest_with_spaces(socket_path, tmp_path):
     """Dest paths with spaces must produce a quoted shell_cmd argument."""
     proc = _mock_proc(0)
-    dest = Path("/tmp/path with spaces/stream.log")
+    dest = tmp_path / "path with spaces" / "stream.log"
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ) as mock_exec:
-        await tmux.pipe_pane(SOCKET, "lane-AUDIT", dest)
+        await tmux.pipe_pane(socket_path, "lane-AUDIT", dest)
 
     args = mock_exec.call_args[0]
     shell_cmd = next((a for a in args if "cat >>" in str(a)), None)
@@ -253,7 +255,7 @@ async def test_pipe_pane_dest_with_spaces():
 
 
 @pytest.mark.asyncio
-async def test_respawn_pane_set_env_before_respawn():
+async def test_respawn_pane_set_env_before_respawn(socket_path):
     """set-environment calls must precede the respawn-pane call."""
     calls_log: list[tuple] = []
 
@@ -265,7 +267,7 @@ async def test_respawn_pane_set_env_before_respawn():
         asyncio, "create_subprocess_exec", new=AsyncMock(side_effect=fake_exec)
     ):
         await tmux.respawn_pane(
-            SOCKET, "lane-AUDIT", ["echo", "hi"], {"FOO": "bar", "BAZ": "qux"}
+            socket_path, "lane-AUDIT", ["echo", "hi"], {"FOO": "bar", "BAZ": "qux"}
         )
 
     set_env_indices = [i for i, c in enumerate(calls_log) if "set-environment" in c]
@@ -276,14 +278,14 @@ async def test_respawn_pane_set_env_before_respawn():
 
 
 @pytest.mark.asyncio
-async def test_respawn_pane_argv_structure():
+async def test_respawn_pane_argv_structure(socket_path):
     """respawn-pane must use -t <name> -k <argv...>."""
     procs = [_mock_proc(0), _mock_proc(0)]
 
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(side_effect=procs)
     ) as mock_exec:
-        await tmux.respawn_pane(SOCKET, "lane-AUDIT", ["echo", "hello"], {"K": "V"})
+        await tmux.respawn_pane(socket_path, "lane-AUDIT", ["echo", "hello"], {"K": "V"})
 
     last_args = mock_exec.call_args_list[-1][0]
     assert "respawn-pane" in last_args
@@ -295,13 +297,13 @@ async def test_respawn_pane_argv_structure():
 
 
 @pytest.mark.asyncio
-async def test_respawn_pane_no_env_single_call():
+async def test_respawn_pane_no_env_single_call(socket_path):
     """With empty env dict, only one call (respawn-pane) is made."""
     proc = _mock_proc(0)
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ) as mock_exec:
-        await tmux.respawn_pane(SOCKET, "lane-AUDIT", ["true"], {})
+        await tmux.respawn_pane(socket_path, "lane-AUDIT", ["true"], {})
 
     assert mock_exec.call_count == 1
     args = mock_exec.call_args[0]
@@ -309,14 +311,14 @@ async def test_respawn_pane_no_env_single_call():
 
 
 @pytest.mark.asyncio
-async def test_respawn_pane_aborts_if_set_env_fails():
+async def test_respawn_pane_aborts_if_set_env_fails(socket_path):
     """If a set-environment call fails, respawn-pane must NOT be called."""
     fail_proc = _mock_proc(1)
 
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=fail_proc)
     ) as mock_exec:
-        rc = await tmux.respawn_pane(SOCKET, "lane-AUDIT", ["true"], {"K": "V"})
+        rc = await tmux.respawn_pane(socket_path, "lane-AUDIT", ["true"], {"K": "V"})
 
     assert rc == 1
     for c in mock_exec.call_args_list:
@@ -329,7 +331,7 @@ async def test_respawn_pane_aborts_if_set_env_fails():
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_returns_names():
+async def test_list_sessions_returns_names(socket_path):
     proc = _mock_proc(0)
     proc.communicate = AsyncMock(return_value=(b"lane-AUDIT\nlane-ARCH\n", b""))
     proc.returncode = 0
@@ -337,13 +339,13 @@ async def test_list_sessions_returns_names():
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ):
-        result = await tmux.list_sessions(SOCKET)
+        result = await tmux.list_sessions(socket_path)
 
     assert result == ["lane-AUDIT", "lane-ARCH"]
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_empty_on_error():
+async def test_list_sessions_empty_on_error(socket_path):
     proc = _mock_proc(1)
     proc.communicate = AsyncMock(return_value=(b"", b"error"))
     proc.returncode = 1
@@ -351,13 +353,13 @@ async def test_list_sessions_empty_on_error():
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ):
-        result = await tmux.list_sessions(SOCKET)
+        result = await tmux.list_sessions(socket_path)
 
     assert result == []
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_argv():
+async def test_list_sessions_argv(socket_path):
     proc = _mock_proc(0)
     proc.communicate = AsyncMock(return_value=(b"", b""))
     proc.returncode = 0
@@ -365,7 +367,7 @@ async def test_list_sessions_argv():
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ) as mock_exec:
-        await tmux.list_sessions(SOCKET)
+        await tmux.list_sessions(socket_path)
 
     args = mock_exec.call_args[0]
     assert "list-sessions" in args
@@ -379,17 +381,17 @@ async def test_list_sessions_argv():
 
 
 @pytest.mark.asyncio
-async def test_kill_server_argv():
+async def test_kill_server_argv(socket_path):
     proc = _mock_proc(0)
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ) as mock_exec:
-        rc = await tmux.kill_server(SOCKET)
+        rc = await tmux.kill_server(socket_path)
 
     assert rc == 0
     args = mock_exec.call_args[0]
     assert "kill-server" in args
-    assert str(SOCKET) in args
+    assert str(socket_path) in args
 
 
 # ---------------------------------------------------------------------------
@@ -398,40 +400,40 @@ async def test_kill_server_argv():
 
 
 @pytest.mark.asyncio
-async def test_display_message_pane_pipe_true_on_1():
+async def test_display_message_pane_pipe_true_on_1(socket_path):
     proc = _mock_proc(0)
     proc.communicate = AsyncMock(return_value=(b"1\n", b""))
 
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ):
-        result = await tmux.display_message_pane_pipe(SOCKET, "lane-AUDIT")
+        result = await tmux.display_message_pane_pipe(socket_path, "lane-AUDIT")
 
     assert result is True
 
 
 @pytest.mark.asyncio
-async def test_display_message_pane_pipe_false_on_0():
+async def test_display_message_pane_pipe_false_on_0(socket_path):
     proc = _mock_proc(0)
     proc.communicate = AsyncMock(return_value=(b"0\n", b""))
 
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ):
-        result = await tmux.display_message_pane_pipe(SOCKET, "lane-AUDIT")
+        result = await tmux.display_message_pane_pipe(socket_path, "lane-AUDIT")
 
     assert result is False
 
 
 @pytest.mark.asyncio
-async def test_display_message_pane_pipe_argv():
+async def test_display_message_pane_pipe_argv(socket_path):
     proc = _mock_proc(0)
     proc.communicate = AsyncMock(return_value=(b"0", b""))
 
     with patch.object(
         asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)
     ) as mock_exec:
-        await tmux.display_message_pane_pipe(SOCKET, "lane-AUDIT")
+        await tmux.display_message_pane_pipe(socket_path, "lane-AUDIT")
 
     args = mock_exec.call_args[0]
     assert "display-message" in args

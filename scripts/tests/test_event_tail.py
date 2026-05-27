@@ -24,8 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import megalodon_ui.event_tail as et
 
-# Speed up polls so tests don't crawl.
-et.POLL_INTERVAL_S = 0.05
+
+@pytest.fixture(autouse=True)
+def _fast_poll(monkeypatch):
+    monkeypatch.setattr(et, "POLL_INTERVAL_S", 0.05)
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,23 @@ async def _kill_server_on_teardown(tmux_socket: Path):
 
 
 # ---------------------------------------------------------------------------
+# Polling helpers — replace fixed sleeps with bounded waits on observable state
+# ---------------------------------------------------------------------------
+
+
+async def _await_until(
+    predicate, timeout_s: float = 6.0, interval_s: float = 0.05
+) -> bool:
+    """Await *predicate()* (async) until it returns truthy or *timeout_s* elapses."""
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
+        if await predicate():
+            return True
+        await asyncio.sleep(interval_s)
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Happy path: new_session / has_session / kill_session lifecycle
 # ---------------------------------------------------------------------------
 
@@ -102,7 +119,14 @@ async def test_remain_on_exit_session_survives_false(
     )
     assert rc == 0
 
-    await asyncio.sleep(0.5)
+    # Wait until the `false` pane has actually exited (state barrier) so that the
+    # remain-on-exit behaviour is exercised, then assert the session survives.
+    async def _pane_exited() -> bool:
+        dead, _ = await tmux.display_message_pane_dead(tmux_socket, "test-lane")
+        return dead
+
+    exited = await _await_until(_pane_exited, timeout_s=6.0)
+    assert exited, "pane did not exit within 6 s — cannot test remain-on-exit"
 
     still_alive = await tmux.has_session(tmux_socket, "test-lane")
     assert still_alive, (
@@ -137,10 +161,13 @@ async def test_pipe_pane_byte_delivery(tmux_socket: Path, tmp_path: Path) -> Non
     pipe_rc = await tmux.pipe_pane(tmux_socket, "test-lane", stream_log)
     assert pipe_rc == 0
 
-    await asyncio.sleep(1.5)
+    # Poll until the echoed line lands in the piped log (shell sleeps 0.5 s first).
+    async def _has_hello() -> bool:
+        return b"hello-pipe" in stream_log.read_bytes()
 
+    got = await _await_until(_has_hello, timeout_s=6.0)
     content = stream_log.read_bytes()
-    assert b"hello-pipe" in content, (
+    assert got and b"hello-pipe" in content, (
         f"Expected b'hello-pipe' in stream log; got {content!r}"
     )
 
@@ -179,10 +206,13 @@ async def test_respawn_pane_accumulates_output(
     # Re-pipe after respawn (new pane_id from respawn-pane)
     await tmux.pipe_pane(tmux_socket, "test-lane", stream_log)
 
-    await asyncio.sleep(0.5)
+    # Poll until the respawned command's output lands in the piped log.
+    async def _has_respawned() -> bool:
+        return b"respawned" in stream_log.read_bytes()
 
+    got = await _await_until(_has_respawned, timeout_s=6.0)
     content = stream_log.read_bytes()
-    assert b"respawned" in content, (
+    assert got and b"respawned" in content, (
         f"Expected b'respawned' in stream log; got {content!r}"
     )
 

@@ -232,7 +232,7 @@ async def _run_start_all(run_dir: Path, config):
     from megalodon_ui.spawn import FleetSpawner
 
     resolver = MagicMock(return_value=ClaudeAdapter())
-    spawner = FleetSpawner(run_dir, config, resolver, Path("/tmp/gov-canary.sock"))
+    spawner = FleetSpawner(run_dir, config, resolver, run_dir / ".fleet" / "tmux.sock")
 
     spawned: list[str] = []
 
@@ -295,7 +295,7 @@ async def test_spawn_aborts_loudly_when_governor_not_enforcing(tmp_path: Path):
     run_dir = _stub_run_dir(tmp_path, _ALLOW_HOOK)
     config = _live_repl_config(governor_enabled_flag=True)
     resolver = MagicMock(return_value=ClaudeAdapter())
-    spawner = FleetSpawner(run_dir, config, resolver, Path("/tmp/gov-canary2.sock"))
+    spawner = FleetSpawner(run_dir, config, resolver, run_dir / ".fleet" / "tmux.sock")
 
     spawned: list[str] = []
 
