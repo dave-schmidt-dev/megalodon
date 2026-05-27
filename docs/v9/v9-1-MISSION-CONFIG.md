@@ -62,6 +62,7 @@ Prints `OK: N lanes, M phases` on success, or a Pydantic validation error descri
 | `task_id_patterns` | `TaskIdPattern` | loose default | Regex patterns for valid task IDs. |
 | `orchestrator_pseudo_lane` | `str` | `"ORCHESTRATOR"` | Pseudo-lane name for orchestrator-filed events. Must match `^[A-Z][A-Z0-9_-]*$`, max 20 chars. |
 | `task_sections` | `list[str]` | `["PHASE-PLAN", "OPERATOR-ACCEPTANCE"]` | Section headings the orchestrator scans in TASKS.md. Each string: 1–80 chars. |
+| `target_dir` | `str \| None` | `None` | **Work-on-target mode.** Absolute path to an EXTERNAL repo the fleet reads and edits *in place* while protocol/mission state stays in the mission dir. When set, the governor admits `target_dir` as a SECOND write/read root alongside `project_dir` (floors unaffected); spawn exports it to every lane as `MEGALODON_TARGET_DIR`, which the PreToolUse hook reads. `None` (default) is the self-referential case — the fleet works in its own mission dir. Must be absolute (it becomes a governor scope root). |
 | `harness_rebinding_reserved` | `dict` | `{}` | Reserved for future harness hot-swap. Do not populate. |
 
 ### `MissionInfo`

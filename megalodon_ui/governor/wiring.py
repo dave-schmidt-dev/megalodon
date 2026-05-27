@@ -121,6 +121,22 @@ def governor_kwargs(
     return {"governor_settings": path}
 
 
+def lane_env(mission_config: Any) -> dict[str, str]:
+    """Per-lane process env overlay for work-on-target mode (Task 4).
+
+    When the mission declares a ``target_dir`` (the external repo the fleet edits
+    in place), every lane's ``claude`` process must carry ``MEGALODON_TARGET_DIR``
+    so the PreToolUse governor hook (a child of that process) admits target_dir as
+    a second write/read root. Seeding it onto the first ``new-session`` puts it on
+    the per-mission tmux server, so all panes inherit it. Empty dict when no
+    target_dir is set (the self-referential default) — nothing to overlay.
+    """
+    target_dir = getattr(mission_config, "target_dir", None)
+    if not target_dir:
+        return {}
+    return {"MEGALODON_TARGET_DIR": str(target_dir)}
+
+
 # ---------------------------------------------------------------------------
 # Governed-marker provenance (Task 2.5 / PM-6 / CR-2 / CV-6)
 #

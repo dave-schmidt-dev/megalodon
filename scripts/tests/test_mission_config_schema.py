@@ -47,6 +47,26 @@ def _minimal_config(**kwargs) -> MissionConfig:
 # ─── Tests ───────────────────────────────────────────────────────────
 
 
+def test_target_dir_defaults_none():
+    # Back-compat: a config with no target_dir is self-referential (the fleet
+    # works in its own mission dir, as every pre-work-on-target run did).
+    cfg = _minimal_config()
+    assert cfg.target_dir is None
+
+
+def test_target_dir_accepts_absolute_path():
+    cfg = _minimal_config(target_dir="/Users/dave/Documents/Projects/wilted")
+    restored = MissionConfig.model_validate(cfg.model_dump())
+    assert restored.target_dir == "/Users/dave/Documents/Projects/wilted"
+
+
+def test_target_dir_rejects_relative_path():
+    # target_dir becomes a governor write-scope root — a relative path would
+    # resolve against an ambiguous cwd, so require absolute.
+    with pytest.raises(ValidationError):
+        _minimal_config(target_dir="../wilted")
+
+
 def test_valid_load_minimum_required():
     cfg = _minimal_config()
     dumped = cfg.model_dump()

@@ -206,6 +206,23 @@ def _is_temp_path(canonical: str) -> bool:
     return any(_is_within(canonical, c) for c in ("/tmp", "/private/tmp"))
 
 
+def _within_scope(canonical: str, project_dir: Path, target_dir: Path | None) -> bool:
+    """True if a canonical path is within an allowed read/write root.
+
+    Allowed roots are ``project_dir``, the optional work-on-target ``target_dir``
+    (the external repo the fleet edits in place), and the usual ``/tmp`` scratch.
+    ``target_dir`` widens the sandbox by exactly ONE explicitly-configured root —
+    everything outside ``{project_dir, target_dir, /tmp}`` stays denied. Floors
+    (secret / anti-tamper) are checked by callers BEFORE this scope test, so an
+    in-target secret-path or governor-config write still denies.
+    """
+    if _is_within(canonical, str(project_dir)):
+        return True
+    if target_dir is not None and _is_within(canonical, str(target_dir)):
+        return True
+    return _is_temp_path(canonical)
+
+
 def _is_explicit_temp_target(raw: str) -> bool:
     """True if a raw (pre-canonical) path is an explicit scratch temp target.
 
@@ -221,7 +238,7 @@ def _is_explicit_temp_target(raw: str) -> bool:
 
 
 def _path_is_secret_or_out_of_scope(
-    path: str, *, project_dir: Path
+    path: str, *, project_dir: Path, target_dir: Path | None = None
 ) -> tuple[bool, str, str]:
     """Adjudicate a path argument.
 
@@ -241,8 +258,8 @@ def _path_is_secret_or_out_of_scope(
         if _SSH_DIR_RE.search(probe) or _SECRET_BASENAME_RE.match(probe):
             return True, f"secret path: {raw}", "secret-read"
 
-    # Scope check: must be within project_dir or an allowed temp dir.
-    if _is_within(canonical, str(project_dir)) or _is_temp_path(canonical):
+    # Scope check: must be within project_dir, the target repo, or a temp dir.
+    if _within_scope(canonical, project_dir, target_dir):
         return False, "", ""
     return True, f"path outside scope: {raw} -> {canonical}", "out-of-scope"
 
@@ -258,7 +275,9 @@ _ANTI_TAMPER_RE = re.compile(
 )
 
 
-def _adjudicate_write_target(path: str, *, project_dir: Path) -> Decision:
+def _adjudicate_write_target(
+    path: str, *, project_dir: Path, target_dir: Path | None = None
+) -> Decision:
     """Adjudicate a WRITE destination: anti-tamper + secret + scope.
 
     The single write-target lock. ONE helper, multiple call sites
@@ -278,8 +297,8 @@ def _adjudicate_write_target(path: str, *, project_dir: Path) -> Decision:
     if _SSH_DIR_RE.search(canonical) or _SECRET_BASENAME_RE.match(canonical):
         return _deny(f"write to secret path: {path}", "write-secret")
 
-    # Scope: must be within project_dir or an allowed temp dir.
-    if _is_within(canonical, str(project_dir)) or _is_temp_path(canonical):
+    # Scope: must be within project_dir, the target repo, or a temp dir.
+    if _within_scope(canonical, project_dir, target_dir):
         return _allow("write within scope", "write-ok")
     return _deny(f"write outside scope: {path} -> {canonical}", "write-out-of-scope")
 
@@ -777,7 +796,7 @@ _REDIRECT_TOKEN_RE = re.compile(r"^(?P<op>[0-9]*&?(?:>>|>|<<|<))(?P<tgt>.*)$")
 
 
 def _handle_redirects(
-    tokens: list[str], *, project_dir: Path
+    tokens: list[str], *, project_dir: Path, target_dir: Path | None = None
 ) -> tuple[Decision | None, list[str]]:
     """Adjudicate write-redirect targets and strip all redirect tokens.
 
@@ -800,7 +819,7 @@ def _handle_redirects(
                 i += 1
             if tgt and is_write:
                 verdict = _adjudicate_write_redirect_target(
-                    tgt, project_dir=project_dir
+                    tgt, project_dir=project_dir, target_dir=target_dir
                 )
                 if verdict is not None:
                     return verdict, out
@@ -812,7 +831,7 @@ def _handle_redirects(
 
 
 def _adjudicate_write_redirect_target(
-    target: str, *, project_dir: Path
+    target: str, *, project_dir: Path, target_dir: Path | None = None
 ) -> Decision | None:
     """Deny a ``>``/``>>`` redirect whose target fails the write-target lock.
 
@@ -833,7 +852,9 @@ def _adjudicate_write_redirect_target(
     resolved = (
         tgt if os.path.isabs(expanded) else os.path.join(str(project_dir), expanded)
     )
-    verdict = _adjudicate_write_target(resolved, project_dir=project_dir)
+    verdict = _adjudicate_write_target(
+        resolved, project_dir=project_dir, target_dir=target_dir
+    )
     if verdict.permission == "deny":
         # Re-attribute against the original spelling for a clearer reason.
         return _deny(verdict.reason.replace(resolved, tgt), verdict.category)
@@ -1039,7 +1060,11 @@ def _mutation_operands(
 
 
 def _adjudicate_mutation_head(
-    head_base: str, tokens: list[str], *, project_dir: Path
+    head_base: str,
+    tokens: list[str],
+    *,
+    project_dir: Path,
+    target_root: Path | None = None,
 ) -> Decision | None:
     """Adjudicate a mutation-head segment: secret-source floor + write-target lock.
 
@@ -1157,7 +1182,9 @@ def _adjudicate_mutation_head(
         if not cand:
             continue
         blocked, reason, category = _path_is_secret_or_out_of_scope(
-            _anchor_to_project(cand, project_dir), project_dir=project_dir
+            _anchor_to_project(cand, project_dir),
+            project_dir=project_dir,
+            target_dir=target_root,
         )
         if blocked:
             return _deny(f"{reason} (via {head_base})", category)
@@ -1177,7 +1204,9 @@ def _adjudicate_mutation_head(
                 "write-out-of-scope",
             )
         resolved = _anchor_to_project(cand, project_dir)
-        verdict = _adjudicate_write_target(resolved, project_dir=project_dir)
+        verdict = _adjudicate_write_target(
+            resolved, project_dir=project_dir, target_dir=target_root
+        )
         if verdict.permission == "deny":
             # Re-attribute against the original spelling for a clearer reason.
             return _deny(verdict.reason.replace(resolved, cand), verdict.category)
@@ -1271,7 +1300,9 @@ def _peel_env_flags(rest: list[str]) -> tuple[list[str], Decision | None]:
     return rest[i:], None
 
 
-def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
+def _adjudicate_segment(
+    segment: str, *, project_dir: Path, target_dir: Path | None = None
+) -> Decision | None:
     """Adjudicate one Bash segment. Return a deny Decision or None (segment ok).
 
     ``None`` means "this segment raised no objection"; the caller treats an
@@ -1291,7 +1322,9 @@ def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
     # Adjudicate write-redirect (`>`/`>>`) targets for destructiveness, then
     # drop ALL redirect tokens (incl. benign `2>/dev/null`, `<input`) so they
     # are not mistaken for path operands of the head command.
-    redirect_verdict, tokens = _handle_redirects(tokens, project_dir=project_dir)
+    redirect_verdict, tokens = _handle_redirects(
+        tokens, project_dir=project_dir, target_dir=target_dir
+    )
     if redirect_verdict is not None:
         return redirect_verdict
 
@@ -1448,7 +1481,9 @@ def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
     # out-of-scope writes (`tee -a /etc/sudoers`, `truncate -s 0 /etc/hosts`)
     # are denied. Fail-closed on unparseable operands.
     if head_base in _MUTATION_HEADS:
-        mut = _adjudicate_mutation_head(head_base, tokens, project_dir=project_dir)
+        mut = _adjudicate_mutation_head(
+            head_base, tokens, project_dir=project_dir, target_root=target_dir
+        )
         if mut is not None:
             return mut
 
@@ -1460,7 +1495,7 @@ def _adjudicate_segment(segment: str, *, project_dir: Path) -> Decision | None:
             if _looks_like_path(cand):
                 # Full check: secret signatures + scope (canonicalized).
                 blocked, reason, category = _path_is_secret_or_out_of_scope(
-                    cand, project_dir=project_dir
+                    cand, project_dir=project_dir, target_dir=target_dir
                 )
                 if blocked:
                     return _deny(f"{reason} (via {head_base})", category)
@@ -1604,7 +1639,9 @@ def _override_allows(segment: str, head_base: str, *, project_dir: Path) -> bool
 # ---------------------------------------------------------------------------
 
 
-def _decide_bash(tool_input: dict, *, project_dir: Path) -> Decision:
+def _decide_bash(
+    tool_input: dict, *, project_dir: Path, target_dir: Path | None = None
+) -> Decision:
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
         # Nothing to run — allow (empty command is inert).
@@ -1652,7 +1689,9 @@ def _decide_bash(tool_input: dict, *, project_dir: Path) -> Decision:
         return _allow("no actionable segments", "bash-empty")
 
     for segment in segments:
-        verdict = _adjudicate_segment(segment, project_dir=project_dir)
+        verdict = _adjudicate_segment(
+            segment, project_dir=project_dir, target_dir=target_dir
+        )
         if verdict is not None and verdict.permission == "deny":
             # Operator allow-override: flip a deny to allow UNLESS it is a
             # non-overridable floor category.
@@ -1681,20 +1720,24 @@ def _decide_bash(tool_input: dict, *, project_dir: Path) -> Decision:
 # ---------------------------------------------------------------------------
 
 
-def _decide_read(tool_input: dict, *, project_dir: Path) -> Decision:
+def _decide_read(
+    tool_input: dict, *, project_dir: Path, target_dir: Path | None = None
+) -> Decision:
     path = tool_input.get("file_path") or tool_input.get("path")
     if not isinstance(path, str) or not path:
         # Grep/Glob may search the cwd with no explicit path — allow.
         return _allow("read-style tool, no path arg", "read-ok")
     blocked, reason, category = _path_is_secret_or_out_of_scope(
-        path, project_dir=project_dir
+        path, project_dir=project_dir, target_dir=target_dir
     )
     if blocked:
         return _deny(reason, category)
     return _allow("read within scope", "read-ok")
 
 
-def _decide_write(tool_input: dict, *, project_dir: Path) -> Decision:
+def _decide_write(
+    tool_input: dict, *, project_dir: Path, target_dir: Path | None = None
+) -> Decision:
     path = (
         tool_input.get("file_path")
         or tool_input.get("notebook_path")
@@ -1703,7 +1746,9 @@ def _decide_write(tool_input: dict, *, project_dir: Path) -> Decision:
     if not isinstance(path, str) or not path:
         return _deny("write tool missing target path", "write-out-of-scope")
     # Single write-target lock (anti-tamper + secret + scope).
-    return _adjudicate_write_target(path, project_dir=project_dir)
+    return _adjudicate_write_target(
+        path, project_dir=project_dir, target_dir=target_dir
+    )
 
 
 # Committed WebFetch/WebSearch host allowlist. Resolved relative to THIS
@@ -1782,13 +1827,17 @@ def decide(
     *,
     project_dir: Path | str,
     lane: str,
+    target_dir: Path | str | None = None,
 ) -> Decision:
     """Adjudicate a single PreToolUse event. Pure + fail-closed.
 
     Args:
         tool_name: The tool being invoked (e.g. ``"Bash"``, ``"Read"``).
         tool_input: The structured PreToolUse input dict for that tool.
-        project_dir: The mission/run dir — the scope boundary.
+        project_dir: The mission/run dir — the primary scope boundary.
+        target_dir: Optional second read/write root (work-on-target mode): the
+            external repo the fleet edits in place. When set, allowed roots are
+            exactly ``{project_dir, target_dir, /tmp}``; floors are unaffected.
         lane: Opaque lane id. Reserved for the caller/audit layer (Task 1.2);
             the decision itself does NOT depend on or echo it. Kept in the
             signature so the hook can pass it through without a later breaking
@@ -1800,6 +1849,7 @@ def decide(
     """
     try:
         pdir = Path(project_dir)
+        tdir = Path(target_dir) if target_dir else None
         tin = tool_input if isinstance(tool_input, dict) else {}
         # `lane` is reserved for the caller/audit layer (Task 1.2); the decision
         # does not depend on it. Explicit no-op so the contract param is kept.
@@ -1815,13 +1865,13 @@ def decide(
             )
 
         if tool_name == "Bash":
-            return _decide_bash(tin, project_dir=pdir)
+            return _decide_bash(tin, project_dir=pdir, target_dir=tdir)
 
         if tool_name in _READ_TOOLS:
-            return _decide_read(tin, project_dir=pdir)
+            return _decide_read(tin, project_dir=pdir, target_dir=tdir)
 
         if tool_name in _WRITE_TOOLS:
-            return _decide_write(tin, project_dir=pdir)
+            return _decide_write(tin, project_dir=pdir, target_dir=tdir)
 
         if tool_name in _NETWORK_TOOLS:
             url = tin.get("url") or tin.get("query") or ""

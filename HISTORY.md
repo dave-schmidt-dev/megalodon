@@ -10,6 +10,40 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-27 — `target_dir`: work-on-target mode (governor second write/read root)
+
+Enables pointing the fleet at an EXTERNAL repo it edits *in place* (e.g. wilted),
+while protocol/mission state stays in the mission dir. Previously every run was
+self-referential because the governor's write-scope was hard-locked to a single
+`project_dir` (a non-overridable floor) and lanes' cwd was always the mission dir.
+
+- **Governor** (`megalodon_ui/governor/policy.py`): `decide(..., target_dir=None)`
+  threads an optional second scope root through the two scope leaves
+  (`_adjudicate_write_target`, `_path_is_secret_or_out_of_scope`) and the bash
+  write/read paths (redirects, `cp`/`mv`/`tee` mutation heads, read-style heads)
+  via a single `_within_scope(canonical, project_dir, target_dir)` helper. Allowed
+  roots become exactly `{project_dir, target_dir, /tmp}`. **Floors are unaffected**
+  — a secret/anti-tamper/out-of-(both)-scope write still denies. Destructive `rm
+  -rf`/`tar -C` stay project-scoped by design (recursive-destructive only ever
+  allowed under an explicit `/tmp` literal).
+- **Schema** (`mission_config/schema.py`): `MissionConfig.target_dir: str | None`,
+  validated absolute (it becomes a governor scope root). Absent ⇒ `None` (back-compat).
+- **Hook** (`governor/hook.py`): reads `MEGALODON_TARGET_DIR` env → `decide(target_dir=)`.
+- **Spawn** (`spawn.py` + `governor/wiring.py:lane_env`): exports `MEGALODON_TARGET_DIR`
+  onto every lane's `claude` env (seeds the per-mission tmux server, so all panes
+  inherit it and the hook subprocess sees it). Applied at both fresh-spawn and
+  reattach sites.
+- **Tests (TDD, RED→GREEN throughout):** `scripts/tests/test_governor_target_dir.py`
+  (12 cases — native + bash write/read into target allowed; third-dir denied even
+  with target set; secret floor still denies inside target; default-safe when unset),
+  plus target_dir cases added to `test_governor_hook.py`, `test_governor_wiring.py`,
+  `test_mission_config_schema.py`. Full red-team matrix + policy suite stay green
+  (no floor loosened). `make gate` green (1693 pass / 3 xfail); real-tmux isolated
+  tier green (15 pass).
+- [bug] Pre-existing lint failure unblocked: unused `pytest` import in
+  `scripts/tests/test_gate_covers_all_projects.py` (committed in 09b1a59, broke
+  `make lint`) | files: scripts/tests/test_gate_covers_all_projects.py
+
 ## 2026-05-27 — Test-suite + governor hardening (Phase 4 of the audit plan)
 
 Implementation of `docs/superpowers/plans/2026-05-27-test-suite-and-governor-hardening.md`. Subagent-driven; P0 hardened over 4 red-team review rounds.

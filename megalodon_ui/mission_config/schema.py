@@ -97,6 +97,28 @@ class MissionConfig(BaseModel):
     # preflight (a disabled governor must not block spawn on a missing hook).
     governor_enabled: bool = True
 
+    # Work-on-target mode. When set, the fleet's mission/protocol state lives in
+    # this mission dir (project_dir) while the fleet READS and EDITS the external
+    # repo at target_dir in place. The governor admits target_dir as a SECOND
+    # write/read root (alongside project_dir); floors are unaffected. None (the
+    # default) is the self-referential case: the fleet works in its own dir.
+    # Must be ABSOLUTE — it becomes a governor scope root, so an ambiguous
+    # relative cwd is not allowed.
+    target_dir: str | None = None
+
+    @field_validator("target_dir")
+    @classmethod
+    def target_dir_absolute(cls, v):
+        if v is not None:
+            import os
+
+            if not os.path.isabs(v):
+                raise ValueError(
+                    f"target_dir must be an absolute path (got {v!r}); it becomes "
+                    f"a governor write-scope root."
+                )
+        return v
+
     @field_validator("lanes")
     @classmethod
     def lane_names_unique(cls, v):

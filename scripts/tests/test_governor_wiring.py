@@ -29,11 +29,30 @@ from megalodon_ui.governor.wiring import (
     governor_enabled,
     governor_kwargs,
     governor_settings_path,
+    lane_env,
     preflight_governor,
 )
 from megalodon_ui.mission_config.default_v9_0_shape import synthesize
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+# ---------------------------------------------------------------------------
+# lane_env — work-on-target MEGALODON_TARGET_DIR plumbing
+# ---------------------------------------------------------------------------
+
+
+def test_lane_env_empty_when_no_target_dir():
+    cfg = synthesize(Path("/tmp/some-mission"))  # default config has no target_dir
+    assert lane_env(cfg) == {}
+
+
+def test_lane_env_sets_target_dir_when_configured():
+    cfg = synthesize(Path("/tmp/some-mission"))
+    cfg.target_dir = "/Users/dave/Documents/Projects/wilted"
+    assert lane_env(cfg) == {
+        "MEGALODON_TARGET_DIR": "/Users/dave/Documents/Projects/wilted"
+    }
 
 
 # ---------------------------------------------------------------------------

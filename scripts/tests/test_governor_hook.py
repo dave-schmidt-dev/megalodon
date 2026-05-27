@@ -93,6 +93,42 @@ def _read_latest_audit_line(fleet_dir: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def test_write_to_target_dir_allowed_with_env(tmp_path: Path) -> None:
+    """With MEGALODON_TARGET_DIR set, a Write into that external repo is allowed.
+
+    tmp_path lives under /var/folders (not /tmp), so the policy does not
+    auto-allow it as scratch — the allow must come from target-dir scope.
+    """
+    project_dir = tmp_path / "mission"
+    project_dir.mkdir()
+    target_dir = tmp_path / "wilted"
+    target_dir.mkdir()
+    event = _make_event(
+        tool_name="Write",
+        tool_input={"file_path": str(target_dir / "src" / "foo.py")},
+        cwd=str(project_dir),
+    )
+    result, _ = _run(
+        event, project_dir, extra_env={"MEGALODON_TARGET_DIR": str(target_dir)}
+    )
+    assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_write_to_target_dir_denied_without_env(tmp_path: Path) -> None:
+    """No MEGALODON_TARGET_DIR → the external path is out of scope (default-safe)."""
+    project_dir = tmp_path / "mission"
+    project_dir.mkdir()
+    target_dir = tmp_path / "wilted"
+    target_dir.mkdir()
+    event = _make_event(
+        tool_name="Write",
+        tool_input={"file_path": str(target_dir / "src" / "foo.py")},
+        cwd=str(project_dir),
+    )
+    result, _ = _run(event, project_dir)
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_allow_benign_bash(tmp_path: Path) -> None:
     """A safe 'ls' command → permissionDecision == 'allow', audit written."""
     project_dir = tmp_path / "mission"

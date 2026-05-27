@@ -22,6 +22,7 @@ from megalodon_ui.governor.wiring import (
     governor_enabled,
     governor_kwargs,
     governor_settings_path,
+    lane_env,
     preflight_governor,
     read_governed_marker_is_valid,
     remove_governed_marker,
@@ -354,6 +355,9 @@ class FleetSpawner:
                         **({"live_repl": True} if lane_cfg.live_repl else {}),
                         **_gov_kw,
                     )
+                    # Work-on-target (Task 4): seed MEGALODON_TARGET_DIR (see fresh-
+                    # spawn note below) so a reattached lane is also target-scoped.
+                    env = {**env, **lane_env(self.mission_config)}
                     stream_log = self.mission_dir / ".fleet" / f"{short}.stream.log"
                     # Governance PROVENANCE (Task 2.5): the LIVE process is the
                     # OLD one — its regime is whatever it was BORN with, which the
@@ -449,6 +453,9 @@ class FleetSpawner:
                 **({"live_repl": True} if lane_cfg.live_repl else {}),
                 **_gov_kw,
             )
+            # Work-on-target (Task 4): seed MEGALODON_TARGET_DIR so the governor
+            # hook admits the external repo as a second write/read root.
+            env = {**env, **lane_env(self.mission_config)}
             session_name = f"lane-{short}"
             # Governance PROVENANCE (Task 2.5): a FRESH spawn's process is born
             # exactly with `argv`, so `_gov_kw` is authoritative — when it carries

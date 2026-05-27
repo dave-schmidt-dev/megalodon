@@ -16,8 +16,6 @@ MUST appear in the Makefile's `E2E_CHROMIUM` project list (what `make test-e2e` 
 import re
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLAYWRIGHT_CONFIG = REPO_ROOT / "ui" / "tests" / "e2e" / "playwright.config.ts"
 MAKEFILE = REPO_ROOT / "Makefile"

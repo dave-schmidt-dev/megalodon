@@ -322,6 +322,12 @@ def run(
     project_dir_str = _env.get("CLAUDE_PROJECT_DIR") or cwd or "."
     project_dir = Path(project_dir_str)
 
+    # target_dir (work-on-target mode): the external repo the fleet edits in
+    # place. Set by spawn from mission-config `target_dir`. When present it is a
+    # SECOND governor read/write root; absent ⇒ self-referential (default-safe).
+    target_dir_str = _env.get("MEGALODON_TARGET_DIR") or ""
+    target_dir = Path(target_dir_str) if target_dir_str else None
+
     # lane: basename of the event cwd (simple, documented; refined in later wiring).
     lane = Path(cwd).name if cwd else "unknown"
 
@@ -334,6 +340,7 @@ def run(
             tool_input if isinstance(tool_input, dict) else {},
             project_dir=project_dir,
             lane=lane,
+            target_dir=target_dir,
         )
     except Exception as exc:  # noqa: BLE001 — belt-and-suspenders (decide never raises)
         decision = Decision(
