@@ -77,14 +77,21 @@ const PROJECT_TO_LABEL: Record<string, string> = {
   'chromium-default': 'def-c',
   'chromium-mutations': 'mut-c',
   'chromium-failure-modes': 'fail-c',
-  'chromium-v92-dashboard': 'v92-c',
-  'chromium-board': 'board-c',
+  // P2.6: v92 + board projects split into read-only (parallel) and mutation
+  // (workers:1) halves; each half owns its own tmpdir. Labels mirror the
+  // `fixtures` object in playwright.config.ts.
+  'chromium-v92-ro': 'v92ro-c',
+  'chromium-v92-mut': 'v92mut-c',
+  'chromium-board-ro': 'boardro-c',
+  'chromium-board-mut': 'boardmut-c',
   'chromium-grid-smoke': 'smoke-c',
   'webkit-default': 'def-w',
   'webkit-mutations': 'mut-w',
   'webkit-failure-modes': 'fail-w',
-  'webkit-v92-dashboard': 'v92-w',
-  'webkit-board': 'board-w',
+  'webkit-v92-ro': 'v92ro-w',
+  'webkit-v92-mut': 'v92mut-w',
+  'webkit-board-ro': 'boardro-w',
+  'webkit-board-mut': 'boardmut-w',
 };
 
 export function fixtureRootForProject(testInfo: TestInfo): string {

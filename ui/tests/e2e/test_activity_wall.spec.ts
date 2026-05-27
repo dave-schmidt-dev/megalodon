@@ -29,17 +29,26 @@ import { fixtureRootForProject, readUiToken } from './_helpers';
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Per-test isolation: every written filename is prefixed with the running
+// test's testId. The activity-wall watchers (event_tail.watch_dir_for_new_files
+// over findings/ and signals/) scan their dir NON-recursively for regular files,
+// so a per-test SUBDIR would never be observed by the server — we namespace the
+// FILENAME by testId instead. This guarantees two tests in this (workers:1)
+// project can never collide on a filename even if Date.now() coincides.
+// Belt-and-suspenders: the project is already serial.
+
 /** Ensure the findings/ dir exists and write a new finding file. */
 function writeFixtureFinding(
   fixtureRoot: string,
   name: string,
   lane: string,
+  testInfo: TestInfo,
   content?: string,
 ): void {
   const dir = path.join(fixtureRoot, 'findings');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const body = content ?? `---\nlane: LANE-${lane}\nagent: agent-test\ntask: T99\nseverity: MINOR\nutc: 2026-05-20T00:00Z\n---\n\n# Test finding\n\nBody.\n`;
-  writeFileSync(path.join(dir, name), body, 'utf-8');
+  writeFileSync(path.join(dir, `${testInfo.testId}-${name}`), body, 'utf-8');
 }
 
 /** Ensure the signals/ dir exists and write a new signal file. */
@@ -47,12 +56,13 @@ function writeFixtureSignal(
   fixtureRoot: string,
   name: string,
   lane: string,
+  testInfo: TestInfo,
   content?: string,
 ): void {
   const dir = path.join(fixtureRoot, 'signals');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const body = content ?? `---\nlane: LANE-${lane}\nagent: agent-test\nts: 2026-05-20T00:00Z\n---\n\n# Test signal\n\nBody.\n`;
-  writeFileSync(path.join(dir, name), body, 'utf-8');
+  writeFileSync(path.join(dir, `${testInfo.testId}-${name}`), body, 'utf-8');
 }
 
 /**
@@ -93,11 +103,11 @@ test.describe('activity wall: snapshot hydration', () => {
     // Write 3 findings + 2 signals before navigating.
     // The server is already running; the poll loop picks them up within 250ms
     // and they will be in the ring buffer when the snapshot is fetched.
-    writeFixtureFinding(fixtureRoot, `agent-snap-A-${ts}-1.md`, 'A');
-    writeFixtureFinding(fixtureRoot, `agent-snap-A-${ts}-2.md`, 'A');
-    writeFixtureFinding(fixtureRoot, `agent-snap-B-${ts}-3.md`, 'B');
-    writeFixtureSignal(fixtureRoot, `agent-snap-A-${ts}-sig1.md`, 'A');
-    writeFixtureSignal(fixtureRoot, `agent-snap-C-${ts}-sig2.md`, 'C');
+    writeFixtureFinding(fixtureRoot, `agent-snap-A-${ts}-1.md`, 'A', testInfo);
+    writeFixtureFinding(fixtureRoot, `agent-snap-A-${ts}-2.md`, 'A', testInfo);
+    writeFixtureFinding(fixtureRoot, `agent-snap-B-${ts}-3.md`, 'B', testInfo);
+    writeFixtureSignal(fixtureRoot, `agent-snap-A-${ts}-sig1.md`, 'A', testInfo);
+    writeFixtureSignal(fixtureRoot, `agent-snap-C-${ts}-sig2.md`, 'C', testInfo);
 
     // Wait at least one poll cycle (250ms) for the server to ingest the files.
     await page.waitForTimeout(600);
@@ -135,7 +145,7 @@ test.describe('activity wall: live event arrival via SSE', () => {
     await page.waitForTimeout(400);
 
     const uniqueName = `agent-live-A-${Date.now()}.md`;
-    writeFixtureFinding(fixtureRoot, uniqueName, 'A');
+    writeFixtureFinding(fixtureRoot, uniqueName, 'A', testInfo);
 
     const list = page.locator('[data-testid="aw-list"]');
     // Row summary = file stem (activity_wall.py _build_file_event: path.stem[:200]).
@@ -165,8 +175,8 @@ test.describe('activity wall: filter chips', () => {
     const ts = Date.now();
 
     // Write one of each type so both exist in the ring buffer.
-    writeFixtureFinding(fixtureRoot, `agent-filter-A-${ts}-f.md`, 'A');
-    writeFixtureSignal(fixtureRoot, `agent-filter-A-${ts}-s.md`, 'A');
+    writeFixtureFinding(fixtureRoot, `agent-filter-A-${ts}-f.md`, 'A', testInfo);
+    writeFixtureSignal(fixtureRoot, `agent-filter-A-${ts}-s.md`, 'A', testInfo);
 
     await page.waitForTimeout(600);
     await authenticateAndGotoGrid(page, testInfo);
@@ -219,7 +229,7 @@ test.describe('activity wall: pause / resume', () => {
 
     // Pre-populate enough events to make the list scrollable.
     for (let i = 0; i < 40; i++) {
-      writeFixtureFinding(fixtureRoot, `agent-pause-A-${ts}-${i}.md`, 'A');
+      writeFixtureFinding(fixtureRoot, `agent-pause-A-${ts}-${i}.md`, 'A', testInfo);
     }
     await page.waitForTimeout(700);
 
@@ -241,7 +251,7 @@ test.describe('activity wall: pause / resume', () => {
     await expect(page.locator('[data-testid="aw-pause-btn"]')).toContainText('Resume', { timeout: 2_000 });
 
     // Write a new event after pausing.
-    writeFixtureFinding(fixtureRoot, `agent-pause-A-${ts}-after.md`, 'A');
+    writeFixtureFinding(fixtureRoot, `agent-pause-A-${ts}-after.md`, 'A', testInfo);
 
     // Wait long enough for the event to arrive (SSE poll ≈250ms).
     await page.waitForTimeout(700);
@@ -266,7 +276,7 @@ test.describe('activity wall: row drawer', () => {
     const fixtureRoot = fixtureRootForProject(testInfo);
     const ts = Date.now();
 
-    writeFixtureFinding(fixtureRoot, `agent-drawer-A-${ts}.md`, 'A');
+    writeFixtureFinding(fixtureRoot, `agent-drawer-A-${ts}.md`, 'A', testInfo);
     await page.waitForTimeout(600);
 
     await authenticateAndGotoGrid(page, testInfo);
@@ -296,7 +306,7 @@ test.describe('activity wall: row drawer', () => {
     const fixtureRoot = fixtureRootForProject(testInfo);
     const ts = Date.now();
 
-    writeFixtureFinding(fixtureRoot, `agent-drawerx-A-${ts}.md`, 'A');
+    writeFixtureFinding(fixtureRoot, `agent-drawerx-A-${ts}.md`, 'A', testInfo);
     await page.waitForTimeout(600);
 
     await authenticateAndGotoGrid(page, testInfo);

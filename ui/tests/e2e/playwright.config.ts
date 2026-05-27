@@ -64,33 +64,49 @@ const fixtures = {
   defaultChromium: prepareFixture('fix-medium', 'def-c'),
   mutationsChromium: prepareFixture('fix-medium', 'mut-c'),
   failureModesChromium: prepareFixture('fix-medium-failure-modes', 'fail-c'),
-  v92Chromium: prepareFixture('fix-medium-v92', 'v92-c'),
-  boardChromium: prepareFixture('fix-small', 'board-c'),
+  // P2.6: v92 project split into read-only (parallel) + mutation (workers:1)
+  // halves; each owns its own tmpdir so the parallel RO half can never observe
+  // the MUT half's server-state writes (and vice-versa).
+  v92RoChromium: prepareFixture('fix-medium-v92', 'v92ro-c'),
+  v92MutChromium: prepareFixture('fix-medium-v92', 'v92mut-c'),
+  // P2.6: board project split into read-only (parallel) + mutation (workers:1)
+  // halves; each owns its own tmpdir.
+  boardRoChromium: prepareFixture('fix-small', 'boardro-c'),
+  boardMutChromium: prepareFixture('fix-small', 'boardmut-c'),
   // Phase-1 smoke: same 3-lane fix-small fixture, fake spawner enabled.
   gridSmokeChromium: prepareFixture('fix-small', 'smoke-c'),
   defaultWebkit: prepareFixture('fix-medium', 'def-w'),
   mutationsWebkit: prepareFixture('fix-medium', 'mut-w'),
   failureModesWebkit: prepareFixture('fix-medium-failure-modes', 'fail-w'),
-  v92Webkit: prepareFixture('fix-medium-v92', 'v92-w'),
-  boardWebkit: prepareFixture('fix-small', 'board-w'),
+  v92RoWebkit: prepareFixture('fix-medium-v92', 'v92ro-w'),
+  v92MutWebkit: prepareFixture('fix-medium-v92', 'v92mut-w'),
+  boardRoWebkit: prepareFixture('fix-small', 'boardro-w'),
+  boardMutWebkit: prepareFixture('fix-small', 'boardmut-w'),
 };
 
 // Port allocation: keep chromium on the original 8765-8767 plus 8768 for v92;
-// webkit gets 8775-8778. Board project gets 8769. Smoke gets 8770.
+// webkit gets 8775-8778. Smoke gets 8770.
+// P2.6: the v92 and board projects each split into RO + MUT halves, each with
+// its own webServer/port. Chromium RO/MUT halves get 8768/8771 (v92) and
+// 8769/8772 (board); webkit gets 8778/8780 (v92) and 8779/8781 (board).
 // Mismatched-port assertions in specs read from baseURL, not literal ports,
 // so this is purely an operational convenience.
 const ports = {
   defaultChromium: 8765,
   mutationsChromium: 8766,
   failureModesChromium: 8767,
-  v92Chromium: 8768,
-  boardChromium: 8769,
+  v92RoChromium: 8768,
+  v92MutChromium: 8771,
+  boardRoChromium: 8769,
+  boardMutChromium: 8772,
   gridSmokeChromium: 8770,
   defaultWebkit: 8775,
   mutationsWebkit: 8776,
   failureModesWebkit: 8777,
-  v92Webkit: 8778,
-  boardWebkit: 8779,
+  v92RoWebkit: 8778,
+  v92MutWebkit: 8780,
+  boardRoWebkit: 8779,
+  boardMutWebkit: 8781,
 };
 
 const SERVER_CMD = (port: number, missionDir: string) =>
@@ -121,14 +137,18 @@ const PROJECT_TO_PORT: Record<string, number> = {
   'chromium-default': ports.defaultChromium,
   'chromium-mutations': ports.mutationsChromium,
   'chromium-failure-modes': ports.failureModesChromium,
-  'chromium-v92-dashboard': ports.v92Chromium,
-  'chromium-board': ports.boardChromium,
+  'chromium-v92-ro': ports.v92RoChromium,
+  'chromium-v92-mut': ports.v92MutChromium,
+  'chromium-board-ro': ports.boardRoChromium,
+  'chromium-board-mut': ports.boardMutChromium,
   'chromium-grid-smoke': ports.gridSmokeChromium,
   'webkit-default': ports.defaultWebkit,
   'webkit-mutations': ports.mutationsWebkit,
   'webkit-failure-modes': ports.failureModesWebkit,
-  'webkit-v92-dashboard': ports.v92Webkit,
-  'webkit-board': ports.boardWebkit,
+  'webkit-v92-ro': ports.v92RoWebkit,
+  'webkit-v92-mut': ports.v92MutWebkit,
+  'webkit-board-ro': ports.boardRoWebkit,
+  'webkit-board-mut': ports.boardMutWebkit,
 };
 
 // Projects that intentionally have NO Playwright-managed webServer (they spawn
@@ -181,15 +201,40 @@ const GRID_SMOKE_ENV = {
 // Specs that belong to the v9.2 dashboard project (xterm dashboard + auth +
 // followup + terminal-pane component). They use the fake spawner and exchange
 // state via /__fake__/*.
+//
+// P2.6 split: these specs were previously one `workers:1` project (serialized
+// because SOME of them mutate shared server state). Partitioned into:
+//   - V92_RO_PATTERN: render/read-only specs (no POST, no shared-file writes) →
+//     fully parallel, saturates the global worker pool.
+//   - V92_MUT_PATTERN: specs that POST to /__fake__/emit, /__fake__/set_state,
+//     or /api/v1/control-mode (global server state) → fullyParallel:false,
+//     workers:1.
+// V92_SPEC_PATTERN is retained as the union (used by DEFAULT_IGNORE etc.).
+const V92_RO_PATTERN = /(dashboard-loads|auth-redirect|followup-send-debounced)\.spec\.ts$/;
+const V92_MUT_PATTERN = /(streams-render|lane-exit-detected|followup|test_terminal_pane)\.spec\.ts$/;
 const V92_SPEC_PATTERN =
   /(dashboard-loads|auth-redirect|streams-render|lane-exit-detected|followup-send-debounced|followup|test_terminal_pane)\.spec\.ts$/;
 const FAILURE_MODES_PATTERN = /test_failure_modes\.spec\.ts$/;
 const MUTATIONS_PATTERN = /test_orchestrator_actions\.spec\.ts$/;
-// Board page specs run against the 3-lane fix-small fixture (chromium-board project).
+// Board page specs run against the 3-lane fix-small fixture (board projects).
 // Also includes lane_detail spec which navigates from the board.
 // The v9.4 phase-1 smoke spec runs against chromium-grid-smoke (fake spawner enabled).
-// The stale-badge spec (T2.8) runs under chromium-board because it needs MEGALODON_FAKE_SPAWNER=1
-// (uses _test/stale_override endpoint) — chromium-board includes MEGALODON_FAKE_SPAWNER.
+// The stale-badge spec (T2.8) runs under a board project because it needs MEGALODON_FAKE_SPAWNER=1
+// (uses _test/stale_override endpoint) — board projects include MEGALODON_FAKE_SPAWNER.
+//
+// P2.6 split: the board project was previously one `workers:1` project
+// (serialized only because SOME board specs mutate shared server state —
+// STATUS.md/findings/signals file writes, /__fake__/narrative, /__fake__/emit,
+// _test/stale_override, setControlMode). Partitioned into:
+//   - BOARD_RO_PATTERN: specs that only render/read the dashboard (no POST, no
+//     shared-file writes) → fullyParallel:true, saturates the global pool.
+//   - BOARD_MUT_PATTERN: specs that write fixture files or POST mutations →
+//     fullyParallel:false, workers:1.
+// Partition is exhaustive and disjoint over BOARD_SPEC_PATTERN (verified:
+// 15 RO + 17 MUT = 32). BOARD_SPEC_PATTERN is retained as the union for
+// DEFAULT_IGNORE and other ignore lists.
+const BOARD_RO_PATTERN = /(test_board_activity_backfill|test_board_activity_cap|test_board_activity_reconnect|test_board_coordination|test_board_frontdoor|test_board_goal_progress|test_board_phase_strip|test_board_reauth_nonblocking|test_board_rows|test_board_signals_3channels|test_board_signals_antispoof|test_board_status_change_guard|test_findings_page|test_mission_page|test_tasks_page)\.spec\.ts$/;
+const BOARD_MUT_PATTERN = /(test_activity_wall|test_approval_rules|test_board_activity_autoscroll|test_board_signals_live|test_signals_page|test_v94_phase2_smoke|test_board_auth_resilience|test_board_blocked_and_stale|test_board_drawer|test_board_fix_round3|test_board_narrative|test_board_precedence|test_board_safety|test_board_ungoverned|test_lane_detail|test_board_stale|test_stale_badge)\.spec\.ts$/;
 const BOARD_SPEC_PATTERN = /test_(board_[a-z0-9_]+|lane_detail|activity_wall|stale_badge|v94_phase2_smoke|findings_page|signals_page|mission_page|tasks_page|approval_rules)\.spec\.ts$/;
 const GRID_SMOKE_SPEC_PATTERN = /test_v94_phase1_smoke\.spec\.ts$/;
 // The restart-reconnect spec (Task D6 / PW-3) manages its OWN server process
@@ -246,18 +291,37 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.failureModesChromium}` },
     },
     {
-      name: 'chromium-v92-dashboard',
-      testMatch: V92_SPEC_PATTERN,
-      fullyParallel: false,
-      workers: 1,
-      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.v92Chromium}` },
+      // P2.6: v92 read-only half — no shared server-state writes, so fully
+      // parallel against the global worker cap.
+      name: 'chromium-v92-ro',
+      testMatch: V92_RO_PATTERN,
+      fullyParallel: true,
+      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.v92RoChromium}` },
     },
     {
-      name: 'chromium-board',
-      testMatch: BOARD_SPEC_PATTERN,
+      // P2.6: v92 mutation half — POSTs to /__fake__/* and /api/v1/control-mode
+      // share server state, so kept serial.
+      name: 'chromium-v92-mut',
+      testMatch: V92_MUT_PATTERN,
       fullyParallel: false,
       workers: 1,
-      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.boardChromium}` },
+      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.v92MutChromium}` },
+    },
+    {
+      // P2.6: board read-only half — render/read only, so fully parallel.
+      name: 'chromium-board-ro',
+      testMatch: BOARD_RO_PATTERN,
+      fullyParallel: true,
+      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.boardRoChromium}` },
+    },
+    {
+      // P2.6: board mutation half — fixture-file writes + /__fake__/narrative /
+      // _test/stale_override / setControlMode share server state, so serial.
+      name: 'chromium-board-mut',
+      testMatch: BOARD_MUT_PATTERN,
+      fullyParallel: false,
+      workers: 1,
+      use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${ports.boardMutChromium}` },
     },
     {
       name: 'chromium-grid-smoke',
@@ -296,20 +360,35 @@ export default defineConfig({
       use: { ...devices['Desktop Safari'], baseURL: `http://127.0.0.1:${ports.failureModesWebkit}` },
     },
     {
-      name: 'webkit-v92-dashboard',
-      testMatch: V92_SPEC_PATTERN,
-      fullyParallel: false,
-      workers: 1,
-      use: { ...devices['Desktop Safari'], baseURL: `http://127.0.0.1:${ports.v92Webkit}` },
+      // P2.6: webkit v92 read-only half (mirrors chromium-v92-ro).
+      name: 'webkit-v92-ro',
+      testMatch: V92_RO_PATTERN,
+      fullyParallel: true,
+      use: { ...devices['Desktop Safari'], baseURL: `http://127.0.0.1:${ports.v92RoWebkit}` },
     },
     {
-      // Safari-engine coverage for the board (operator uses Safari). Mirrors
-      // chromium-board: same BOARD_SPEC_PATTERN, fix-small fixture, fake spawner.
-      name: 'webkit-board',
-      testMatch: BOARD_SPEC_PATTERN,
+      // P2.6: webkit v92 mutation half (mirrors chromium-v92-mut).
+      name: 'webkit-v92-mut',
+      testMatch: V92_MUT_PATTERN,
       fullyParallel: false,
       workers: 1,
-      use: { ...devices['Desktop Safari'], baseURL: `http://127.0.0.1:${ports.boardWebkit}` },
+      use: { ...devices['Desktop Safari'], baseURL: `http://127.0.0.1:${ports.v92MutWebkit}` },
+    },
+    {
+      // Safari-engine coverage for the board (operator uses Safari).
+      // P2.6: read-only half — fully parallel (mirrors chromium-board-ro).
+      name: 'webkit-board-ro',
+      testMatch: BOARD_RO_PATTERN,
+      fullyParallel: true,
+      use: { ...devices['Desktop Safari'], baseURL: `http://127.0.0.1:${ports.boardRoWebkit}` },
+    },
+    {
+      // P2.6: webkit board mutation half — serial (mirrors chromium-board-mut).
+      name: 'webkit-board-mut',
+      testMatch: BOARD_MUT_PATTERN,
+      fullyParallel: false,
+      workers: 1,
+      use: { ...devices['Desktop Safari'], baseURL: `http://127.0.0.1:${ports.boardMutWebkit}` },
     },
   ],
 
@@ -323,14 +402,22 @@ export default defineConfig({
     { command: SERVER_CMD(ports.failureModesChromium, fixtures.failureModesChromium),
       url: `http://127.0.0.1:${ports.failureModesChromium}/`,
       reuseExistingServer: false, timeout: 30_000, env: NON_MUTATION_DEFAULT_ENV },
-    { command: SERVER_CMD(ports.v92Chromium, fixtures.v92Chromium),
-      url: `http://127.0.0.1:${ports.v92Chromium}/`,
+    // P2.6: v92 RO + MUT halves, each its own webServer/port/tmpdir.
+    { command: SERVER_CMD(ports.v92RoChromium, fixtures.v92RoChromium),
+      url: `http://127.0.0.1:${ports.v92RoChromium}/`,
       reuseExistingServer: false, timeout: 30_000, env: V92_ENV },
-    // chromium-board uses MEGALODON_FAKE_SPAWNER=1 so test_stale_badge.spec.ts
+    { command: SERVER_CMD(ports.v92MutChromium, fixtures.v92MutChromium),
+      url: `http://127.0.0.1:${ports.v92MutChromium}/`,
+      reuseExistingServer: false, timeout: 30_000, env: V92_ENV },
+    // board projects use MEGALODON_FAKE_SPAWNER=1 so test_stale_badge.spec.ts
     // can call _test/stale_override (T2.8). The board/lane_detail specs are
     // unaffected — they don't test spawner behaviour directly.
-    { command: SERVER_CMD(ports.boardChromium, fixtures.boardChromium),
-      url: `http://127.0.0.1:${ports.boardChromium}/`,
+    // P2.6: board RO + MUT halves, each its own webServer/port/tmpdir.
+    { command: SERVER_CMD(ports.boardRoChromium, fixtures.boardRoChromium),
+      url: `http://127.0.0.1:${ports.boardRoChromium}/`,
+      reuseExistingServer: false, timeout: 30_000, env: GRID_SMOKE_ENV },
+    { command: SERVER_CMD(ports.boardMutChromium, fixtures.boardMutChromium),
+      url: `http://127.0.0.1:${ports.boardMutChromium}/`,
       reuseExistingServer: false, timeout: 30_000, env: GRID_SMOKE_ENV },
     { command: SERVER_CMD(ports.gridSmokeChromium, fixtures.gridSmokeChromium),
       url: `http://127.0.0.1:${ports.gridSmokeChromium}/`,
@@ -344,11 +431,19 @@ export default defineConfig({
     { command: SERVER_CMD(ports.failureModesWebkit, fixtures.failureModesWebkit),
       url: `http://127.0.0.1:${ports.failureModesWebkit}/`,
       reuseExistingServer: false, timeout: 30_000, env: NON_MUTATION_DEFAULT_ENV },
-    { command: SERVER_CMD(ports.v92Webkit, fixtures.v92Webkit),
-      url: `http://127.0.0.1:${ports.v92Webkit}/`,
+    // P2.6: webkit v92 RO + MUT halves.
+    { command: SERVER_CMD(ports.v92RoWebkit, fixtures.v92RoWebkit),
+      url: `http://127.0.0.1:${ports.v92RoWebkit}/`,
       reuseExistingServer: false, timeout: 30_000, env: V92_ENV },
-    { command: SERVER_CMD(ports.boardWebkit, fixtures.boardWebkit),
-      url: `http://127.0.0.1:${ports.boardWebkit}/`,
+    { command: SERVER_CMD(ports.v92MutWebkit, fixtures.v92MutWebkit),
+      url: `http://127.0.0.1:${ports.v92MutWebkit}/`,
+      reuseExistingServer: false, timeout: 30_000, env: V92_ENV },
+    // P2.6: webkit board RO + MUT halves.
+    { command: SERVER_CMD(ports.boardRoWebkit, fixtures.boardRoWebkit),
+      url: `http://127.0.0.1:${ports.boardRoWebkit}/`,
+      reuseExistingServer: false, timeout: 30_000, env: GRID_SMOKE_ENV },
+    { command: SERVER_CMD(ports.boardMutWebkit, fixtures.boardMutWebkit),
+      url: `http://127.0.0.1:${ports.boardMutWebkit}/`,
       reuseExistingServer: false, timeout: 30_000, env: GRID_SMOKE_ENV },
   ]),
 });

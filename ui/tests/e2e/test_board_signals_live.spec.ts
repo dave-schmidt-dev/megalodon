@@ -36,7 +36,14 @@ test.describe('signals: live via activity-wall SSE', () => {
   test('a signal written after mount appears without reload', async ({ page }, testInfo: TestInfo) => {
     const fixtureRoot = fixtureRootForProject(testInfo);
     const ts = Date.now();
-    const topic = `live-handoff-${ts}`;
+    // Per-test isolation: fold the testId into the topic so the derived signal
+    // filename is unique to this test. The signals/ watcher
+    // (event_tail.watch_dir_for_new_files) scans the dir non-recursively for
+    // regular files, so a per-test SUBDIR would never be observed — namespacing
+    // the FILENAME is the watcher-safe equivalent. Belt-and-suspenders within
+    // this (workers:1) project. All assertions key off the `filename`/`topic`
+    // variables below, so the prefix is transparent to them.
+    const topic = `live-handoff-${testInfo.testId}-${ts}`;
     // Canonical grammar: LANE-<FROM>-to-LANE-<TO>-<topic>-<UTC>.md
     const filename = `LANE-A-to-LANE-B-${topic}-2026-05-25T18-49Z.md`;
 
