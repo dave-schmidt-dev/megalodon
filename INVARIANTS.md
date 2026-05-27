@@ -29,6 +29,17 @@ rationale: the governor is the only sandbox constraining the autonomous fleet ou
   script-head exec) are tracked as xfail(strict=True) in the same file — the converging
   fix (Bash-head allowlist) is a flagged v10 operator decision.
 
+### INV-5 — The local e2e gate runs every chromium Playwright project (no project-gap)
+area: ["Makefile", "ui/tests/e2e/playwright.config.ts"]
+gate_test: scripts/tests/test_gate_covers_all_projects.py
+threshold: 2
+rationale: local-gate re-expression of retired INV-3. A project-gap in the blocking gate
+  hid regressions twice — chromium-board-only gating let the CSRF-routes break and the
+  mission-status SSOT split ship because the un-run projects never failed. CI is gone; the
+  guardrail now asserts the Makefile `E2E_CHROMIUM` list covers every `chromium-*` project
+  defined in playwright.config.ts (webkit-* run in manual CI-parity sweeps, intentionally
+  out of the local gate).
+
 ## Retired
 
 ### INV-3 — The blocking CI gate covers every project (no chromium-board-only)
@@ -38,6 +49,6 @@ reason: CI removed entirely (operator decision — the value sought is push-time
   moot on a public repo). Megalodon's CI never gated the fleet's autonomous output
   (that lands in the target repo, validated by `target.gates` + the target's own
   CI); it only gated megalodon's own source. The coverage concern INV-3 encoded
-  (no project-gap hiding regressions) now belongs to the local gate — to be
-  re-expressed as a local-gate invariant once that gate is built.
+  (no project-gap hiding regressions) now belongs to the local gate — re-expressed
+  as INV-5 (2026-05-27, once `make gate` was built).
 former_rationale: chromium-board-only gating hid CSRF routes + mission-status split twice.
