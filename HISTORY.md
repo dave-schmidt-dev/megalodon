@@ -35,6 +35,14 @@ Implementation of `docs/superpowers/plans/2026-05-27-test-suite-and-governor-har
 - [remediation] De-hollowed tests that re-implemented production logic / asserted trivial truths | files: ui/static/js/app.js, ui/static/pages/signals.js, ui/tests/unit/test_signal_merge_dedupe.test.js, ui/tests/unit/test_router_path_params.test.js, scripts/tests/test_queue_applier.py, scripts/tests/test_spawn_unit.py
   - Exported the real `mergeSignals` (signals.js) and refactored the `_mountSeq` mount-race counter into an exported `{claim, isStale}` guard (app.js); the two JS tests now import and exercise the REAL functions instead of local copies. Queue T4 disk-full test now injects an `ENOSPC` failure on the HISTORY.md append ONLY and asserts the request is journaled REJECTED + HISTORY.md is byte-for-byte unmodified (was the trivially-true `"PENDING" in log or "REJECTED" in log`). `test_spawn_unit.py` now asserts `build_argv` was called with the real prompt/model/cwd, and stubs `adapter.session_log_dir` → kills a ~5s/lane discovery stall (20.4s → 0.17s).
 
+### P2 — parallel-safety + the fast local pre-push gate (the original ask)
+
+- [feature] Parallelized local test gate (`Makefile` + `pytest-xdist`) wired into a BLOCKING pre-push hook | files: Makefile, hooks/pre-push, pyproject.toml, README.md
+  - **Empirical finding:** under `pytest -n auto` the ONLY real parallel-unsafe test was `test_main_passes_fd_to_uvicorn.py` (binds the fixed mission port 8080 → cross-worker collision). The statically-predicted hazards (shared `/tmp` sockets, module globals, `id(app)`) do NOT fail — xdist workers are separate processes, and the flagged sockets are passed to mocked tmux (never bound). Fixed the port test with `xdist_group('megalodon_main_port_bind')` (+ `--dist loadgroup`).
+  - **Full isolation hardening done anyway (operator decision):** P2.2 module-level `/tmp` constants → per-test `tmp_path` fixtures (12 files); P2.3 import-time `POLL_INTERVAL_S` mutations → autouse `monkeypatch` fixtures; P2.4 server `_stale_cache`/`_TEST_STALE_OVERRIDES` → `MissionContext` (app-scoped, consume-on-read `.pop()` preserved); P2.5 sleep-barriers → bounded polling.
+  - **P2.6 Playwright:** split board + v92-dashboard into `*-ro` (fullyParallel) / `*-mut` (workers:1) projects on isolated webServers/tmpdirs; 3 disk-writing specs namespace writes by `testInfo.testId`. ~33% faster (61.7s vs 91.7s chromium).
+  - **The gate:** `make gate` (==`gate-fast`: test-py `-n auto` + test-js + lint, concurrent) = **~37s**, appended to `hooks/pre-push` AFTER the closed-loop harvest (harvest stays best-effort; gate failure blocks the push). `make gate-full` (+ real-tmux isolated + Playwright chromium) = ~3.5 min, run manually before a fleet launch. Suite under `-n auto`: 1642 passed / 2 xfailed in ~35s (was 139s serial, ~4×).
+
 ---
 
 ## 2026-05-27 — CI removed entirely; INV-3 retired

@@ -663,23 +663,34 @@ the developer's machine, where it is visible and under direct control — the
 explicit reason for dropping CI was push-time visibility a remote runner cannot
 provide. Cost was not the driver (standard runners are free on a public repo).
 
-The fast pre-commit hook stays (ruff + vulture on staged `.py`; activate with
-`git config core.hooksPath hooks`). The heavy gate is run locally:
+Two layers run locally:
 
-- baseline: `uv run --extra test pytest scripts/tests ui/tests/integration ui/tests/unit -q -m "not isolated"`
-- real-tmux isolated tier: `uv run --extra test pytest scripts/tests ui/tests -m isolated --forked -q` (runs on macOS — 15 passed / 2 xfail in ~82s, verified 2026-05-27; only skips if `tmux` is absent)
-- e2e: `npx playwright test --config=ui/tests/e2e/playwright.config.ts` (chromium projects)
-- lint/dead-code: `uv run --with 'ruff==0.15.14' ruff check megalodon_ui/ scripts/` ; `uvx vulture megalodon_ui scripts`
+1. **Fast pre-commit hook** (ruff + vulture on staged `.py`). Activate with
+   `git config core.hooksPath hooks`.
+2. **Blocking pre-push gate** — `hooks/pre-push` runs the closed-loop harvest
+   (best-effort) then `make gate`, which ABORTS the push on any failure. Bypass
+   in an emergency with `git push --no-verify`.
 
-> Note: older comments (this README's intro, `playwright.config.ts`) claim the
-> real-tmux tier is "CI-Linux-only" because macOS hits the 104-byte `sun_path`
-> socket limit. **That is stale** — the `tmux_socket` / `short_mission_dir`
-> conftest fixtures (`scripts/tests/conftest.py`) root the socket under a short
-> `/tmp` path, so the tier runs natively on macOS. Those stale comments are
-> pre-existing tech debt to correct.
+The gate is a `Makefile` (parallelized with `pytest-xdist`):
 
-A **parallelized local gate** (Makefile targets + `pytest-xdist` + per-worker
-Playwright server isolation for 8–12 workers) is the planned successor; until it
-lands, run the commands above by hand. The fleet's *autonomous output* is gated
-separately, in the target repo, by `target.gates` (the target's own test/lint),
-not by anything here.
+| Target | What it runs | Wall-time (M5 Max) |
+|---|---|---|
+| `make gate` (== `gate-fast`) | test-py (`-n auto`) + test-js + lint, **concurrent** | **~37s** |
+| `make gate-full` | `gate-fast` + real-tmux isolated tier + Playwright chromium matrix | ~3.5 min (209s) |
+| `make test-py` | Python suite, `-n auto --dist loadgroup`, `-m "not isolated"` | ~35s |
+| `make test-isolated` | real-tmux tier, `--forked` (runs on macOS) | ~94s |
+| `make test-js` | `node --test ui/tests/unit/*.test.js` | ~0.2s |
+| `make test-e2e` | Playwright chromium projects (ro parallel / mut serial) | ~60–120s |
+| `make lint` | `ruff==0.15.14` + `vulture` (pinned to match pre-commit) | ~3s |
+
+`make gate` is the blocking pre-push tier (fast enough to not get `--no-verify`'d);
+`make gate-full` adds the slow real-tmux + e2e tiers and is run manually before a
+fleet launch. `--dist loadgroup` honors the `xdist_group` marker on
+`test_main_passes_fd_to_uvicorn.py` (those tests bind a fixed port and must share
+one worker). The real-tmux isolated tier **runs natively on macOS** (the
+`tmux_socket` / `short_mission_dir` conftest fixtures root the socket under a
+short `/tmp` path, dodging the 104-byte `sun_path` limit); it only skips if
+`tmux` is absent.
+
+The fleet's *autonomous output* is gated separately, in the target repo, by
+`target.gates` (the target's own test/lint), not by anything here.

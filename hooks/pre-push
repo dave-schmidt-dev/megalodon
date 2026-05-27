@@ -1,3 +1,9 @@
 #!/usr/bin/env bash
 # best-effort closed-loop harvest on push (bypassable with --no-verify)
 ~/.agent/bin/harvest --repo "$(git rev-parse --show-toplevel)" || true
+
+# Blocking fast gate: test-py (parallel) + test-js + lint, ~37s. A failure here
+# ABORTS the push (no `|| true`). Bypass in an emergency with `git push
+# --no-verify`. The slow tiers (real-tmux isolated + Playwright e2e) are NOT in
+# the blocking gate — run `make gate-full` manually before a fleet launch.
+make -C "$(git rev-parse --show-toplevel)" gate
