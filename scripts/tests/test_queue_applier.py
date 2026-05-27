@@ -379,12 +379,21 @@ def test_t3_pending_overflow_drains_fifo(queue_mission):
 
 
 def test_t4_disk_full_mocked(queue_mission, monkeypatch):
-    """T4 — fsync ENOSPC simulation → reject + no corruption.
+    """T4 — disk-full (ENOSPC) on the HISTORY.md write ONLY.
 
-    AtomicFile.write fsyncs after writing; with fsync raising, the write
-    propagates as an OSError that the applier catches → REJECTED.
+    Narrow injection: AtomicFile.append raises ENOSPC *before writing a single
+    byte*, but ONLY when the target file is HISTORY.md. The journal write (a
+    different file, written via Journal, not AtomicFile.append) still succeeds,
+    so the applier's WAL is intact. The applier's unexpected-exception path
+    (applier.py) records the request as REJECTED in the journal and re-raises.
+
+    We assert the two things that actually matter:
+      1. the request is journaled REJECTED (specifically), and
+      2. HISTORY.md is byte-for-byte UNMODIFIED (no partial/corrupt append).
     """
-    queue_client.history_append(
+    from megalodon_ui.queue import applier as applier_mod
+
+    rid = queue_client.history_append(
         queue_mission,
         "agent-aaaa",
         "AUDIT",
@@ -393,25 +402,41 @@ def test_t4_disk_full_mocked(queue_mission, monkeypatch):
         "MAJOR",
     )
 
-    real_fsync = os.fsync
-    triggered = {"n": 0}
+    history_path = queue_mission / "HISTORY.md"
+    # Snapshot the exact pre-apply bytes so we can prove no partial write landed.
+    history_before = history_path.read_bytes()
 
-    def boom_fsync(fd):
-        # Only break on appends to HISTORY.md (not the journal).
-        triggered["n"] += 1
-        # Trigger after the journal write, before the HISTORY.md fsync.
-        if triggered["n"] >= 2:
+    real_append = applier_mod.AtomicFile.append
+
+    def boom_append(self, line):
+        # Fail ONLY the HISTORY.md append; every other target writes normally.
+        # Raise BEFORE touching the file so HISTORY.md stays byte-for-byte intact.
+        if self.path == history_path:
             raise OSError(28, "No space left on device")
-        return real_fsync(fd)
+        return real_append(self, line)
 
-    monkeypatch.setattr(os, "fsync", boom_fsync)
+    monkeypatch.setattr(applier_mod.AtomicFile, "append", boom_append)
     applier = Applier(queue_mission)
-    with pytest.raises(OSError):
+    # The unexpected-IO path records REJECTED then re-raises (operator-visible).
+    with pytest.raises(OSError) as excinfo:
         applier.drain_once()
-    monkeypatch.setattr(os, "fsync", real_fsync)
-    # Journal should show some attempt (PENDING or REJECTED entry).
+    assert excinfo.value.errno == 28
+    monkeypatch.undo()
+
+    # 1) The request is journaled as REJECTED — specifically, not merely PENDING.
     journal_log = (queue_mission / "queue" / "journal.log").read_text()
-    assert "PENDING" in journal_log or "REJECTED" in journal_log
+    rejected_rids = [
+        json.loads(ln)["rid"]
+        for ln in journal_log.splitlines()
+        if ln.strip() and json.loads(ln).get("status") == "REJECTED"
+    ]
+    assert rid in rejected_rids, (
+        f"expected rid {rid} journaled REJECTED; journal:\n{journal_log}"
+    )
+
+    # 2) HISTORY.md is byte-for-byte unchanged — no partial append survived the
+    #    failed write (no corruption on a disk-full failure).
+    assert history_path.read_bytes() == history_before
 
 
 # ---- Q1 intents ----

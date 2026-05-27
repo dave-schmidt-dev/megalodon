@@ -181,6 +181,31 @@ function _sortTimeMs(sig) {
   return 0;
 }
 
+/**
+ * Merge a snapshot (store) list with live signals, deduping on the stable id
+ * (`s.id`) first, then `filename`. Live entries overwrite snapshot entries that
+ * share a key (live is the freshest). Two signals with DIFFERENT keys are always
+ * both kept — the old filename-only key collapsed two distinct status-notes that
+ * shared a synthetic "status-note" filename into one entry (CONTRACT-SIGNAL-ID).
+ *
+ * Pure (no DOM, no sort) so it can be unit-tested directly; the render() closure
+ * calls this and then sorts the result newest-first.
+ *
+ * @param {Array<object>} snapshot
+ * @param {Map<string, object>} liveByKey
+ * @returns {Array<object>}
+ */
+export function mergeSignals(snapshot, liveByKey) {
+  const byKey = new Map();
+  for (const s of snapshot || []) {
+    if (!s) continue;
+    const key = s.id || s.filename;
+    if (key) byKey.set(key, s);
+  }
+  for (const [k, s] of liveByKey) byKey.set(k, s);
+  return [...byKey.values()];
+}
+
 /** Human label for a signal's source channel. */
 function sourceLabel(source) {
   if (source === "status-note") return "status";
@@ -358,14 +383,7 @@ export async function render(root, _params) {
    * @returns {Array<object>}
    */
   function mergedSignals() {
-    const byKey = new Map();
-    for (const s of store.get("signals.list") || []) {
-      if (!s) continue;
-      const key = s.id || s.filename;
-      if (key) byKey.set(key, s);
-    }
-    for (const [k, s] of liveByFilename) byKey.set(k, s);
-    const all = [...byKey.values()];
+    const all = mergeSignals(store.get("signals.list"), liveByFilename);
     // Newest-first by best-available time (M2). Status-note/finding signals
     // often have an empty `utc`; without a fallback they sort to the bottom and
     // never surface. Use the resolved signal UTC, falling back to the event ts

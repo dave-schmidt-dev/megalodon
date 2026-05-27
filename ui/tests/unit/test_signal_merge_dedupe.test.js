@@ -8,38 +8,15 @@
 //   a) Two events with DIFFERENT ids both survive — no cross-generation drop.
 //   b) Two events with the SAME id dedupe to one entry (live wins over snapshot).
 //
-// Since mergedSignals() is a closure inside render() we test the same logic
-// directly here by re-implementing the dedup contract under node:test.
-// The actual implementation in signals.js:mergedSignals() was updated to key
-// on `s.id || s.filename` so this test verifies the contract is sound.
+// mergedSignals() is a closure inside render(), but its dedupe core is the
+// exported module-level pure function `mergeSignals(snapshot, liveByKey)` in
+// signals.js. We import and exercise that REAL function here (no DOM needed) so
+// the test verifies the production merge/dedupe, not a local copy.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-// ---------------------------------------------------------------------------
-// Pure-logic re-implementation of the merge contract (no DOM needed).
-// Mirrors the updated mergedSignals() from signals.js.
-// ---------------------------------------------------------------------------
-
-/**
- * Merge snapshot (store) + live signals. Dedupes on `id` first, then `filename`.
- * Live entries overwrite snapshot entries for the same key.
- * @param {Array<object>} snapshot
- * @param {Map<string, object>} liveByKey
- * @returns {Array<object>}
- */
-function mergedSignals(snapshot, liveByKey) {
-  const byKey = new Map();
-  for (const s of snapshot) {
-    if (!s) continue;
-    const key = s.id || s.filename;
-    if (key) byKey.set(key, s);
-  }
-  for (const [k, s] of liveByKey) {
-    byKey.set(k, s);
-  }
-  return [...byKey.values()];
-}
+import { mergeSignals as mergedSignals } from "../../static/pages/signals.js";
 
 // ---------------------------------------------------------------------------
 // Tests

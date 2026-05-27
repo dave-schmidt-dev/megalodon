@@ -65,7 +65,7 @@ globalThis.location = { pathname: "/" };
 // via the null-returning querySelector stub above.
 // ---------------------------------------------------------------------------
 
-const { matchRoute, ROUTES } = await import("../../static/js/app.js");
+const { matchRoute, ROUTES, _mountSeq } = await import("../../static/js/app.js");
 
 // ---------------------------------------------------------------------------
 // matchRoute — pattern matching and params extraction
@@ -192,27 +192,36 @@ describe("ROUTES", () => {
 });
 
 // ---------------------------------------------------------------------------
-// _mountSeq race guard — simulate rapid navigation A→B→C, verify the guard
-// fires. We can't call mountPage (needs a real DOM with #app-root), so we
-// replicate the guard logic in isolation and verify correctness.
+// _mountSeq race guard — exercise the REAL guard exported from app.js (the same
+// object mountPage()/_runMount() use). mountPage itself needs a real DOM with
+// #app-root, but the guard's claim()/isStale() contract is the load-bearing
+// race logic, so we drive it directly: each fakeMount uses the production
+// claim()/isStale() pair around an await, exactly as _runMount does.
 // ---------------------------------------------------------------------------
 
-describe("_mountSeq race guard logic", () => {
+describe("_mountSeq race guard (real guard from app.js)", () => {
+  test("claim() returns monotonically increasing ids", () => {
+    const a = _mountSeq.claim();
+    const b = _mountSeq.claim();
+    const c = _mountSeq.claim();
+    assert.ok(b > a && c > b, "ids strictly increase");
+    assert.equal(_mountSeq.isStale(c), false, "latest claimed id is not stale");
+    assert.equal(_mountSeq.isStale(a), true, "an earlier id is stale once superseded");
+    assert.equal(_mountSeq.isStale(b), true, "the middle id is stale too");
+  });
+
   test("only the last navigation wins when three overlap", async () => {
-    // Reproduce the exact guard pattern from mountPage:
-    //   const myId = ++seq; ... after await: if (myId !== seq) return;
-    let seq = 0;
     const results = [];
 
     async function fakeMount(label, delayMs) {
-      const myId = ++seq;
-      // Simulate async work (dynamic import + render)
+      const myId = _mountSeq.claim();
+      // Simulate async work (dynamic import + render).
       await new Promise((r) => setTimeout(r, delayMs));
-      if (myId !== seq) return;
+      if (_mountSeq.isStale(myId)) return;
       results.push(label);
     }
 
-    // Fire A (slow), B (medium), C (fast) — only C should complete.
+    // Fire A (slow), B (medium), C (fast) — only C should commit.
     const a = fakeMount("A", 30);
     const b = fakeMount("B", 20);
     const c = fakeMount("C", 10);
@@ -223,13 +232,12 @@ describe("_mountSeq race guard logic", () => {
   });
 
   test("sequential navigations (non-overlapping) all complete", async () => {
-    let seq = 0;
     const results = [];
 
     async function fakeMount(label) {
-      const myId = ++seq;
+      const myId = _mountSeq.claim();
       await new Promise((r) => setTimeout(r, 5));
-      if (myId !== seq) return;
+      if (_mountSeq.isStale(myId)) return;
       results.push(label);
     }
 

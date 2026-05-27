@@ -35,9 +35,22 @@ function matchRoute(path) {
 }
 
 let currentPageCleanup = null;
-// Monotonic mount counter. Each mountPage() call bumps it; a render whose
-// captured id is no longer the latest is stale and must not commit.
-let _mountSeq = 0;
+// Monotonic mount counter + guard. Each mountPage() call claims a fresh id via
+// _mountSeq.claim(); a render whose captured id is no longer the latest
+// (_mountSeq.isStale(id)) must not commit its DOM writes or cleanup. Exported so
+// the race-guard contract can be unit-tested against the REAL guard rather than
+// a local re-implementation.
+const _mountSeq = {
+  _n: 0,
+  /** Claim and return a fresh, monotonically-increasing mount id. */
+  claim() {
+    return ++this._n;
+  },
+  /** True if `id` is no longer the latest claimed id (a newer mount superseded it). */
+  isStale(id) {
+    return id !== this._n;
+  },
+};
 // Render chain: mounts are SERIALIZED through this promise so two overlapping
 // navigations (e.g. a slow page render still in flight when the operator hits
 // Back → popstate) never interleave their clearNode/appendChild on the shared
@@ -65,7 +78,7 @@ function emptyState(text) {
 
 function mountPage(path) {
   // Claim the mount synchronously so a later call immediately makes us stale.
-  const myId = ++_mountSeq;
+  const myId = _mountSeq.claim();
   // Queue behind any in-flight render; never run two page renders concurrently.
   _renderChain = _renderChain
     .then(() => _runMount(path, myId))
@@ -75,7 +88,7 @@ function mountPage(path) {
 
 async function _runMount(path, myId) {
   // Superseded before our turn came up? A newer mount will paint; skip.
-  if (myId !== _mountSeq) return;
+  if (_mountSeq.isStale(myId)) return;
 
   const { loader, params } = matchRoute(path);
   const root = getRoot();
@@ -99,7 +112,7 @@ async function _runMount(path, myId) {
 
   try {
     const mod = await loader();
-    if (myId !== _mountSeq) return;  // a newer navigation won the race
+    if (_mountSeq.isStale(myId)) return;  // a newer navigation won the race
     clearNode(root);
     // `render` is async in every page module, so await the promise and adopt
     // its resolved cleanup — gated on still being the current mount so a
@@ -107,7 +120,7 @@ async function _runMount(path, myId) {
     // page-cleanup-of-record. Serialization guarantees no other render mutates
     // the DOM concurrently with this one.
     const cleanup = await mod.render(root, params);
-    if (myId !== _mountSeq) {
+    if (_mountSeq.isStale(myId)) {
       // A newer mountPage started while we were rendering. Discard our cleanup
       // by invoking it directly so its timers/subs don't leak. (Page cleanups
       // must NOT clearNode(root); the next queued mount owns repainting.)
@@ -118,12 +131,12 @@ async function _runMount(path, myId) {
     }
     currentPageCleanup = typeof cleanup === "function" ? cleanup : null;
   } catch (err) {
-    if (myId !== _mountSeq) return;
+    if (_mountSeq.isStale(myId)) return;
     console.error(`[app] failed to render ${path}:`, err);
     clearNode(root);
     root.appendChild(emptyState(`Page failed to load: ${String(err)}`));
   }
-  if (myId !== _mountSeq) return;
+  if (_mountSeq.isStale(myId)) return;
   updateNavActive(path);
 }
 
@@ -397,4 +410,4 @@ if (document.readyState === "loading") {
   bootstrap();
 }
 
-export { mountPage, matchRoute, ROUTES };
+export { mountPage, matchRoute, ROUTES, _mountSeq };

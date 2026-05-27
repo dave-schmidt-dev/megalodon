@@ -55,6 +55,11 @@ def _make_adapter() -> MagicMock:
     """Return a mock HarnessAdapter whose build_argv returns a fixed argv."""
     adapter = MagicMock()
     adapter.build_argv = MagicMock(return_value=(["stub", "arg"], {}))
+    # session_log_dir → None short-circuits _discover_session_id's real-FS poll.
+    # Without this the spawner polls a MagicMock "log dir" until the discovery
+    # timeout (~5s) on every spawned lane — pure test-harness stall, not behavior
+    # under test. None models "no resume log dir", which the spawner handles.
+    adapter.session_log_dir = MagicMock(return_value=None)
     return adapter
 
 
@@ -74,7 +79,8 @@ def _make_resolver(adapter: MagicMock | None = None) -> MagicMock:
 async def test_start_all_calls_new_session_once_per_lane():
     """start_all must call tmux.new_session exactly once per configured lane."""
     config = _make_config(["A", "B", "C"])
-    resolver = _make_resolver()
+    adapter = _make_adapter()
+    resolver = _make_resolver(adapter)
     spawner = FleetSpawner(MISSION_DIR, config, resolver, SOCKET)
 
     with (
@@ -95,6 +101,20 @@ async def test_start_all_calls_new_session_once_per_lane():
         assert call.kwargs["cwd"] == MISSION_DIR
         assert call.kwargs["cols"] == 200
         assert call.kwargs["rows"] == 50
+
+    # build_argv must be CALLED once per lane with the real prompt/model/cwd —
+    # assert on the recorded call args, NOT the stub's constant return value.
+    # With no prompt_override and governor disabled, the spawner passes the
+    # lane's role as the prompt, the lane's harness model, and the mission dir
+    # as cwd (no governor_settings / live_repl kwargs for these lanes).
+    assert adapter.build_argv.call_count == 3
+    seen = {call.args[0]: call.kwargs for call in adapter.build_argv.call_args_list}
+    assert set(seen) == {"role-a", "role-b", "role-c"}, "prompt = lane role"
+    for prompt, kwargs in seen.items():
+        assert kwargs["model"] == "sonnet"
+        assert kwargs["cwd"] == MISSION_DIR
+        assert "governor_settings" not in kwargs
+        assert "live_repl" not in kwargs
 
 
 # ---------------------------------------------------------------------------
