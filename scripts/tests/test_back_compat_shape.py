@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient, ASGITransport
 
 from megalodon_ui.server import make_app
 from megalodon_ui.config import AppConfig
+from megalodon_ui.constants import API_EVENTS, SSE_SYNC
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,7 +51,7 @@ async def _wait_for_applied(
     from megalodon_ui.queue.applier import Applier
 
     applier = Applier(mission_dir=mission_dir, poll_seconds=0)
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
 
     while True:
         try:
@@ -66,7 +68,7 @@ async def _wait_for_applied(
                     f"request {request_id} rejected: {body.get('rejection_reason')}"
                 )
             return body
-        if asyncio.get_event_loop().time() >= deadline:
+        if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError(
                 f"request {request_id} did not resolve within {timeout}s"
             )
@@ -230,24 +232,34 @@ async def test_challenge_task_id_validates(queue_mission: Path):
 
 @pytest.mark.asyncio
 async def test_sse_stream_connects(queue_mission: Path):
-    """GET /api/v1/events connects and returns a sync event (stream is alive)."""
+    """The /api/v1/events generator emits a sync event on connect (stream alive).
+
+    Driven DIRECTLY against the real ``event_generator`` async generator rather
+    than through ``httpx.ASGITransport`` — ASGITransport buffers the entire
+    streaming body before exposing any bytes, so the on-connect ``sync`` event
+    only surfaced after the generator's 30s bounded poll loop ended (~30s/test).
+    See ui/tests/integration/test_sse_stream.py for the full delivery test.
+    """
     app = make_app(mission_dir=queue_mission, config=_APP_CONFIG)
-    received_events: list[str] = []
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        _auth(app, client)
-        async with client.stream("GET", "/api/v1/events") as response:
-            assert response.status_code == 200, f"SSE status {response.status_code}"
-            async for line in response.aiter_lines():
-                if line.startswith("event:"):
-                    received_events.append(line.split(":", 1)[1].strip())
-                    break  # one event is enough
+    endpoint = None
+    for route in app.routes:
+        if getattr(route, "path", None) == API_EVENTS:
+            endpoint = route.endpoint
+            break
+    assert endpoint is not None, f"{API_EVENTS} route not registered"
 
-    assert received_events, "SSE stream produced no events"
-    assert received_events[0] == "sync", (
-        f"first SSE event should be 'sync', got {received_events[0]!r}"
+    request = AsyncMock()
+    request.is_disconnected = AsyncMock(return_value=False)
+    response = await endpoint(request)
+    body_iter = response.body_iterator
+    try:
+        sync_event = await asyncio.wait_for(body_iter.__anext__(), timeout=5.0)
+    finally:
+        await body_iter.aclose()
+
+    assert sync_event["event"] == SSE_SYNC, (
+        f"first SSE event should be 'sync', got {sync_event!r}"
     )
 
 

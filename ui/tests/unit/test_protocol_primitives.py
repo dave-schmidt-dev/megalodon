@@ -16,15 +16,7 @@ import re
 import pytest
 
 
-# Importability check — must succeed once BACKEND publishes its module.
-# Until then these tests skip cleanly so CI doesn't redbar on absent code.
-try:
-    from megalodon_ui import primitives  # type: ignore[import-not-found]
-
-    BACKEND_AVAILABLE = True
-except ImportError:
-    primitives = None  # type: ignore[assignment]
-    BACKEND_AVAILABLE = False
+from megalodon_ui import primitives
 
 
 pytestmark = pytest.mark.unit
@@ -33,7 +25,6 @@ pytestmark = pytest.mark.unit
 # ---------- RULE 1: heartbeat staleness ----------
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R1_a_stale_age_computation():
     """T-R1-a — Last UTC age computation; >15 min returns True for stale."""
     now = datetime(2026, 5, 16, 15, 30, tzinfo=timezone.utc)
@@ -46,7 +37,6 @@ def test_R1_a_stale_age_computation():
 # ---------- RULE 2: atomic mkdir claim ----------
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R2_a_mkdir_claim_uses_mkdir(tmp_path):
     """T-R2-a — UI claim action uses mkdir, not file write."""
     claims = tmp_path / "claims"
@@ -57,7 +47,6 @@ def test_R2_a_mkdir_claim_uses_mkdir(tmp_path):
     assert primitives.try_claim(claims, "T1") is False
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R2_b_canonical_claim_dir_naming(tmp_path):
     """T-R2-b — task IDs with `→` are normalized to ASCII `-to-` before mkdir.
 
@@ -74,7 +63,6 @@ def test_R2_b_canonical_claim_dir_naming(tmp_path):
 # ---------- RULE 4: SIGNALs cite evidence ----------
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R4_a_signal_validator_rejects_no_cite():
     """T-R4-a — signal payload without `path:line` evidence is invalid."""
     with pytest.raises(ValueError, match="evidence"):
@@ -84,7 +72,6 @@ def test_R4_a_signal_validator_rejects_no_cite():
 # ---------- RULE 6: stale-row reclamation ----------
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R6_a_retroactive_recovery(tmp_path):
     """T-R6-a — finding exists but claim/done missing → recover."""
     (tmp_path / "findings" / "agent-X-A-T1.md").parent.mkdir(parents=True)
@@ -94,7 +81,6 @@ def test_R6_a_retroactive_recovery(tmp_path):
     assert (tmp_path / "claims" / "T1" / "done").exists()
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R6_b_stale_reclaim_no_finding(tmp_path):
     """T-R6-b — finding absent → STALE-RECLAIMED + rm -rf claim dir."""
     (tmp_path / "claims" / "T1").mkdir(parents=True)
@@ -105,7 +91,6 @@ def test_R6_b_stale_reclaim_no_finding(tmp_path):
 # ---------- RULE 10: atomic completion four-step ----------
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R10_a_atomic_completion_block(tmp_path):
     """T-R10-a — single mark_complete call performs all 4 RULE-10 steps."""
     # setup
@@ -138,7 +123,6 @@ def test_R10_a_atomic_completion_block(tmp_path):
 # ---------- RULE 11: phase-flip mkdir lock ----------
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R11_a_phase_flip_winner_full_sequence(tmp_path):
     """T-R11-a — mkdir wins, all 4 post-mkdir steps complete."""
     setup_phase_flip_test(tmp_path, phase="PHASE-PLAN")
@@ -151,7 +135,6 @@ def test_R11_a_phase_flip_winner_full_sequence(tmp_path):
     assert "PHASE-CHALLENGE" in (tmp_path / "README.md").read_text()
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R11_b_phase_flip_loser_no_op(tmp_path):
     """T-R11-b — mkdir loses (peer holds lock); flip is no-op."""
     setup_phase_flip_test(tmp_path, phase="PHASE-PLAN")
@@ -165,7 +148,6 @@ def test_R11_b_phase_flip_loser_no_op(tmp_path):
     assert "INIT->PHASE-PLAN" in last_event
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R11_c_crash_during_flip_recovery(tmp_path):
     """T-R11-c (NEW) — crash between mkdir and .mission-events append; verify recovery.
 
@@ -193,7 +175,6 @@ def test_R11_c_crash_during_flip_recovery(tmp_path):
     assert "RECOVERY" in last or "recovered" in last.lower()
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_R11_d_recovery_no_op_when_lock_holder_progressing(tmp_path):
     """T-R11-d (NEW per META P2-F-to-E CH-1) — Edit-14 false-positive guard.
 
@@ -275,7 +256,6 @@ def test_V_HIST_validator_canonical_lines():
 # ---------- Severity quorum math (TIER 2 §"Severity escalation") ----------
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_severity_escalation_minor_to_major_with_one_peer():
     """MINOR → MAJOR with 1 peer's Pass-1 independent finding (README.md:138)."""
     findings = [
@@ -285,7 +265,6 @@ def test_severity_escalation_minor_to_major_with_one_peer():
     assert primitives.compute_effective_severity(findings) == "MAJOR"
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_severity_escalation_major_to_blocking_with_two_independent():
     """MAJOR → BLOCKING with 2+ INDEPENDENT lanes' Pass-1 (README.md:139)."""
     findings = [
@@ -314,7 +293,6 @@ def test_severity_escalation_major_to_blocking_with_two_independent():
     assert primitives.compute_effective_severity(findings) == "BLOCKING"
 
 
-@pytest.mark.skipif(not BACKEND_AVAILABLE, reason="awaits P3-C megalodon_ui.primitives")
 def test_severity_ack_verified_does_not_count_toward_quorum():
     """ACK-VERIFIED responses do NOT count toward quorum (README.md:139)."""
     findings = [

@@ -21,13 +21,7 @@ from pathlib import Path
 
 import pytest
 
-try:
-    from megalodon_ui.server import make_app
-
-    _BACKEND_AVAILABLE = True
-except ImportError:
-    make_app = None  # type: ignore[assignment]
-    _BACKEND_AVAILABLE = False
+from megalodon_ui.server import make_app
 
 
 CONFIGS_DIR = Path(__file__).parent / "fixtures" / "configs"
@@ -69,13 +63,12 @@ def config_mission(tmp_path: Path, request):
     return dest
 
 
-
 def _auth(app, client) -> None:
     """Attach a valid mui_session cookie — every /api/** call is now gated."""
     client.cookies.set("mui_session", app.state.megalodon.session_store.create())
 
+
 @pytest.mark.asyncio
-@pytest.mark.skipif(not _BACKEND_AVAILABLE, reason="megalodon_ui.server not available")
 @pytest.mark.parametrize(
     "config_mission,expected_lane_count,expected_shorts",
     [
@@ -116,7 +109,6 @@ async def test_config_endpoint_reflects_mission_config(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not _BACKEND_AVAILABLE, reason="megalodon_ui.server not available")
 async def test_default_v9_lane_count_not_leaked_for_3_lane_mission(tmp_path: Path):
     """CR-3 regression: a 3-lane mission must not return the v9.0 default 6 lanes."""
     from httpx import AsyncClient, ASGITransport

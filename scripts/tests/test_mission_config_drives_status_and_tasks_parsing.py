@@ -20,13 +20,7 @@ from pathlib import Path
 
 import pytest
 
-try:
-    from megalodon_ui.server import make_app
-
-    _BACKEND_AVAILABLE = True
-except ImportError:
-    make_app = None  # type: ignore[assignment]
-    _BACKEND_AVAILABLE = False
+from megalodon_ui.server import make_app
 
 
 # Non-default shorts: P, Q, R, S, T, U — none of these appear in the v9.0
@@ -129,13 +123,12 @@ def cv1_mission(tmp_path: Path) -> Path:
     return dest
 
 
-
 def _auth(app, client) -> None:
     """Attach a valid mui_session cookie — every /api/** call is now gated."""
     client.cookies.set("mui_session", app.state.megalodon.session_store.create())
 
+
 @pytest.mark.asyncio
-@pytest.mark.skipif(not _BACKEND_AVAILABLE, reason="megalodon_ui.server not available")
 async def test_state_endpoint_parses_non_default_lane_rows(cv1_mission: Path):
     """GET /api/v1/state returns all 6 lanes with non-default shorts P-U.
 
@@ -169,7 +162,6 @@ async def test_state_endpoint_parses_non_default_lane_rows(cv1_mission: Path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not _BACKEND_AVAILABLE, reason="megalodon_ui.server not available")
 async def test_tasks_endpoint_parses_non_default_lane_tasks(cv1_mission: Path):
     """GET /api/v1/tasks returns all 6 tasks whose LANE- shorts are P-U.
 
@@ -220,7 +212,6 @@ async def test_tasks_endpoint_parses_non_default_lane_tasks(cv1_mission: Path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not _BACKEND_AVAILABLE, reason="megalodon_ui.server not available")
 async def test_ctx_bound_regex_not_v9_default(cv1_mission: Path):
     """Direct assertion: the ctx.task_line_re charclass must include P-U, not just A-F."""
     from megalodon_ui.server import make_app as _make_app

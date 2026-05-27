@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -117,7 +116,7 @@ def test_auth_env_keys_listed():
 
 
 # ---------------------------------------------------------------------------
-# Smoke: --help (skipped in CI or if binary absent)
+# Smoke: --help (skipped if binary absent)
 # ---------------------------------------------------------------------------
 
 
@@ -125,7 +124,5 @@ def test_auth_env_keys_listed():
 def test_help_smoke():
     if shutil.which("codex") is None:
         pytest.skip("codex CLI not found")
-    if os.environ.get("CI"):
-        pytest.skip("smoke tests disabled in CI")
     result = subprocess.run(["codex", "--help"], capture_output=True, timeout=10)
     assert result.returncode == 0
