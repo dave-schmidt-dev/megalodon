@@ -227,8 +227,8 @@ def test_dangerous_command_governor_denies(tmp_path: Path) -> None:
     # may be no hook audit line, but the command didn't run).
     deny_categories = {ln.get("category") for ln in deny_lines}
     expected_categories = {"bash-privilege", "governor-error"}
-    assert deny_categories & expected_categories or deny_categories, (
-        f"Deny present but unexpected category: {deny_categories!r}"
+    assert deny_categories & expected_categories, (
+        f"Deny present but category not in {expected_categories!r}: {deny_categories!r}"
     )
 
     # The command must NOT have actually run (no /tmp/x created by sudo).

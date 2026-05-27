@@ -259,14 +259,29 @@ async def _run_start_all(run_dir: Path, config):
 
 @pytest.mark.asyncio
 async def test_spawn_runs_canary_and_proceeds(tmp_path: Path):
-    """Governor enabled + real shim → self-test passes, lanes spawn."""
+    """Governor enabled + real shim → self-test passes, lanes spawn.
+
+    Also asserts the canary self-test was actually INVOKED during start_all
+    (a spy wrapping the real function), so removing the canary call from
+    start_all fails here instead of silently passing because spawning still
+    succeeds.
+    """
+    from unittest.mock import patch
+
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "scripts").symlink_to(REPO_ROOT / "scripts")
-    spawned = await _run_start_all(
-        run_dir, _live_repl_config(governor_enabled_flag=True)
-    )
+    with patch(
+        "megalodon_ui.spawn.governor_canary_selftest",
+        wraps=governor_canary_selftest,
+    ) as canary_spy:
+        spawned = await _run_start_all(
+            run_dir, _live_repl_config(governor_enabled_flag=True)
+        )
     assert spawned, "lanes should spawn when the governor is enforcing"
+    assert canary_spy.called, (
+        "start_all must invoke governor_canary_selftest before spawning lanes"
+    )
 
 
 @pytest.mark.asyncio
