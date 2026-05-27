@@ -37,11 +37,17 @@ def test_workflow_is_enabled():
 
 
 def test_no_macos_runner():
-    text = WORKFLOW.read_text().lower()
-    assert "macos" not in text, (
-        "macOS runners sit queued forever on this repo's plan and were 91% "
-        "of the May Actions bill — never reintroduce a macos runner"
-    )
+    # Ban macOS *runners* (the $1,031 cost mistake), not the word "macos" —
+    # the workflow comments deliberately document why macOS was removed.
+    wf = _load_workflow()
+    for name, job in wf["jobs"].items():
+        runs_on = job.get("runs-on", "")
+        labels = runs_on if isinstance(runs_on, list) else [runs_on]
+        for label in labels:
+            assert "macos" not in str(label).lower(), (
+                f"job {name!r} runs-on {label!r}: macOS runners sit queued forever "
+                f"on this repo's plan and were 91% of the May Actions bill"
+            )
 
 
 def test_concurrency_cancels_superseded_runs():
