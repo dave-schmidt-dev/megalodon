@@ -657,11 +657,16 @@ The fast pre-commit hook stays (ruff + vulture on staged `.py`; activate with
 `git config core.hooksPath hooks`). The heavy gate is run locally:
 
 - baseline: `uv run --extra test pytest scripts/tests ui/tests/integration ui/tests/unit -q -m "not isolated"`
+- real-tmux isolated tier: `uv run --extra test pytest scripts/tests ui/tests -m isolated --forked -q` (runs on macOS — 15 passed / 2 xfail in ~82s, verified 2026-05-27; only skips if `tmux` is absent)
 - e2e: `npx playwright test --config=ui/tests/e2e/playwright.config.ts` (chromium projects)
 - lint/dead-code: `uv run --with 'ruff==0.15.14' ruff check megalodon_ui/ scripts/` ; `uvx vulture megalodon_ui scripts`
 
-> The real-tmux `isolated` tier is Linux-only (macOS hits the 104-byte tmux
-> socket-path limit) and therefore does not run on the Mac dev box.
+> Note: older comments (this README's intro, `playwright.config.ts`) claim the
+> real-tmux tier is "CI-Linux-only" because macOS hits the 104-byte `sun_path`
+> socket limit. **That is stale** — the `tmux_socket` / `short_mission_dir`
+> conftest fixtures (`scripts/tests/conftest.py`) root the socket under a short
+> `/tmp` path, so the tier runs natively on macOS. Those stale comments are
+> pre-existing tech debt to correct.
 
 A **parallelized local gate** (Makefile targets + `pytest-xdist` + per-worker
 Playwright server isolation for 8–12 workers) is the planned successor; until it
