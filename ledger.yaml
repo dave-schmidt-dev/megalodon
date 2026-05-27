@@ -3,6 +3,8 @@ invariants:
   INV-1: {gate_test_status: covered}    # test_csrf_canonical_routes.py landed this session
   INV-2: {gate_test_status: covered}    # test_state_source_of_truth.py — read==write MISSION.md
   # INV-3 retired 2026-05-27 (CI removed) — see INVARIANTS.md "Retired" section.
+  INV-4: {gate_test_status: covered}    # test_governor_redteam.py — 75-case escape matrix
 resolutions:
   INV-1: {resolved_at_date: "2026-05-26", note: "Fix R3 server-enforced gating"}
   INV-2: {resolved_at_date: "2026-05-26", note: "post_v1_mission_status now writes MISSION.md/**Status:** (same file+marker as _read_mission_md_fields); appends Status line if absent; gate test test_state_source_of_truth.py 4/4 green"}
+  INV-4: {resolved_at_date: "2026-05-27", note: "~33 governor sandbox escapes closed over 4 red-team rounds (incl. env -i universal bypass); gate test test_governor_redteam.py = 75 cases (DENY_CASES/ALLOW_OK/STILL_DENY/GATE_CMDS) + 2 xfail(strict) residuals; full governor suite 395 pass / 2 xfail"}

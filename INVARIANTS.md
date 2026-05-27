@@ -16,6 +16,19 @@ gate_test: ui/tests/integration/test_state_source_of_truth.py
 threshold: 2
 rationale: mission-status writes README.md but UI reads MISSION.md (found this session); STATUS/TASKS staleness.
 
+### INV-4 — The governor Bash policy denies the red-team escape matrix
+area: ["megalodon_ui/governor/policy.py", "megalodon_ui/governor/hook.py"]
+gate_test: scripts/tests/test_governor_redteam.py
+threshold: 2
+rationale: the governor is the only sandbox constraining the autonomous fleet outside
+  its target. ~33 live escapes (arbitrary code exec + out-of-scope write/delete) shipped
+  with ZERO tests (found 2026-05-27): the Bash engine is allow-by-default + deny-matched,
+  so denylist coverage regresses SILENTLY as new escape spellings appear. The matrix is
+  the executable spec; DENY_CASES must deny, ALLOW_OK must allow, STILL_DENY/GATE_CMDS are
+  regression controls. Known un-converging residuals (destructive git porcelain, arbitrary
+  script-head exec) are tracked as xfail(strict=True) in the same file — the converging
+  fix (Bash-head allowlist) is a flagged v10 operator decision.
+
 ## Retired
 
 ### INV-3 — The blocking CI gate covers every project (no chromium-board-only)
