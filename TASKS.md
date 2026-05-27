@@ -1,3 +1,17 @@
+> ## Task #32 — Session 2026-05-26 (eve): CI cost-fix · closed-loop fixes · v10 design (DONE) + outstanding
+>
+> **Shipped this session (all on `main`):** CI JS-unit glob fix `f313a09` (Node-20 shell-expand) → **CI disabled for cost** `1410d38` (May Actions $1,031, 91% macOS from a since-removed `macos-latest` matrix + runaway runs; budget cap now set by operator). Closed-loop opt-in `ac5ba79` + parser-note correction `1fe9fea`. **mission-status SSOT FIXED** `12ed96d`: `post_v1_mission_status` now writes `MISSION.md`/`**Status:**` (same file+marker the reader uses); gate `ui/tests/integration/test_state_source_of_truth.py` 4/4; **INV-2 → `covered` + resolved 2026-05-26** — this SUPERSEDES #31's "INV-2 gate missing" / "mission-status SSOT split open" items. Also in `12ed96d`: board_state dead-branch removal + e2e empty-row guard. Harvest tool (in `~/.agent`, non-git per operator): multi-line + prose-anchor parser fixes, gitsig fix-commit corroboration wired into CLI, ruff clean, suite 21/21.
+>
+> **v10 external-target generalization — DESIGN APPROVED** (`docs/v10/2026-05-26-external-target-generalization-design.md`, `9bfb066`): generalize megalodon from self-improvement-only to an arbitrary **target** (first: `~/Documents/Projects/wilted`). Approach 1 — `target` block in `.mission-config` + thin parameterization of (gen_lane_launches repo_root, governor write-scope, lane prompts, working cwd). Backward-compatible (no `target` block = self-improvement, unchanged). `:megalodon` Espanso run-setup prompt is the downstream capstone (launch-ready / NO auto-spawn).
+>
+> **NEXT (fresh session):**
+>   1. **writing-plans** on the v10 spec → split into (a) a small **CI re-enable consolidation plan** that clears the INV-3 freeze (no macOS, `concurrency: cancel-in-progress`, scoped triggers, budget cap, dated INV-3 `resolutions:` checkpoint) — natural prerequisite/safety-net for v10; (b) the v10 generalization plan (build order = spec §7).
+>   2. Then the `:megalodon` prompt + the first live wilted run (human pulls the trigger).
+>
+> **Standing FREEZE: INV-3** (CI-gate-covers-every-project) until CI re-enable lands with a dated resolution. **Deferred nit:** legacy `filename` field rename — localStorage read-state migration risk, needs its own plan. **CI currently DISABLED** (`test.yml.disabled`); the authoritative-gate note below predates this session — its quoted-glob recommendation is stale (CI now uses the unquoted shell-expanded form per `f313a09`).
+>
+> ---
+>
 > ## Task #31 — Closed-loop methodology opt-in (DONE) + standing FREEZE on INV-3
 >
 > **Status (2026-05-26):** Opted in. Seeded `INVARIANTS.md` (INV-1/2/3) + `ledger.yaml`; wired tracked `hooks/pre-push` (best-effort `~/.agent/bin/harvest`; megalodon uses `core.hooksPath=hooks` so `.git/hooks/` would never fire). README convention note added. Harvest pilot: **FROZEN — `INV-3 recurrence=2 >= threshold 2`** (CI-gate-covers-every-project; both `.github/workflows/test.yml` bug entries from 2026-05-26, no resolution checkpoint). INV-1=0 (resolved 2026-05-26), INV-2=0.
