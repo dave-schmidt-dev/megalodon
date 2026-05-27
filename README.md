@@ -646,21 +646,25 @@ When mission deliverables are complete:
 
 Commit convention: Conventional Commits (`fix:` for remediation). HISTORY bug entries use `[bug] ... | files: ... | inv: INV-x`.
 
-## Continuous Integration
+## Testing — local only (no CI)
 
-GitHub Actions workflow: `.github/workflows/test.yml`. Cost guardrails (after the
-May 2026 Actions blowout — $1,031, 91% macOS + runaway runs):
+There is **no GitHub Actions / remote CI** (removed 2026-05-27). The gate runs on
+the developer's machine, where it is visible and under direct control — the
+explicit reason for dropping CI was push-time visibility a remote runner cannot
+provide. Cost was not the driver (standard runners are free on a public repo).
 
-- **ubuntu-only** — no macOS runner (sat perpetually `queued` on this plan).
-- **concurrency: cancel-in-progress** — a newer push cancels the in-flight run.
-- **scoped triggers** — `push` runs on `main` only; `paths-ignore` skips
-  doc-only commits (`**.md`, `docs/**`, `.archive/**`).
-- **per-job `timeout-minutes`** — 30 (test) / 25 (webkit).
-- **budget cap** — operator-set account-level Actions spending limit (GitHub
-  Settings → Billing). Not in-repo; verify it is still set after re-enable.
+The fast pre-commit hook stays (ruff + vulture on staged `.py`; activate with
+`git config core.hooksPath hooks`). The heavy gate is run locally:
 
-Blocking gate: ubuntu `test` job (pytest baseline + forked-isolated tier +
-ruff + vulture + chromium-board/default/mutations Playwright). Non-blocking:
-`playwright-webkit` (`continue-on-error: true`). These guardrails are
-regression-locked by `scripts/tests/test_ci_workflow_guardrails.py` and the
-INV-3 charter.
+- baseline: `uv run --extra test pytest scripts/tests ui/tests/integration ui/tests/unit -q -m "not isolated"`
+- e2e: `npx playwright test --config=ui/tests/e2e/playwright.config.ts` (chromium projects)
+- lint/dead-code: `uv run --with 'ruff==0.15.14' ruff check megalodon_ui/ scripts/` ; `uvx vulture megalodon_ui scripts`
+
+> The real-tmux `isolated` tier is Linux-only (macOS hits the 104-byte tmux
+> socket-path limit) and therefore does not run on the Mac dev box.
+
+A **parallelized local gate** (Makefile targets + `pytest-xdist` + per-worker
+Playwright server isolation for 8–12 workers) is the planned successor; until it
+lands, run the commands above by hand. The fleet's *autonomous output* is gated
+separately, in the target repo, by `target.gates` (the target's own test/lint),
+not by anything here.

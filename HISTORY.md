@@ -10,9 +10,13 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
-## 2026-05-27 — CI re-enable consolidation (INV-3 resolved)
+## 2026-05-27 — CI removed entirely; INV-3 retired
 
-- [fix] CI re-enabled with cost guardrails; INV-3 freeze lifted. Added top-level `concurrency` (cancel-in-progress) + scoped `push` to `main` + docs `paths-ignore`; renamed `test.yml.disabled` → `test.yml`. Regression-locked by an offline PyYAML meta-test asserting no-macos / concurrency / scoped-triggers / per-job timeouts / INV-guarded Playwright projects gated / dated INV-3 resolution. | files: .github/workflows/test.yml, scripts/tests/test_ci_workflow_guardrails.py, ledger.yaml, README.md | inv: INV-3
+- [decision] **Removed GitHub Actions / CI entirely** and retired **INV-3**. Same session as the re-enable below — the discussion that followed clarified the operator's actual goal: *push-time visibility on the local machine*, which a remote runner structurally cannot give, not cost (standard runners are free on this public repo; the May blowout was macOS minutes + hung runs, both already gone). Key realization: megalodon's CI never gated the fleet's autonomous output (that lands in the target repo, validated by `target.gates` + the target's own CI) — it only gated megalodon's own source. Deleted `.github/workflows/test.yml` + the now-obsolete guardrail meta-test; retired INV-3 in `INVARIANTS.md` (moved to a "Retired" section with reason) and removed its ledger entries. Successor: a parallelized local gate (Makefile + pytest-xdist + per-worker Playwright server isolation) — to be brainstormed/planned next. | files: .github/workflows/test.yml, scripts/tests/test_ci_workflow_guardrails.py, INVARIANTS.md, ledger.yaml, README.md
+
+### (superseded same day) CI re-enable consolidation
+
+- [fix] CI re-enabled with cost guardrails; INV-3 freeze lifted. Added top-level `concurrency` (cancel-in-progress) + scoped `push` to `main` + docs `paths-ignore`; renamed `test.yml.disabled` → `test.yml`. Regression-locked by an offline PyYAML meta-test. **Superseded the same day by the CI removal above** (kept for the record). | files: .github/workflows/test.yml, scripts/tests/test_ci_workflow_guardrails.py, ledger.yaml, README.md | inv: INV-3
 
 ---
 

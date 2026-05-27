@@ -16,8 +16,15 @@ gate_test: ui/tests/integration/test_state_source_of_truth.py
 threshold: 2
 rationale: mission-status writes README.md but UI reads MISSION.md (found this session); STATUS/TASKS staleness.
 
+## Retired
+
 ### INV-3 — The blocking CI gate covers every project (no chromium-board-only)
-area: [".github/workflows/test.yml", "ui/tests/e2e/playwright.config.ts"]
-gate_test: ui/tests/e2e/playwright.config.ts
-threshold: 2
-rationale: chromium-board-only gating hid CSRF routes + mission-status split twice.
+retired: 2026-05-27
+reason: CI removed entirely (operator decision — the value sought is push-time
+  visibility on the local machine, which a remote runner cannot provide; cost was
+  moot on a public repo). Megalodon's CI never gated the fleet's autonomous output
+  (that lands in the target repo, validated by `target.gates` + the target's own
+  CI); it only gated megalodon's own source. The coverage concern INV-3 encoded
+  (no project-gap hiding regressions) now belongs to the local gate — to be
+  re-expressed as a local-gate invariant once that gate is built.
+former_rationale: chromium-board-only gating hid CSRF routes + mission-status split twice.
