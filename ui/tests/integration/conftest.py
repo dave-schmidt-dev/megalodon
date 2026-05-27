@@ -93,7 +93,7 @@ async def wait_for_queue_applied(
     """
     from megalodon_ui.queue.applier import Applier
 
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
 
     # Derive mission_dir from the queue endpoint if not provided.
     # We call GET queue first to get the mission context implicitly — but we
@@ -119,7 +119,7 @@ async def wait_for_queue_applied(
                     f"queue request {request_id} rejected: {body.get('rejection_reason')}"
                 )
             return body
-        if asyncio.get_event_loop().time() >= deadline:
+        if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError(
                 f"queue request {request_id} did not resolve within {timeout}s "
                 f"(last status: {body['status']})"

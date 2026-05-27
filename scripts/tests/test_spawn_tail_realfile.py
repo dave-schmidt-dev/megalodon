@@ -59,9 +59,9 @@ async def _drain_until(
 ) -> bytes:
     """Read from q until ``expected_total`` bytes accumulated or timeout."""
     buf = b""
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     while len(buf) < expected_total:
-        remaining = deadline - asyncio.get_event_loop().time()
+        remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             break
         try:

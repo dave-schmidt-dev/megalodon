@@ -1,6 +1,6 @@
 // test_approval_rules.spec.ts — v9.4 Task 3.5: /approval-rules page + Approve&remember modal.
 //
-// Runs under chromium-grid (MEGALODON_FAKE_SPAWNER=1, fix-small 3-lane fixture).
+// Runs under chromium-board-mut / webkit-board-mut (MEGALODON_FAKE_SPAWNER=1, fix-small 3-lane fixture).
 //
 // Case 1: Page renders — navigate to /approval-rules, empty state visible when no rules.
 // Case 2: Add manual rule — type pattern + click Add → POST fired → row appears.

@@ -88,8 +88,8 @@ async def test_pipe_pane_preserves_canonical_sgr_escape_sequences(
     assert pipe_rc == 0
 
     # Allow pipe-pane to flush; the shell sleep keeps the pane alive.
-    deadline = asyncio.get_event_loop().time() + 3.0
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.1)
         data = stream_log.read_bytes()
         if _SGR_RED in data and _SGR_HIGHLIGHT in data and _SGR_CLEAR_AND_HOME in data:

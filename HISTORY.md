@@ -43,6 +43,18 @@ Implementation of `docs/superpowers/plans/2026-05-27-test-suite-and-governor-har
   - **P2.6 Playwright:** split board + v92-dashboard into `*-ro` (fullyParallel) / `*-mut` (workers:1) projects on isolated webServers/tmpdirs; 3 disk-writing specs namespace writes by `testInfo.testId`. ~33% faster (61.7s vs 91.7s chromium).
   - **The gate:** `make gate` (==`gate-fast`: test-py `-n auto` + test-js + lint, concurrent) = **~37s**, appended to `hooks/pre-push` AFTER the closed-loop harvest (harvest stays best-effort; gate failure blocks the push). `make gate-full` (+ real-tmux isolated + Playwright chromium) = ~3.5 min, run manually before a fleet launch. Suite under `-n auto`: 1642 passed / 2 xfailed in ~35s (was 139s serial, ~4×).
 
+### P3 — hollow/brittle cleanup, dead code, warnings, docs, coverage gaps
+
+- [remediation] Dead code, warning flood, brittle/slow tests, doc drift, coverage gaps | files: megalodon_ui/schemas.py, megalodon_ui/server.py, pytest.ini, ui/tests/integration/test_sse_stream.py, scripts/tests/test_back_compat_shape.py, README.md
+  - **P3.1** deleted dead `megalodon_ui/schemas.py` (zero importers; its `SSEEventName` drift-assert extracted to `scripts/tests/test_sse_event_name_parity.py`).
+  - **P3.2** removed 21 stale `skipif(not BACKEND_AVAILABLE, "awaits P3-C")` guards (backend IS available — those tests now RUN and pass) + 3 dead `if os.environ.get("CI")` branches.
+  - **P3.3** `pytest.ini` `filterwarnings` silences the external uvicorn/websockets/`iscoroutinefunction` deprecation flood (`test_stimulus_harness.py` 661 → 0 warnings; full suite 661 → 1); remaining `asyncio.get_event_loop()` → `get_running_loop()`; deleted the unused `destructive` marker.
+  - **P3.4** `test_autorecover_supervisor.py` asserts structured state (`_LaneRecoverState.last_reason`/`attempts`) instead of brittle log substrings (added the `last_reason` field — additive, restart logic unchanged).
+  - **P3.5** replaced the 2×30s + 1×30s `httpx.ASGITransport`-buffered SSE tests with a generator-unit test that drives `event_generator()` directly (yields `sync` then `status-change` on a STATUS.md touch) — `test_sse_stream.py` 60s → 0.55s; removed the SSE `xfail` (suite xfails 2 → 1).
+  - **P3.6** doc-accuracy sweep: corrected the stale "real-tmux tier is CI-Linux-only" claim (runs on macOS), refreshed test/project counts (README, `playwright.config.ts` 8→16 projects), re-pointed dead `chromium-grid` spec comments to `*-board-mut`.
+  - **P3.7** filled coverage gaps (+26 tests): `gen_lane_launches.py` 32%→94% (v10-critical), 4 CSRF-negative mutation routes, `/followup` malformed-JSON 422, `watchdog.run()`, `preflight.__main__`, applier corrupt-pending + phase-mismatch. No production bugs surfaced.
+  - **Net:** full non-isolated suite 1642 → **1671 passed / 1 xfailed / 1 warning in ~10.5s** (the SSE/stall removals also dropped wall-time 40s → 10.5s).
+
 ---
 
 ## 2026-05-27 — CI removed entirely; INV-3 retired

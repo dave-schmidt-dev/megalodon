@@ -126,9 +126,7 @@ async def _start_with_fake_tail(spawner: FleetSpawner, fake_proc: _FakeProc) -> 
 
 
 @pytest.mark.asyncio
-async def test_tail_task_started_after_spawn(
-    tmp_path: Path, socket_path: Path
-) -> None:
+async def test_tail_task_started_after_spawn(tmp_path: Path, socket_path: Path) -> None:
     """``start_all`` launches a tail task per lane; the task is alive after start."""
     mission_dir = tmp_path / "mission"
     (mission_dir / ".fleet").mkdir(parents=True)
@@ -199,9 +197,9 @@ async def test_drop_oldest_when_subscriber_slow(
 
         # Let the producer drain its read loop.
         # Wait until last_bytes_offset reflects all 5 chunks have been processed.
-        deadline = asyncio.get_event_loop().time() + 2.0
+        deadline = asyncio.get_running_loop().time() + 2.0
         target = sum(len(f"chunk-{i}".encode()) for i in range(5))
-        while asyncio.get_event_loop().time() < deadline:
+        while asyncio.get_running_loop().time() < deadline:
             if spawner.get("A").last_bytes_offset >= target:
                 break
             await asyncio.sleep(0.01)

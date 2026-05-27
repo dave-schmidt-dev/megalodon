@@ -1,8 +1,8 @@
 // test_lane_detail.spec.ts — Task 1.6: pages/lane_detail.js E2E tests.
 //
-// Tests run under chromium-grid project (NON_MUTATION_DEFAULT_ENV + fix-small
-// fixture, port 8769). The fix-small fixture has 3 lanes: LANE-A/A, LANE-B/B,
-// LANE-C/C.
+// Tests run under chromium-board-mut / webkit-board-mut projects
+// (MEGALODON_FAKE_SPAWNER=1, fix-small fixture, ports 8772/8781).
+// The fix-small fixture has 3 lanes: LANE-A/A, LANE-B/B, LANE-C/C.
 //
 // Test cases:
 //   1. Send flow — type text → click Send → assert POST with correct body + header.

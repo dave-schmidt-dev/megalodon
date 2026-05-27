@@ -1,8 +1,9 @@
 // Playwright config for Megalodon UI E2E tests.
 //
-// Architecture (post 2026-05-19 cross-engine refactor):
+// Architecture (post P2.6 RO/MUT project split):
 //
-// - 8 projects = {chromium, webkit} × {default, mutations, failure-modes, v92-dashboard}.
+// - 16 projects = {chromium, webkit} × {default, mutations, failure-modes,
+//   v92-ro, v92-mut, board-ro, board-mut, grid-smoke} plus chromium-restart.
 //   WebKit ≈ Safari engine; both engines exercise the same specs so Safari users
 //   get coverage too.
 //
@@ -11,9 +12,9 @@
 //   of the source fixture under `ui/tests/fixtures/`) so no Playwright run ever
 //   mutates the git-tracked fixture, and engines don't race on shared state.
 //
-// - Mutation-bearing projects (`*-mutations`, `*-v92-dashboard`) run with
-//   `workers: 1` because their specs share mutable server state (STATUS.md
-//   appends, fake-spawner `/__fake__/*` calls). Read-only projects run parallel.
+// - Mutation-bearing projects (`*-mut`, `*-mutations`) run with `workers: 1`
+//   because their specs share mutable server state (STATUS.md appends,
+//   fake-spawner `/__fake__/*` calls). Read-only projects run fully parallel.
 //
 // - `reuseExistingServer` is always false: the tmpdir path changes per process,
 //   so reusing a webServer started in a previous run would serve stale fixture
@@ -30,7 +31,8 @@ import * as path from 'node:path';
 
 const FIXTURES_SRC = path.join(__dirname, '..', 'fixtures');
 // `/tmp/m/<short>` keeps the resulting `.fleet/tmux.sock` path under macOS's
-// 104-byte Unix-socket limit (megalodon_ui/__main__.py:106 enforces ≤100).
+// 104-byte Unix-socket limit (megalodon_ui/__main__.py enforces ≤100 via
+// SOCKET_PATH_LIMIT_BYTES at the Step-4 socket path length check).
 // Using os.tmpdir() on macOS yields `/var/folders/<uid>/T/...` which is ~50
 // bytes before the project label is even appended — too tight in practice.
 const TMPDIR_ROOT = '/tmp/m';
@@ -114,11 +116,11 @@ const SERVER_CMD = (port: number, missionDir: string) =>
   `--with fastapi --with "uvicorn[standard]" --with sse-starlette --with pyyaml ` +
   // --no-browser: test webServers must NEVER auto-open the dashboard. Without
   // it every project's webServer calls webbrowser.open(), so an unfiltered
-  // `npx playwright test` (all ~11 projects) spawns ~11 real browser tabs.
+  // `npx playwright test` (all 16 projects) spawns ~15 real browser tabs.
   `python3 -m megalodon_ui --port ${port} --mission-dir ${missionDir} --no-browser`;
 
 // Parse `--project=<name>` / `--project <name>` from argv so we only spin up
-// the webServer(s) needed for the selected project. Without this, all 10
+// the webServer(s) needed for the selected project. Without this, all 15
 // webServers start on every run regardless of --project=, causing slow startup
 // and parallel-execution port-collision races between concurrent test runs.
 // Empty set (no --project flag) → start everything (full multi-project run).
@@ -153,7 +155,7 @@ const PROJECT_TO_PORT: Record<string, number> = {
 
 // Projects that intentionally have NO Playwright-managed webServer (they spawn
 // their own). Selecting ONLY these must start zero webServers — otherwise the
-// "empty wantedPorts → return all" fallback would boot all ~11 servers.
+// "empty wantedPorts → return all" fallback would boot all 15 servers.
 const SELF_MANAGED_SERVER_PROJECTS = new Set<string>(['chromium-restart']);
 
 function filterWebServersByProject<T extends { url: string }>(all: T[]): T[] {
@@ -252,8 +254,8 @@ export default defineConfig({
   // Global worker cap. Per-project `workers: 1` overrides apply to
   // mutation/v92 projects whose specs share server state. The read-only
   // projects (default, failure-modes) on both engines can saturate this pool.
-  // M-series Macs can comfortably run 12 concurrent Node workers + 8 Python
-  // webServers; CI bumps down to fit smaller runners.
+  // M-series Macs can comfortably run 12 concurrent Node workers + 15 Python
+  // webServers (no CI; this suite is local-only).
   workers: process.env.CI ? 4 : 12,
   retries: process.env.CI ? 2 : 0,
   timeout: 30_000,
