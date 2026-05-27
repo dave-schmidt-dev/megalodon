@@ -153,3 +153,18 @@ def test_redteam_controls_still_deny(cmd):
     assert d.permission == "deny", (
         f"REGRESSION: {cmd!r} now {d.permission}/{d.category}"
     )
+
+
+# The fleet's REAL test gate runs via these allowlisted script heads (run_tests.sh
+# / run_e2e.sh). The P0 hardening tightened the Bash denylist (editors, build/exec
+# runners, etc.); if any of that deny scope accidentally caught a `scripts/*.sh`
+# head, the fleet could no longer run its own gate. These MUST stay allowed.
+GATE_CMDS = ["scripts/run_tests.sh", "scripts/run_tests.sh -q", "scripts/run_e2e.sh"]
+
+
+@pytest.mark.parametrize("cmd", GATE_CMDS, ids=GATE_CMDS)
+def test_fleet_gate_commands_still_allow(cmd):
+    d = decide("Bash", {"command": cmd}, project_dir=PROJECT_DIR, lane="TEST")
+    assert d.permission == "allow", (
+        f"P0 broke the fleet gate: {cmd!r} -> {d.permission}/{d.category}"
+    )

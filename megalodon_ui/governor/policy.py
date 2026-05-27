@@ -8,6 +8,21 @@ Policy model: **allow-by-default + deny-matched-dangerous**, per tool family.
 The net invariant is "strictly no looser than the prior --allowedTools system":
 default to allow, deny only matched-dangerous vectors.
 
+Bash deny posture and overridability:
+  * The newly-denied **generic-exec** commands (build/exec runners such as
+    ``make`` → ``bash-exec-runner``; editors that shell out / write back such as
+    ``vim``/``ed`` → ``bash-editor``) are **non-floor**: an operator can re-admit
+    them per-project via ``<project_dir>/.fleet/approval-rules.json`` (see
+    :func:`_load_override_patterns` / :func:`_override_allows`), which flips the
+    deny → allow with category ``allow-override``.
+  * The **floor** categories in :data:`_FLOOR_CATEGORIES`
+    (``bash-root-destructive``, ``bash-privilege``, ``secret-read``,
+    ``write-out-of-scope``, ``anti-tamper``, ``write-secret``) are NOT
+    overridable — no approval rule can re-admit them.
+  * The fleet's own test gate runs via the allowlisted script heads
+    ``scripts/run_tests.sh`` / ``scripts/run_e2e.sh``, which the policy allows
+    (the deny tightening above must never catch these).
+
 Discipline (enforced by design):
   * NO I/O of any kind except reading ``<project_dir>/.fleet/approval-rules.json``
     for the operator allow-override (last step before returning a Bash deny).

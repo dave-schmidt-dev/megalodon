@@ -579,10 +579,20 @@ screen-scraping permission system (decommissioned in Phases 1–4, 2026-05-25).
   tool paths are secret- and scope-checked against `project_dir`; command/process
   substitution and any parse failure fail closed (deny). Any internal exception → deny
   (`governor-error`).
-- **Operator allow-override** — `.fleet/approval-rules.json` is read as an audited
-  override that flips a *non-floor* deny → allow for the specific matched segment. The
-  **floor** — `bash-root-destructive`, `bash-privilege`, `secret-read` — is
-  non-overridable.
+- **Operator allow-override** — `.fleet/approval-rules.json` (a raw JSON list of
+  `{"pattern": "Bash(<specifier>)"}` entries; `<specifier>` is `<head>:*` or a literal
+  prefix with `*` wildcards) is read as an audited override that flips a *non-floor*
+  deny → allow for the specific matched segment (category `allow-override`). The
+  newly-denied **generic-exec** commands from the P0 hardening — build/exec runners
+  (`make`, …, category `bash-exec-runner`) and editors that shell out / write back
+  (`vim`, `ed`, …, category `bash-editor`) — are deliberately **non-floor**, so an
+  operator can re-admit them per-project. The **floor** categories are NOT overridable:
+  `bash-root-destructive`, `bash-privilege`, `secret-read`, `write-out-of-scope`,
+  `anti-tamper`, `write-secret` — no approval rule can re-admit them.
+- **Fleet test gate** — the fleet runs its own test/e2e gate via the allowlisted script
+  heads `scripts/run_tests.sh` and `scripts/run_e2e.sh`, which the policy allows. The P0
+  denylist tightening does not catch these (regression-locked by
+  `test_fleet_gate_commands_still_allow`).
 - **Hook** (`megalodon_ui/governor/hook.py`, executable shim `scripts/governor_hook.py`)
   — reads the PreToolUse event from stdin, emits the `permissionDecision` JSON to stdout,
   and appends one audit line to `.fleet/governor-log-YYYY-MM-DD.jsonl`
