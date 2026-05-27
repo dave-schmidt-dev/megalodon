@@ -10,6 +10,26 @@ Format for completions: `<UTC> | <agent-id> | <LANE> | <task-id> | <finding-file
 
 ---
 
+## 2026-05-26 — SSOT fix: mission-status write/read parity (INV-2)
+
+- [bug] mission-status wrote README.md but UI reads MISSION.md (SSOT split) | files: megalodon_ui/server.py | inv: INV-2
+  - **Root cause:** `post_v1_mission_status` wrote `README.md` substituting `**Current: X**`
+    while `_read_mission_md_fields` (used by `/state`) reads `MISSION.md` for `**Status:** X`.
+    Every POST was silently discarded from the operator's perspective.
+  - **Fix:** rewrite handler to write `MISSION.md` using `re.sub(r"\*\*Status:\*\*\s+\S+", ...)`
+    (same marker the reader expects); appends `**Status:** {status}` if no Status line present.
+    CSRF + control-mode guards, 422 validation, and `{ok, status}` return unchanged.
+  - **Gate test:** `ui/tests/integration/test_state_source_of_truth.py` — 4 tests (read helper,
+    /state endpoint, all-values roundtrip, append case); confirmed FAIL before fix, PASS after.
+  - **Ledger:** INV-2 gate_test_status: missing → covered; resolution entry added.
+  - **Ship nits (same commit):** board_state.py redundant `state = "open"` baseline re-assignment
+    removed (provably dead, tests 79/0); e2e activity_wall filter test: add `expect(findingCount)
+    .toBeGreaterThan(0)` guard before the `.nth(i)` loop; filename field rename NOT done (deeply
+    entrenched in JS with localStorage read-state keys — renaming without a migration plan would
+    break existing read-state for live users; flagged as ambiguous).
+
+---
+
 ## 2026-05-26 — Closed-loop methodology: opt-in + harvest pilot (FROZEN: INV-3)
 
 Opted megalodon into the closed-loop foundation-freeze methodology. Seeded `INVARIANTS.md`

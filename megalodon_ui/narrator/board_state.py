@@ -548,9 +548,8 @@ def assemble_lane_rows(
                 state = "claimed"
             elif done_tasks:
                 state = "done"
-            elif now is None and not status_gap_fill_fired:
-                state = "open"
-            # else: state already set by the INIT gap-fill above, or idle stays open.
+            # else: state remains "open" (baseline set above), which is correct for
+            # lanes with no task rows, no gap-fill, and no idle override.
 
         # Digest + tokens.
         digest = digests.get(short)

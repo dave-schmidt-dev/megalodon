@@ -3791,17 +3791,23 @@ def _register_routes(app: FastAPI, ctx: MissionContext) -> None:
         status = str(body.get("status", "")).strip().upper()
         if status not in ("IDLE", "ACTIVE", "DRAINING", "COMPLETE"):
             raise HTTPException(status_code=422, detail="invalid status")
-        # Best-effort: update README Mission status section.
-        readme = ctx.mission_dir / "README.md"
-        if readme.exists():
-            text = readme.read_text()
+        # Best-effort: update MISSION.md using the same **Status:** marker that
+        # _read_mission_md_fields() reads.  This closes the SSOT split (INV-2)
+        # where the old code wrote README.md/**Current:** while the UI read
+        # MISSION.md/**Status:**.
+        mission_md = ctx.mission_dir / "MISSION.md"
+        if mission_md.exists():
+            text = mission_md.read_text()
             new_text = re.sub(
-                r"\*\*Current:\s*[^*]+\*\*",
-                f"**Current: {status}**",
+                r"\*\*Status:\*\*\s+\S+",
+                f"**Status:** {status}",
                 text,
                 count=1,
             )
-            readme.write_text(new_text)
+            if new_text == text:
+                # No **Status:** line present — append one so write-then-read works.
+                new_text = text.rstrip("\n") + f"\n**Status:** {status}\n"
+            mission_md.write_text(new_text)
         return {"ok": True, "status": status}
 
     @app.post(API_INJECT_TASK)

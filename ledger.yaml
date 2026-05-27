@@ -1,7 +1,8 @@
 # megalodon ledger — minimal machine state. NO `freeze` field (computed on read).
 invariants:
   INV-1: {gate_test_status: covered}    # test_csrf_canonical_routes.py landed this session
-  INV-2: {gate_test_status: missing}    # no read==write test yet (the mission-status finding)
+  INV-2: {gate_test_status: covered}    # test_state_source_of_truth.py — read==write MISSION.md
   INV-3: {gate_test_status: covered}    # chromium-mutations now CI-gated
 resolutions:
   INV-1: {resolved_at_date: "2026-05-26", note: "Fix R3 server-enforced gating"}
+  INV-2: {resolved_at_date: "2026-05-26", note: "post_v1_mission_status now writes MISSION.md/**Status:** (same file+marker as _read_mission_md_fields); appends Status line if absent; gate test test_state_source_of_truth.py 4/4 green"}

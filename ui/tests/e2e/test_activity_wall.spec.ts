@@ -188,6 +188,10 @@ test.describe('activity wall: filter chips', () => {
     // All finding rows must be hidden (display:none).
     const findingRows = list.locator('[data-event-type="finding"]');
     const findingCount = await findingRows.count();
+    // Guard: the poll above confirmed findCount > 0 before the filter was
+    // applied, so finding rows must still be in the DOM after filtering
+    // (just hidden) — assert this to avoid vacuous-pass on an empty list.
+    expect(findingCount).toBeGreaterThan(0);
     for (let i = 0; i < findingCount; i++) {
       await expect(findingRows.nth(i)).not.toBeVisible();
     }
